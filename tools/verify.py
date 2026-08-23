@@ -2,7 +2,11 @@
 """Line-by-line comparison of the viewer output against reference listings."""
 import sys, re, html, os, glob, collections
 sys.stdout.reconfigure(encoding='utf-8')
-from iskra import DOCS
+from iskra import DOCS, _ROOT
+
+# вывод C++ детокенизатора, см. tools/README.md
+OUT  = os.path.join(_ROOT, "build", "out")    # корпус из hex-дампов
+OUT2 = os.path.join(_ROOT, "build", "out2")   # корпус corpus/bin
 
 def strip_literals(s):
     """remove string literals and HEX(...) bodies, return (rest, [literals])"""
@@ -30,8 +34,8 @@ def nums(s):
     return re.findall(r'\d+\.?\d*', body)
 
 def load_mine(nm):
-    p='out/%s.txt'%nm
-    if not os.path.exists(p): p='out2/%s.txt'%nm
+    p=os.path.join(OUT, nm+'.txt')
+    if not os.path.exists(p): p=os.path.join(OUT2, nm+'.txt')
     s=html.unescape(open(p,encoding='utf-8',errors='replace').read())
     d={}
     for line in s.split('\n'):

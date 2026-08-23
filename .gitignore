@@ -14,6 +14,10 @@ docs/book/
 .idea/
 *.user
 
+# python
+__pycache__/
+*.pyc
+
 # служебное
 .DS_Store
 Thumbs.db
