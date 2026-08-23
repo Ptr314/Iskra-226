@@ -17,4 +17,9 @@ uint32_t koi8_to_unicode(uint8_t code);
 void koi8_to_utf8(const uint8_t * data, unsigned len, std::string & out);
 std::string koi8_to_utf8(const uint8_t * data, unsigned len);
 
+// Обратное направление нужно на входе: листинги корпуса лежат в UTF-8, а
+// внутри эмулятора всё в КОИ-8. Непредставимый символ даёт false, но
+// перекодировка идёт до конца, подставляя вопросительный знак.
+bool utf8_to_koi8(const std::string & in, std::string & out);
+
 } // namespace iskra

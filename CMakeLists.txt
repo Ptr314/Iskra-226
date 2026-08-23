@@ -48,6 +48,12 @@ endif()
 add_library(iskra_core STATIC
     src/core/host.h
     src/core/koi8.h             src/core/koi8.cpp
+    src/core/number.h           src/core/number.cpp
+    src/core/ir.h
+    src/core/expr.h             src/core/expr.cpp
+    src/core/front_text.h       src/core/front_text.cpp
+    src/core/front_tokens.h     src/core/front_tokens.cpp
+    src/core/interp.h           src/core/interp.cpp
     src/core/screen.h           src/core/screen.cpp
 
     src/font/font.h             src/font/font.cpp

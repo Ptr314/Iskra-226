@@ -59,6 +59,42 @@ void koi8_to_utf8(const uint8_t * data, unsigned len, std::string & out)
     }
 }
 
+bool utf8_to_koi8(const std::string & in, std::string & out)
+{
+    out.clear();
+    out.reserve(in.size());
+    bool ok = true;
+
+    for (std::size_t i = 0; i < in.size(); ) {
+        const unsigned char c = static_cast<unsigned char>(in[i]);
+        uint32_t u;
+        unsigned extra;
+
+        if (c < 0x80)        { u = c;          extra = 0; }
+        else if (c < 0xE0)   { u = c & 0x1F;   extra = 1; }
+        else if (c < 0xF0)   { u = c & 0x0F;   extra = 2; }
+        else                 { u = c & 0x07;   extra = 3; }
+
+        if (i + extra >= in.size() + 1) { out += '?'; ok = false; break; }
+        ++i;
+        for (unsigned k = 0; k < extra; ++k) {
+            u = (u << 6) | (static_cast<unsigned char>(in[i]) & 0x3F);
+            ++i;
+        }
+
+        if (u < 0x80) { out += static_cast<char>(u); continue; }
+        if (u == 0x00A4) { out += static_cast<char>(0x24); continue; }   // ¤
+
+        unsigned code = 0;
+        for (unsigned k = 0; k < 128; ++k)
+            if (UPPER[k] == u) { code = 0x80 + k; break; }
+
+        if (code) out += static_cast<char>(code);
+        else { out += '?'; ok = false; }
+    }
+    return ok;
+}
+
 std::string koi8_to_utf8(const uint8_t * data, unsigned len)
 {
     std::string s;
