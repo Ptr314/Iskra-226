@@ -217,6 +217,25 @@ int run_program(const iskra::Program & prog, char ** input, int inputs)
     return 0;
 }
 
+// Запуск из файла, снятого с диска раньше: так гоняется корпус.
+int cmd_run_file(const char * path, char ** input, int inputs)
+{
+    std::string raw;
+    if (!read_file_bytes(path, raw)) {
+        std::printf("не удалось открыть %s\n", path);
+        return 1;
+    }
+    const std::vector<uint8_t> data(raw.begin(), raw.end());
+
+    iskra::Program prog;
+    std::string error;
+    if (!iskra::parse_tokenized(data, prog, error)) {
+        std::printf("разбор: %s\n", error.c_str());
+        return 1;
+    }
+    return run_program(prog, input, inputs);
+}
+
 int cmd_run(const char * path, const char * name, char ** input, int inputs)
 {
     iskra::DiskImage img;
@@ -301,6 +320,7 @@ int main(int argc, char ** argv)
     if (cmd == "--cat" && argc > 3) return cmd_cat(argv[2], argv[3]);
     if (cmd == "--detok" && argc > 2) return cmd_detok(argv[2]);
     if (cmd == "--run" && argc > 3) return cmd_run(argv[2], argv[3], argv + 4, argc - 4);
+    if (cmd == "--run-file" && argc > 2) return cmd_run_file(argv[2], argv + 3, argc - 3);
     if (cmd == "--run-text" && argc > 2) return cmd_run_text(argv[2], argv + 3, argc - 3);
 #endif
 

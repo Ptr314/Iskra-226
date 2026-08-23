@@ -21,7 +21,7 @@ bool ExprParser::peek(Tok & t, bool operand_expected)
 {
     if (failed()) return false;
     if (has_pending_) {
-        if (pending_operand_ != operand_expected) {
+        if (pending_operand_ != operand_expected && src_.state_sensitive()) {
             fail("внутренняя ошибка разбора: смена состояния при заглядывании");
             return false;
         }
@@ -53,6 +53,48 @@ bool ExprParser::take(Tok & t, bool operand_expected)
 bool ExprParser::parse(Expr & out)
 {
     return parse_compare(out);
+}
+
+// Список индексов массива. Открывающей скобки в токенизированной форме нет,
+// в текстовой её уже съел лексер; закрывается в обоих случаях RPAR.
+bool ExprParser::parse_indices(Expr & out, const Tok & name)
+{
+    out = Expr();
+    out.kind = EX_ELEM;
+    out.var = name.var;
+
+    for (;;) {
+        Expr idx;
+        if (!parse_compare(idx)) return false;
+        out.a.push_back(idx);
+
+        Tok t;
+        if (!peek(t, false)) return false;
+        if (t.t == Tok::COMMA) { consume(); continue; }
+        if (t.t == Tok::RPAR) { consume(); break; }
+        fail("список индексов не закрыт");
+        return false;
+    }
+    if (out.a.size() > 2) { fail("массивов больше двух измерений не бывает"); return false; }
+    return true;
+}
+
+bool ExprParser::parse_lvalue(Expr & out)
+{
+    Tok t;
+    if (!take(t, true)) return false;
+    if (t.t != Tok::VAR) {
+        fail("непонятная цель присваивания; символьные переменные и STR( "
+             "ещё не поддержаны");
+        return false;
+    }
+
+    if (t.indexed) return parse_indices(out, t);
+
+    out = Expr();
+    out.kind = EX_VAR;
+    out.var = t.var;
+    return true;
 }
 
 bool ExprParser::parse_compare(Expr & out)
@@ -228,6 +270,7 @@ bool ExprParser::parse_primary(Expr & out)
             return true;
 
         case Tok::VAR:
+            if (t.indexed) return parse_indices(out, t);
             out.kind = EX_VAR;
             out.var = t.var;
             return true;
@@ -254,6 +297,7 @@ bool ExprParser::parse_primary(Expr & out)
         case Tok::FN_LOG: return parse_call(out, EX_LOG, 1, 1);
         case Tok::FN_EXP: return parse_call(out, EX_EXP, 1, 1);
         case Tok::FN_AT:  return parse_call(out, EX_AT, 2, 3);
+        case Tok::FN_TAB: return parse_call(out, EX_TAB, 1, 1);
 
         case Tok::UNKNOWN:
             fail("не поддержано: " + t.s);

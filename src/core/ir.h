@@ -20,6 +20,7 @@ enum ExprKind {
     EX_NUM,          // числовая константа
     EX_STR,          // строковый литерал в КОИ-8
     EX_VAR,          // переменная по индексу
+    EX_ELEM,         // элемент массива: var — индекс массива, a — индексы
     EX_PI,
 
     EX_NEG,          // унарный минус
@@ -30,7 +31,24 @@ enum ExprKind {
     EX_ABS, EX_INT, EX_SGN, EX_SQR, EX_LOG, EX_EXP,
 
     EX_HEX,          // HEX(...) — байты лежат в str
-    EX_AT            // AT(строка, позиция [, сколько стереть])
+    EX_AT,           // AT(строка, позиция [, сколько стереть])
+    EX_TAB           // TAB(позиция), позиции нумеруются с нуля
+};
+
+// Что известно о переменной. В оттранслированной форме — из таблиц
+// переменных (docs/format.md, разд. 6), в текстовой — из DIM и из того,
+// с индексом ли к ней обращаются.
+struct VarInfo {
+    VarInfo() : known(false), is_string(false), is_integer(false),
+                is_array(false), dim1(0), dim2(0), str_len(0) {}
+
+    bool known;
+    bool is_string;
+    bool is_integer;
+    bool is_array;
+    unsigned dim1;       // число элементов; для двумерного — первая размерность
+    unsigned dim2;       // 0 у одномерного
+    unsigned str_len;
 };
 
 struct Expr {
@@ -56,32 +74,50 @@ struct PrintItem {
     PrintSep sep;
 };
 
+// Одна переменная в операторе DIM. В оттранслированной форме размеры
+// берутся из таблиц ещё при разборе, поэтому оба представления дают
+// одинаковый оператор.
+struct DimEntry {
+    DimEntry() : var(0), dim1(0), dim2(0), str_len(0) {}
+    unsigned var;
+    unsigned dim1;
+    unsigned dim2;
+    unsigned str_len;
+};
+
 enum StmtKind {
     ST_PRINT,
+    ST_DIM,
     ST_INPUT,
     ST_LET,
     ST_FOR,
     ST_NEXT,
     ST_IF,
     ST_GOTO,
+    ST_GOSUB,
+    ST_RETURN,
+    ST_ON,
     ST_STOP,
     ST_END,
     ST_REM
 };
 
 struct Stmt {
-    Stmt() : kind(ST_REM), var(0), line(0), has_prompt(false), has_step(false),
-             newline(true) {}
+    Stmt() : kind(ST_REM), var(0), line(0), is_gosub(false), has_prompt(false),
+             has_step(false), newline(true) {}
 
     StmtKind kind;
 
     std::vector<PrintItem> items;    // PRINT
-    std::vector<unsigned> targets;   // LET — переменные слева; INPUT — приёмники
+    std::vector<DimEntry> dims;      // DIM
+    std::vector<Expr> targets;       // LET — цели слева; INPUT — приёмники
     Expr e;                          // LET — правая часть; IF — условие; FOR — начало
     Expr limit;                      // FOR — TO
     Expr step;                       // FOR — STEP
     unsigned var;                    // FOR, NEXT
-    unsigned line;                   // GOTO, IF … THEN <строка>
+    unsigned line;                   // GOTO, GOSUB, IF … THEN <строка>
+    std::vector<unsigned> lines;     // ON … GOTO/GOSUB — список переходов
+    bool is_gosub;                   // ON: переход с возвратом
     std::string prompt;              // INPUT — подсказка в КОИ-8
     bool has_prompt;
     bool has_step;
@@ -96,6 +132,7 @@ struct Line {
 
 struct Program {
     std::vector<Line> lines;
+    std::vector<VarInfo> vars;
 
     // Индекс строки с данным номером; false, если такой нет.
     bool find(unsigned number, unsigned & index) const;

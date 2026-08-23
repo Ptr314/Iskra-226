@@ -37,7 +37,9 @@ const Keyword KEYWORDS[] = {
     { "STEP",   Tok::KW_STEP,  false },
     { "THEN",   Tok::KW_THEN,  false },
     { "NEXT",   Tok::UNKNOWN,  false },
-    { "GOTO",   Tok::UNKNOWN,  false },
+    { "GOSUB",  Tok::KW_GOSUB, false },
+    { "RETURN", Tok::UNKNOWN,  false },
+    { "GOTO",   Tok::KW_GOTO,  false },
     { "STOP",   Tok::UNKNOWN,  false },
     { "HEX",    Tok::FN_HEX,   true  },
     { "SQR",    Tok::FN_SQR,   true  },
@@ -47,6 +49,9 @@ const Keyword KEYWORDS[] = {
     { "LOG",    Tok::FN_LOG,   true  },
     { "EXP",    Tok::FN_EXP,   true  },
     { "REM",    Tok::UNKNOWN,  false },
+    { "DIM",    Tok::UNKNOWN,  false },
+    { "COM",    Tok::UNKNOWN,  false },
+    { "TAB",    Tok::FN_TAB,   true  },
     { "END",    Tok::UNKNOWN,  false },
     { "FOR",    Tok::UNKNOWN,  false },
     { "LET",    Tok::UNKNOWN,  false },
@@ -198,6 +203,13 @@ bool TextLexer::next(Tok & t, bool /*operand_expected*/)
         t.t = Tok::VAR;
         t.var = names_.index(name);
         t.s = name;
+
+        // В тексте индексация видна по скобке; скобку съедаем, чтобы разбор
+        // списка индексов шёл так же, как в токенах, где её нет вовсе.
+        const unsigned save = p_;
+        skip_spaces();
+        if (p_ < end_ && s_[p_] == '(') { ++p_; t.indexed = true; }
+        else p_ = save;
         return true;
     }
 
@@ -273,7 +285,8 @@ public:
 private:
     bool parse_stmt(Stmt & s);
     bool print_items(Stmt & s, ExprParser & ex);
-    bool var_list(std::vector<unsigned> & out, ExprParser & ex);
+    bool var_list(std::vector<Expr> & out, ExprParser & ex);
+    bool dim_list(Stmt & s, ExprParser & ex);
     bool err(const std::string & m) { if (error_.empty()) error_ = m; return false; }
 
     TextLexer lex_;
@@ -307,16 +320,68 @@ bool LineParser::print_items(Stmt & s, ExprParser & ex)
     return true;
 }
 
-bool LineParser::var_list(std::vector<unsigned> & out, ExprParser & ex)
+bool LineParser::var_list(std::vector<Expr> & out, ExprParser & ex)
 {
+    for (;;) {
+        Expr target;
+        if (!ex.parse_lvalue(target)) return err(ex.error());
+        out.push_back(target);
+
+        Tok t;
+        if (!ex.peek(t, false)) return err(ex.error());
+        if (t.t != Tok::COMMA) break;
+        ex.consume();
+    }
+    return true;
+}
+
+// DIM R(6),Q(6),K(12) — в тексте размеры записаны явно. Строковая длина
+// пишется без скобок: DIM A¤2.
+bool LineParser::dim_list(Stmt & s, ExprParser & ex)
+{
+    s.kind = ST_DIM;
     for (;;) {
         Tok t;
         if (!ex.take(t, true)) return err(ex.error());
-        if (t.t != Tok::VAR) return err("ожидалась переменная");
-        out.push_back(t.var);
+        if (t.t != Tok::VAR) return err("DIM: ожидалась переменная");
 
-        if (!ex.peek(t, false)) return err(ex.error());
-        if (t.t != Tok::COMMA) break;
+        DimEntry d;
+        d.var = t.var;
+        const bool is_string = !t.s.empty() && t.s[t.s.size() - 1] == '$';
+
+        if (t.indexed) {
+            // Скобку лексер уже съел; дальше размерности через запятую.
+            for (;;) {
+                Tok n;
+                if (!ex.take(n, true)) return err(ex.error());
+                if (n.t != Tok::NUM) return err("DIM: размерность не число");
+                long v = 0;
+                n.num.to_int(v);
+                if (d.dim1 == 0) d.dim1 = static_cast<unsigned>(v);
+                else d.dim2 = static_cast<unsigned>(v);
+
+                if (!ex.take(n, false)) return err(ex.error());
+                if (n.t == Tok::RPAR) break;
+                if (n.t != Tok::COMMA) return err("DIM: список размерностей не закрыт");
+            }
+        }
+
+        // За размерностями символьного массива может стоять длина строки.
+        if (is_string) {
+            Tok n;
+            if (!ex.peek(n, true)) return err(ex.error());
+            if (n.t == Tok::NUM) {
+                ex.consume();
+                long v = 0;
+                n.num.to_int(v);
+                d.str_len = static_cast<unsigned>(v);
+            }
+        }
+        s.dims.push_back(d);
+
+        Tok sep;
+        if (!ex.peek(sep, false)) return err(ex.error());
+        if (sep.t != Tok::COMMA) break;
         ex.consume();
     }
     return true;
@@ -330,6 +395,12 @@ bool LineParser::parse_stmt(Stmt & s)
         s.kind = ST_REM;
         lex_.set_pos(lex_.end());
         return true;
+    }
+    if (lex_.take_word("DIM") || lex_.take_word("COM")) {
+        // COM объявляет то же самое, только в общей области: для исполнения
+        // разница несущественна.
+        ExprParser ex(lex_);
+        return dim_list(s, ex);
     }
     if (lex_.take_word("PRINT")) {
         ExprParser ex(lex_);
@@ -349,16 +420,40 @@ bool LineParser::parse_stmt(Stmt & s)
         }
         return var_list(s.targets, ex);
     }
-    if (lex_.take_word("GOTO")) {
-        lex_.skip_spaces();
+    if (lex_.take_word("ON")) {
+        s.kind = ST_ON;
         ExprParser ex(lex_);
+        if (!ex.parse(s.e)) return err(ex.error());
         Tok t;
-        if (!ex.take(t, true) || t.t != Tok::NUM) return err("GOTO без номера строки");
-        long v = 0;
-        t.num.to_int(v);
-        s.kind = ST_GOTO;
-        s.line = static_cast<unsigned>(v);
+        if (!ex.take(t, false)) return err(ex.error());
+        if (t.t == Tok::KW_GOSUB) s.is_gosub = true;
+        else if (t.t != Tok::KW_GOTO) return err("ON без GOTO или GOSUB");
+        for (;;) {
+            if (!ex.take(t, true) || t.t != Tok::NUM) return err("ON: ожидался номер строки");
+            long v = 0;
+            t.num.to_int(v);
+            s.lines.push_back(static_cast<unsigned>(v));
+            if (!ex.peek(t, false)) return err(ex.error());
+            if (t.t != Tok::COMMA) break;
+            ex.consume();
+        }
         return true;
+    }
+    if (lex_.take_word("RETURN")) { s.kind = ST_RETURN; return true; }
+    {
+        const bool gosub = lex_.take_word("GOSUB");
+        if (gosub || lex_.take_word("GOTO")) {
+            s.kind = gosub ? ST_GOSUB : ST_GOTO;
+            lex_.skip_spaces();
+            ExprParser ex(lex_);
+            Tok t;
+            if (!ex.take(t, true) || t.t != Tok::NUM)
+                return err("переход без номера строки");
+            long v = 0;
+            t.num.to_int(v);
+            s.line = static_cast<unsigned>(v);
+            return true;
+        }
     }
     if (lex_.take_word("IF")) {
         s.kind = ST_IF;

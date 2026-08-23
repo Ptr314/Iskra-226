@@ -18,6 +18,11 @@ namespace iskra {
 bool parse_tokenized(const std::vector<uint8_t> & file, Program & prog,
                      std::string & error);
 
+// Только таблицы переменных, без разбора операторов. Нужно, чтобы проверять
+// чтение таблиц отдельно от полноты набора глаголов.
+bool parse_tokenized_vars(const std::vector<uint8_t> & file,
+                          std::vector<VarInfo> & vars, std::string & error);
+
 // То же, но из уже собранного потока (без заголовочного сектора и служебных
 // байтов) — удобно для проверок.
 bool parse_tokenized_stream(const std::vector<uint8_t> & code, Program & prog,

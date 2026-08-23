@@ -63,10 +63,15 @@ bool is_record_start(const std::vector<uint8_t> & code, unsigned p)
 class ByteSource : public TokenSource
 {
 public:
-    ByteSource(const uint8_t * p, unsigned len)
-        : p_(p), n_(len), i_(0) {}
+    ByteSource(const uint8_t * p, unsigned len, const std::vector<VarInfo> * vars)
+        : p_(p), n_(len), i_(0), vars_(vars), list_context_(false) {}
 
     bool next(Tok & t, bool operand_expected);
+    bool state_sensitive() const { return true; }
+
+    // В операторах, операнды которых — список приёмников (INPUT, READ …),
+    // DE всегда запятая, а не однобайтовый литерал.
+    void set_list_context() { list_context_ = true; }
 
     unsigned pos() const { return i_; }
     bool at_end() const { return i_ >= n_; }
@@ -80,6 +85,8 @@ private:
     const uint8_t * p_;
     unsigned n_;
     unsigned i_;
+    const std::vector<VarInfo> * vars_;
+    bool list_context_;
     std::string error_;
 };
 
@@ -137,12 +144,17 @@ bool ByteSource::next(Tok & t, bool operand_expected)
 
     if (c <= VAR_MAX) {
         if (!operand_expected) {
-            // Ссылка на переменную там, где ждали операцию, — это список
-            // индексов массива. Массивы ещё не реализованы.
-            return fail("массивы ещё не реализованы (индекс после переменной)");
+            // Переменная там, где ждали операцию: список индексов у
+            // переменной, не помеченной массивом в таблицах. Так выглядят
+            // символьные массивы — их отличить от строки-скаляра нечем.
+            return fail("похоже на индекс у символьной переменной — они ещё "
+                        "не поддержаны");
         }
         t.t = Tok::VAR;
         t.var = c;
+        // Скобки у индекса в потоке нет: список индексов узнаётся только по
+        // тому, что переменная объявлена массивом (таблицы 1 и 2/3).
+        t.indexed = vars_ && c < vars_->size() && (*vars_)[c].is_array;
         return true;
     }
 
@@ -150,6 +162,7 @@ bool ByteSource::next(Tok & t, bool operand_expected)
     if (operand_expected) {
         switch (c) {
             case 0xD5: t.t = Tok::FN_AT; return true;
+            case 0xDF: t.t = Tok::FN_TAB; return true;
             case 0xE9: t.t = Tok::MINUS; return true;   // унарный минус
             case 0xE5: return number_e5(t, false);
             case 0xE6: return number_e5(t, true);
@@ -170,6 +183,7 @@ bool ByteSource::next(Tok & t, bool operand_expected)
                 return true;
             }
             case 0xDE: {
+                if (list_context_) { t.t = Tok::COMMA; return true; }
                 // Сырой байт: байтовые константы и адреса устройств.
                 if (i_ >= n_) return fail("литерал оборвался");
                 t.t = Tok::NUM;
@@ -189,6 +203,8 @@ bool ByteSource::next(Tok & t, bool operand_expected)
             case 0xE0: t.t = Tok::CARET; return true;
             case 0xDC: t.t = Tok::SLASH; return true;
             case 0xDF: t.t = Tok::STAR; return true;
+            case 0xCC: t.t = Tok::KW_GOSUB; return true;   // внутри ON
+            case 0xCD: t.t = Tok::KW_GOTO;  return true;   // внутри ON
             case 0xD3: {
                 if (i_ + 2 > n_) return fail("THEN без номера строки");
                 const unsigned ln = bcd2(p_[i_]) * 100 + bcd2(p_[i_ + 1]);
@@ -254,8 +270,9 @@ bool ByteSource::next(Tok & t, bool operand_expected)
 class StmtParser
 {
 public:
-    StmtParser(const uint8_t * ops, unsigned len)
-        : src_(ops, len), ex_(src_), ops_(ops), len_(len), raw_(0) {}
+    StmtParser(const uint8_t * ops, unsigned len, const std::vector<VarInfo> * vars)
+        : src_(ops, len, vars), ex_(src_), ops_(ops), len_(len), raw_(0),
+          vars_(vars) {}
 
     bool parse(uint8_t verb, Stmt & s, std::string & error);
 
@@ -269,6 +286,7 @@ private:
     const uint8_t * ops_;
     unsigned len_;
     unsigned raw_;                 // позиция при побайтовом чтении
+    const std::vector<VarInfo> * vars_;
     std::string error_;
 };
 
@@ -317,13 +335,42 @@ bool StmtParser::parse(uint8_t verb, Stmt & s, std::string & error)
             ok = print_items(s);
             break;
 
-        case 0x21: {                                // GOTO
+        case 0x21:                                  // GOTO
+        case 0x22: {                                // GOSUB
             if (len_ != 2 || !bcd_ok(ops_[0]) || !bcd_ok(ops_[1]))
-                ok = err("GOTO без номера строки");
+                ok = err("переход без номера строки");
             else {
-                s.kind = ST_GOTO;
+                s.kind = (verb == 0x21) ? ST_GOTO : ST_GOSUB;
                 s.line = bcd2(ops_[0]) * 100 + bcd2(ops_[1]);
             }
+            break;
+        }
+
+        case 0x5E:                                  // RETURN
+            s.kind = ST_RETURN;
+            break;
+
+        case 0x26: {                                // ON <выражение> GOTO/GOSUB
+            s.kind = ST_ON;
+            if (!ex_.parse(s.e)) { ok = err(ex_.error()); break; }
+            Tok t;
+            if (!ex_.take(t, false)) { ok = err(ex_.error()); break; }
+            if (t.t == Tok::KW_GOSUB) s.is_gosub = true;
+            else if (t.t != Tok::KW_GOTO) { ok = err("ON без GOTO или GOSUB"); break; }
+
+            // Дальше номера строк идут сырыми парами BCD, без разделителей.
+            unsigned q = len_ - (len_ - src_.pos());
+            q = src_.pos();
+            while (q + 2 <= len_) {
+                if (!bcd_ok(ops_[q]) || !bcd_ok(ops_[q + 1])) {
+                    ok = err("ON: номер строки не BCD");
+                    break;
+                }
+                s.lines.push_back(bcd2(ops_[q]) * 100 + bcd2(ops_[q + 1]));
+                q += 2;
+            }
+            if (ok && q != len_) ok = err("ON: лишний байт в списке переходов");
+            if (ok && s.lines.empty()) ok = err("ON без номеров строк");
             break;
         }
 
@@ -332,6 +379,7 @@ bool StmtParser::parse(uint8_t verb, Stmt & s, std::string & error)
             break;
 
         case 0x56:                                  // REM — операнды это текст
+        case 0x3F:                                  // % — краткий REM
             s.kind = ST_REM;
             break;
 
@@ -340,19 +388,43 @@ bool StmtParser::parse(uint8_t verb, Stmt & s, std::string & error)
             break;
 
         case 0x36: {                                // присваивание
-            // Цели идут вплотную, без разделителей, до первого '='.
-            while (raw_ < len_ && ops_[raw_] <= VAR_MAX) s.targets.push_back(ops_[raw_++]);
-            if (s.targets.empty()) { ok = err("присваивание без переменной слева"); break; }
-            if (raw_ >= len_ || ops_[raw_] != 0xD9) { ok = err("присваивание без ="); break; }
-            ++raw_;
-            {
-                ByteSource rhs(ops_ + raw_, len_ - raw_);
-                ExprParser p(rhs);
-                s.kind = ST_LET;
-                if (!p.parse(s.e)) { ok = err(p.error()); break; }
+            // Цели идут вплотную, без разделителей, до первого '='. Целью
+            // может быть и элемент массива: V01(V0A),V02(V0A)=0.
+            s.kind = ST_LET;
+            for (;;) {
                 Tok t;
-                if (!p.peek(t, false) || t.t != Tok::END) { ok = err("лишние байты в присваивании"); break; }
+                if (!ex_.peek(t, true)) { ok = err(ex_.error()); break; }
+                if (t.t == Tok::EQ) { ex_.consume(); break; }
+                Expr target;
+                if (!ex_.parse_lvalue(target)) { ok = err(ex_.error()); break; }
+                s.targets.push_back(target);
             }
+            if (!ok) break;
+            if (s.targets.empty()) { ok = err("присваивание без переменной слева"); break; }
+            if (!ex_.parse(s.e)) { ok = err(ex_.error()); break; }
+            ok = expect_end("присваивания");
+            break;
+        }
+
+        case 0x4E:                                  // COM — то же, что DIM,
+        case 0x46: {                                // но в общей области
+            // В потоке только индексы переменных: размеры лежат в таблицах
+            // (docs/format.md, разд. 6) и уже разобраны.
+            s.kind = ST_DIM;
+            while (raw_ < len_) {
+                const uint8_t v = ops_[raw_++];
+                if (v == 0xDE) continue;            // запятая, если вдруг есть
+                if (v > VAR_MAX) { ok = err("DIM: непонятный операнд " + hex2(v)); break; }
+                DimEntry d;
+                d.var = v;
+                if (vars_ && v < vars_->size()) {
+                    d.dim1 = (*vars_)[v].dim1;
+                    d.dim2 = (*vars_)[v].dim2;
+                    d.str_len = (*vars_)[v].str_len;
+                }
+                s.dims.push_back(d);
+            }
+            if (ok && s.dims.empty()) ok = err("DIM без переменных");
             break;
         }
 
@@ -367,11 +439,22 @@ bool StmtParser::parse(uint8_t verb, Stmt & s, std::string & error)
                 s.has_prompt = true;
                 raw_ += n;
             }
-            // Запятая перед первым приёмником в потоке не кодируется.
-            while (raw_ < len_) {
-                if (ops_[raw_] == 0xDE) { ++raw_; continue; }
-                if (ops_[raw_] > VAR_MAX) { ok = err("INPUT: непонятный приёмник " + hex2(ops_[raw_])); break; }
-                s.targets.push_back(ops_[raw_++]);
+            // Запятая перед первым приёмником в потоке не кодируется;
+            // дальше приёмники разделяются DE. Приёмником может быть
+            // элемент массива: INPUT V00(V0B).
+            {
+                ByteSource rest(ops_ + raw_, len_ - raw_, vars_);
+                rest.set_list_context();
+                ExprParser p(rest);
+                for (;;) {
+                    Tok t;
+                    if (!p.peek(t, true)) { ok = err(p.error()); break; }
+                    if (t.t == Tok::END) break;
+                    if (t.t == Tok::COMMA) { p.consume(); continue; }
+                    Expr target;
+                    if (!p.parse_lvalue(target)) { ok = err(p.error()); break; }
+                    s.targets.push_back(target);
+                }
             }
             if (ok && s.targets.empty()) ok = err("INPUT без приёмника");
             break;
@@ -383,7 +466,7 @@ bool StmtParser::parse(uint8_t verb, Stmt & s, std::string & error)
             s.kind = ST_FOR;
             s.var = ops_[0];
             {
-                ByteSource rest(ops_ + 1, len_ - 1);
+                ByteSource rest(ops_ + 1, len_ - 1, vars_);
                 ExprParser p(rest);
                 if (!p.parse(s.e)) { ok = err(p.error()); break; }
 
@@ -432,8 +515,75 @@ bool StmtParser::parse(uint8_t verb, Stmt & s, std::string & error)
 }
 
 // ---------------------------------------------------------------------------
+// Таблицы переменных (docs/format.md, разд. 6)
+// ---------------------------------------------------------------------------
 
-bool parse_body(const uint8_t * body, unsigned len, Line & line, std::string & error)
+// Таблицы 2 и 3 — один непрерывный массив дескрипторов по 4 байта, идущих
+// в порядке убывания индекса переменной. Таблица 1 хранит размеры тех
+// переменных, у которых установлен бит 0 флага, и сопоставляется с ними
+// порядково.
+void build_vars(const std::vector<uint8_t> & code, unsigned L1, unsigned L2,
+                unsigned L3, std::vector<VarInfo> & vars)
+{
+    const unsigned N = L2 / 4 + L3 / 4;
+    vars.assign(N, VarInfo());
+    if (!N) return;
+
+    const unsigned t1 = 6;
+    const unsigned t23 = 6 + L1;
+    if (t23 + N * 4 > code.size()) return;
+
+    for (unsigned pos = 0; pos < N; ++pos) {
+        const uint8_t flag = code[t23 + pos * 4 + 2];
+        VarInfo & v = vars[N - 1 - pos];
+        v.known = true;
+        v.is_string = (flag & 0x20) != 0;
+        v.is_integer = (flag & 0x30) == 0;
+    }
+
+    // Порядковое соответствие «запись таблицы 1 → переменная с битом 0».
+    unsigned k = 0;
+    for (unsigned pos = 0; pos < N; ++pos) {
+        if (!(code[t23 + pos * 4 + 2] & 1)) continue;
+
+        const unsigned off = t1 + k * 8;
+        if (off + 8 > t23) break;                  // таблица 1 кончилась
+        ++k;
+
+        VarInfo & v = vars[N - 1 - pos];
+        const unsigned field = code[off + 2] | (code[off + 3] << 8);
+        const unsigned nelem = code[off + 4] | (code[off + 5] << 8);
+        const unsigned sizecode = code[off + 6] | (code[off + 7] << 8);
+
+        if ((field >> 8) == 0x08) {
+            // Одномерный массив либо строка с явной длиной.
+            v.dim1 = nelem;
+            v.dim2 = 0;
+        } else if (nelem == 10 && (field == 295 || field == 1881)) {
+            // Неявно объявленный массив: размерность по умолчанию.
+            v.dim1 = 10;
+            v.dim2 = 0;
+        } else {
+            v.dim1 = nelem;
+            v.dim2 = field;
+        }
+
+        if (v.is_string) {
+            // Размерный код = 2 x размер элемента, младший бит — «длина
+            // задана явно». Отличить строку-скаляр от массива строк без
+            // адресов нельзя, но символьных переменных мы пока и не умеем.
+            v.str_len = sizecode >> 1;
+        } else {
+            // Числовые скаляры дескриптора не получают: раз он есть — массив.
+            v.is_array = true;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+
+bool parse_body(const uint8_t * body, unsigned len, Line & line,
+                const std::vector<VarInfo> * vars, std::string & error)
 {
     unsigned p = 0;
     while (p < len) {
@@ -443,7 +593,7 @@ bool parse_body(const uint8_t * body, unsigned len, Line & line, std::string & e
         if (p + 2 + oplen > len) { error = "длина операндов выходит за строку"; return false; }
 
         Stmt s;
-        StmtParser sp(body + p + 2, oplen);
+        StmtParser sp(body + p + 2, oplen, vars);
         if (!sp.parse(verb, s, error)) return false;
         line.stmts.push_back(s);
 
@@ -466,6 +616,10 @@ bool parse_tokenized_stream(const std::vector<uint8_t> & code, Program & prog,
     unsigned p = 6 + L1 + L2 + L3;
     if (p > code.size()) { error = "таблицы переменных не помещаются в поток"; return false; }
 
+    // Размеры массивов и типы переменных известны только отсюда: в самих
+    // операторах DIM в потоке лежат одни индексы.
+    build_vars(code, L1, L2, L3, prog.vars);
+
     // У части файлов между таблицами и первой записью лежат четыре байта
     // неизвестного назначения; отличаем по корректности самой записи.
     if (!is_record_start(code, p) && is_record_start(code, p + 4)) p += 4;
@@ -486,7 +640,7 @@ bool parse_tokenized_stream(const std::vector<uint8_t> & code, Program & prog,
         if (end > code.size()) { error = "запись строки выходит за поток"; return false; }
 
         std::string e;
-        if (!parse_body(&code[p + 3], len - 1, line, e)) {
+        if (!parse_body(&code[p + 3], len - 1, line, &prog.vars, e)) {
             char b[32];
             std::sprintf(b, "%u", line.number);
             error = std::string("строка ") + b + ": " + e;
@@ -502,8 +656,12 @@ bool parse_tokenized_stream(const std::vector<uint8_t> & code, Program & prog,
     return true;
 }
 
-bool parse_tokenized(const std::vector<uint8_t> & file, Program & prog,
-                     std::string & error)
+namespace {
+
+// Склейка секторов: по 254 байта данных, хвостовые нули включительно —
+// правило выравнивания записей опирается на границы кусков.
+bool collect_stream(const std::vector<uint8_t> & file, std::vector<uint8_t> & code,
+                    std::string & error)
 {
     if (file.size() < 512) { error = "файл слишком короток"; return false; }
     if (file[0] != 1) { error = "не программа BASIC"; return false; }
@@ -518,9 +676,6 @@ bool parse_tokenized(const std::vector<uint8_t> & file, Program & prog,
         return false;
     }
 
-    // Склейка секторов: по 254 байта данных, хвостовые нули включительно —
-    // правило выравнивания записей опирается на границы кусков.
-    std::vector<uint8_t> code;
     unsigned p = 256;
     while (p + 256 <= file.size()) {
         if (file[p] == 0x1C) break;             // control record
@@ -528,8 +683,29 @@ bool parse_tokenized(const std::vector<uint8_t> & file, Program & prog,
         code.insert(code.end(), file.begin() + p + 2, file.begin() + p + 256);
         p += 256;
     }
+    return true;
+}
 
+} // namespace
+
+bool parse_tokenized(const std::vector<uint8_t> & file, Program & prog,
+                     std::string & error)
+{
+    std::vector<uint8_t> code;
+    if (!collect_stream(file, code, error)) return false;
     return parse_tokenized_stream(code, prog, error);
+}
+
+bool parse_tokenized_vars(const std::vector<uint8_t> & file,
+                          std::vector<VarInfo> & vars, std::string & error)
+{
+    std::vector<uint8_t> code;
+    if (!collect_stream(file, code, error)) return false;
+    if (code.size() < 8) { error = "поток слишком короток"; return false; }
+
+    build_vars(code, (code[0] << 8) | code[1], (code[2] << 8) | code[3],
+               (code[4] << 8) | code[5], vars);
+    return true;
 }
 
 } // namespace iskra

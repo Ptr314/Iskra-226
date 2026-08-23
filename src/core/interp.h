@@ -53,6 +53,10 @@ private:
     bool eval_num(const Expr & e, Number & n);
 
     bool do_print(const Stmt & s);
+    bool do_dim(const Stmt & s);
+    // Ячейка переменной или элемента массива — и для чтения, и для записи.
+    bool slot(const Expr & e, Number *& out);
+    bool array_alloc(unsigned var, unsigned dim1, unsigned dim2);
     bool do_input(const Stmt & s);
     bool do_for(const Stmt & s);
     bool do_next(const Stmt & s);
@@ -66,8 +70,17 @@ private:
 
     const Program & prog_;
     Host & host_;
+    struct Array {
+        Array() : dim1(0), dim2(0) {}
+        unsigned dim1;
+        unsigned dim2;              // 0 у одномерного
+        std::vector<Number> cells;
+    };
+
     std::map<unsigned, Number> vars_;
+    std::map<unsigned, Array> arrays_;
     std::vector<Frame> loops_;
+    std::vector<std::pair<unsigned, unsigned> > calls_;   // GOSUB: куда вернуться
 
     unsigned li_;           // индекс текущей строки
     unsigned si_;           // индекс текущего оператора

@@ -80,6 +80,82 @@ void Interp::emit_zone()
     s.at(s.row(), next);
 }
 
+// Массивы «Искры» индексируются с единицы: «А(5) означает 5-й элемент
+// массива А()», а DIM A(120) отводит 120 элементов (руководство, разд. 7.1).
+bool Interp::array_alloc(unsigned var, unsigned dim1, unsigned dim2)
+{
+    if (dim1 == 0) dim1 = 10;                  // размерность по умолчанию
+    const unsigned long total = static_cast<unsigned long>(dim1) *
+                                (dim2 ? dim2 : 1);
+    if (total > 1000000UL) return fail("слишком большой массив");
+
+    Array & a = arrays_[var];
+    a.dim1 = dim1;
+    a.dim2 = dim2;
+    a.cells.assign(static_cast<std::size_t>(total), Number());
+    return true;
+}
+
+bool Interp::slot(const Expr & e, Number *& out)
+{
+    if (e.kind == EX_VAR) {
+        out = &vars_[e.var];
+        return true;
+    }
+    if (e.kind != EX_ELEM) return fail("сюда нельзя присвоить значение");
+
+    std::map<unsigned, Array>::iterator it = arrays_.find(e.var);
+    if (it == arrays_.end()) {
+        // Массив, к которому обратились без DIM: размеры берём из таблиц
+        // переменных, если они есть, иначе десять элементов.
+        unsigned d1 = 0, d2 = 0;
+        if (e.var < prog_.vars.size()) {
+            d1 = prog_.vars[e.var].dim1;
+            d2 = prog_.vars[e.var].dim2;
+        }
+        if (!array_alloc(e.var, d1, d2)) return false;
+        it = arrays_.find(e.var);
+    }
+    Array & a = it->second;
+
+    // «Если арифметические выражения состоят из целой и дробной частей,
+    // используется только их целая часть» (разд. 7.1).
+    unsigned idx[2] = { 0, 0 };
+    for (unsigned k = 0; k < e.a.size(); ++k) {
+        Number n;
+        if (!eval_num(e.a[k], n)) return false;
+        long v = 0;
+        if (!Number::from_double(std::floor(n.to_double())).to_int(v))
+            return fail("индекс массива не целое число");
+        if (v < 1) return fail("индекс массива меньше единицы");
+        idx[k] = static_cast<unsigned>(v);
+    }
+
+    std::size_t off;
+    if (a.dim2) {
+        if (e.a.size() != 2) return fail("двумерному массиву нужны два индекса");
+        if (idx[0] > a.dim1 || idx[1] > a.dim2) return fail("индекс за границей массива");
+        off = static_cast<std::size_t>(idx[0] - 1) * a.dim2 + (idx[1] - 1);
+    } else {
+        if (e.a.size() != 1) return fail("одномерному массиву нужен один индекс");
+        if (idx[0] > a.dim1) return fail("индекс за границей массива");
+        off = idx[0] - 1;
+    }
+
+    out = &a.cells[off];
+    return true;
+}
+
+bool Interp::do_dim(const Stmt & s)
+{
+    for (unsigned i = 0; i < s.dims.size(); ++i) {
+        const DimEntry & d = s.dims[i];
+        if (d.str_len && !d.dim1) continue;         // объявление длины строки
+        if (!array_alloc(d.var, d.dim1, d.dim2)) return false;
+    }
+    return true;
+}
+
 bool Interp::eval_num(const Expr & e, Number & n)
 {
     Value v;
@@ -110,8 +186,16 @@ bool Interp::eval(const Expr & e, Value & v)
             return true;
         }
 
+        case EX_ELEM: {
+            Number * cell = 0;
+            if (!slot(e, cell)) return false;
+            v.num = *cell;
+            return true;
+        }
+
         case EX_AT:
-            return fail("AT( допустим только в PRINT");
+        case EX_TAB:
+            return fail("AT( и TAB( допустимы только в PRINT");
 
         default: break;
     }
@@ -189,7 +273,18 @@ bool Interp::do_print(const Stmt & s)
     for (unsigned i = 0; i < s.items.size(); ++i) {
         const PrintItem & item = s.items[i];
 
-        if (item.e.kind == EX_AT) {
+        if (item.e.kind == EX_TAB) {
+            // «позиции строки нумеруются с нуля» (разд. 4.4), и курсор
+            // двигается только вправо.
+            Number n;
+            if (!eval_num(item.e.a[0], n)) return false;
+            long v = 0;
+            n.to_int(v);
+            const unsigned col = static_cast<unsigned>(v < 0 ? 0 : v) + 1;
+            if (col > host_.screen().col() && col <= SCREEN_COLS)
+                host_.screen().at(host_.screen().row(), col);
+            last_was_at = false;
+        } else if (item.e.kind == EX_AT) {
             Number r, c;
             if (!eval_num(item.e.a[0], r)) return false;
             if (!eval_num(item.e.a[1], c)) return false;
@@ -261,7 +356,9 @@ bool Interp::do_input(const Stmt & s)
 
         Number n;
         if (!Number::parse(field, n)) return fail("INPUT: не число «" + field + "»");
-        vars_[s.targets[i]] = n;
+        Number * cell = 0;
+        if (!slot(s.targets[i], cell)) return false;
+        *cell = n;
     }
     return true;
 }
@@ -344,12 +441,50 @@ bool Interp::exec(const Stmt & s)
         case ST_LET: {
             Number n;
             if (!eval_num(s.e, n)) return false;
-            for (unsigned i = 0; i < s.targets.size(); ++i) vars_[s.targets[i]] = n;
+            for (unsigned i = 0; i < s.targets.size(); ++i) {
+                Number * cell = 0;
+                if (!slot(s.targets[i], cell)) return false;
+                *cell = n;
+            }
             return true;
         }
 
+        case ST_DIM:
+            return do_dim(s);
+
         case ST_GOTO:
             return jump(s.line);
+
+        case ST_GOSUB:
+            if (calls_.size() > 1000) return fail("слишком глубокая вложенность GOSUB");
+            calls_.push_back(std::make_pair(li_, si_ + 1));
+            return jump(s.line);
+
+        case ST_ON: {
+            // Значение 1 ведёт на первый номер, 2 — на второй и т. д.
+            // Ноль и всё, что за списком, просто передаёт управление дальше.
+            Number n;
+            if (!eval_num(s.e, n)) return false;
+            long v = 0;
+            if (!Number::from_double(std::floor(n.to_double())).to_int(v)) return true;
+            if (v < 1 || static_cast<unsigned long>(v) > s.lines.size()) return true;
+
+            const unsigned target = s.lines[static_cast<unsigned>(v) - 1];
+            if (s.is_gosub) {
+                if (calls_.size() > 1000) return fail("слишком глубокая вложенность GOSUB");
+                calls_.push_back(std::make_pair(li_, si_ + 1));
+            }
+            return jump(target);
+        }
+
+        case ST_RETURN: {
+            if (calls_.empty()) return fail("RETURN без GOSUB");
+            li_ = calls_.back().first;
+            si_ = calls_.back().second;
+            calls_.pop_back();
+            jumped_ = true;
+            return true;
+        }
 
         case ST_IF: {
             Number c;

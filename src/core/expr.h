@@ -23,17 +23,22 @@ struct Tok {
         EQ, NE, LT, LE, GT, GE,
         FN_ABS, FN_INT, FN_SGN, FN_SQR, FN_LOG, FN_EXP,
         FN_HEX,         // строка байт уже разобрана в s
-        FN_AT,
-        KW_TO, KW_STEP, KW_THEN,
+        FN_AT, FN_TAB,
+        KW_TO, KW_STEP, KW_THEN, KW_GOTO, KW_GOSUB,
         UNKNOWN         // распознано, но не поддержано — текст в s
     };
 
-    Tok() : t(END), var(0) {}
+    Tok() : t(END), var(0), indexed(false) {}
 
     Type t;
     Number num;
     std::string s;
     unsigned var;
+
+    // У VAR: за именем идёт список индексов. В тексте признак — открывающая
+    // скобка, в токенах — то, что переменная объявлена массивом: там скобки
+    // у индекса нет вовсе (docs/format.md, разд. 7).
+    bool indexed;
 };
 
 // Источник лексем. Токенизированная форма двузначна: один и тот же байт
@@ -44,6 +49,12 @@ class TokenSource
 public:
     virtual ~TokenSource() {}
     virtual bool next(Tok & t, bool operand_expected) = 0;
+
+    // Зависит ли разбор лексемы от ожидаемого состояния. У токенов да —
+    // и тогда заглядывать вперёд можно только в том состоянии, в каком
+    // лексема потом будет прочитана. Текстовому лексеру состояние
+    // безразлично, и это ограничение к нему не применяется.
+    virtual bool state_sensitive() const { return false; }
 };
 
 // Разбор выражения по приоритетам: сравнения, затем + -, затем * /,
@@ -55,6 +66,9 @@ public:
 
     // Полное выражение. При неудаче false, причина — в error().
     bool parse(Expr & out);
+
+    // Цель присваивания: переменная либо элемент массива.
+    bool parse_lvalue(Expr & out);
 
     // Заглянуть в следующую лексему, не потребляя её.
     bool peek(Tok & t, bool operand_expected);
@@ -74,6 +88,7 @@ private:
     bool parse_power(Expr & out);
     bool parse_primary(Expr & out);
     bool parse_call(Expr & out, ExprKind kind, unsigned args_min, unsigned args_max);
+    bool parse_indices(Expr & out, const Tok & name);
 
     TokenSource & src_;
     Tok pending_;
