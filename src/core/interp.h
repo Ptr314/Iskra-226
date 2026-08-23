@@ -80,6 +80,12 @@ private:
     bool do_for(const Stmt & s);
     bool do_next(const Stmt & s);
 
+    // Помеченные подпрограммы. Машина ищет DEFFN' просмотром текста
+    // программы (руководство, разд. 10.4); здесь тот же просмотр сделан
+    // один раз при первом вызове.
+    void build_labels();
+    bool do_gosubq(const Stmt & s);
+
     void emit(const std::string & koi8);
     void emit_newline();
     void emit_zone();
@@ -101,6 +107,10 @@ private:
     std::map<unsigned, std::string> strs_;
     std::vector<Frame> loops_;
     std::vector<std::pair<unsigned, unsigned> > calls_;   // GOSUB: куда вернуться
+
+    // Имя помеченной подпрограммы → её DEFFN': строка и оператор в строке.
+    std::map<unsigned, std::pair<unsigned, unsigned> > labels_;
+    bool labels_ready_;
 
     unsigned li_;           // индекс текущей строки
     unsigned si_;           // индекс текущего оператора

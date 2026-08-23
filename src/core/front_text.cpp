@@ -101,6 +101,9 @@ public:
     // Ключевое слово в начале оператора; при совпадении съедается.
     bool take_word(const char * w);
 
+    // Целое без знака вне выражения — имя помеченной подпрограммы.
+    bool take_uint(unsigned & out);
+
     // Образ CONVERT — не выражение, а набор знаков в скобках: (##.##),
     // (-#.#^^^^). Забираем его сырым текстом.
     bool take_image(std::string & out);
@@ -141,6 +144,17 @@ bool TextLexer::take_word(const char * w)
     if (p_ + n > end_) return false;
     if (s_.compare(p_, n, w) != 0) return false;
     p_ += n;
+    return true;
+}
+
+bool TextLexer::take_uint(unsigned & out)
+{
+    skip_spaces();
+    unsigned v = 0;
+    bool any = false;
+    while (p_ < end_ && is_digit(s_[p_])) { v = v * 10 + (s_[p_++] - '0'); any = true; }
+    if (!any) return false;
+    out = v;
     return true;
 }
 
@@ -584,8 +598,59 @@ bool LineParser::parse_stmt(Stmt & s)
         return true;
     }
     if (lex_.take_word("RETURN")) { s.kind = ST_RETURN; return true; }
+    if (lex_.take_word("DEFFN")) {
+        // Апостроф отличает помеченный вход в подпрограмму от DEFFN —
+        // определения функции пользователя, которого пока нет.
+        if (!lex_.take_word("'")) return err("DEFFN без апострофа ещё не поддержан");
+        s.kind = ST_DEFFN;
+        if (!lex_.take_uint(s.label)) return err("DEFFN' без имени подпрограммы");
+        if (s.label > 255) return err("имя помеченной подпрограммы больше 255");
+
+        ExprParser ex(lex_);
+        Tok t;
+        if (!ex.peek(t, true)) return err(ex.error());
+        // Определение клавиши спецфункции: текст задаётся литералом либо
+        // шестнадцатеричной записью — DEFFN '31 HEX(0D) в SCOPE.
+        if (t.t == Tok::STR || t.t == Tok::FN_HEX) {
+            s.has_prompt = true;
+            s.prompt = t.s;
+            ex.consume();
+            return true;
+        }
+        if (t.t != Tok::LPAR) return true;  // вход без параметров
+        ex.consume();
+        for (;;) {
+            if (!ex.take(t, true) || t.t != Tok::VAR)
+                return err("DEFFN': формальный параметр — это переменная");
+            s.params.push_back(t.var);
+            if (!ex.take(t, false)) return err(ex.error());
+            if (t.t == Tok::RPAR) break;
+            if (t.t != Tok::COMMA) return err("DEFFN': непонятный список параметров");
+        }
+        return true;
+    }
     {
         const bool gosub = lex_.take_word("GOSUB");
+        if (gosub && lex_.take_word("'")) {
+            s.kind = ST_GOSUBQ;
+            if (!lex_.take_uint(s.label)) return err("GOSUB' без имени подпрограммы");
+            if (s.label > 255) return err("имя помеченной подпрограммы больше 255");
+
+            ExprParser ex(lex_);
+            Tok t;
+            if (!ex.peek(t, true)) return err(ex.error());
+            if (t.t != Tok::LPAR) return true;      // вызов без параметров
+            ex.consume();
+            for (;;) {
+                Expr a;
+                if (!ex.parse(a)) return err(ex.error());
+                s.args.push_back(a);
+                if (!ex.take(t, false)) return err(ex.error());
+                if (t.t == Tok::RPAR) break;
+                if (t.t != Tok::COMMA) return err("GOSUB': непонятный список параметров");
+            }
+            return true;
+        }
         if (gosub || lex_.take_word("GOTO")) {
             s.kind = gosub ? ST_GOSUB : ST_GOTO;
             lex_.skip_spaces();

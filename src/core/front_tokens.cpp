@@ -76,6 +76,10 @@ public:
     unsigned pos() const { return i_; }
     bool at_end() const { return i_ >= n_; }
 
+    // Перескочить «шапку» оператора — байты, которые не лексемы выражения:
+    // метку GOSUB'/DEFFN', адрес возврата и тому подобное.
+    void set_pos(unsigned p) { i_ = (p < n_) ? p : n_; }
+
     const std::string & error() const { return error_; }
 
 private:
@@ -398,6 +402,68 @@ bool StmtParser::parse(unsigned verb, Stmt & s, std::string & error)
         case 0x5E:                                  // RETURN
             s.kind = ST_RETURN;
             break;
+
+        case 0x23: {                                // GOSUB' — вызов по метке
+            // Метка — двоичный байт, не BCD (docs/format.md, разд. 5).
+            // Открывающей скобки списка в потоке нет, как у PACK( и BIN(;
+            // фактические параметры разделены DE.
+            if (len_ < 1) { ok = err("GOSUB' без метки"); break; }
+            s.kind = ST_GOSUBQ;
+            s.label = ops_[0];
+            src_.set_pos(1);
+            if (src_.at_end()) break;               // вызов без параметров
+            for (;;) {
+                Expr a;
+                if (!ex_.parse(a)) { ok = err(ex_.error()); break; }
+                s.args.push_back(a);
+                Tok t;
+                if (!ex_.peek(t, false)) { ok = err(ex_.error()); break; }
+                if (t.t != Tok::COMMA) break;
+                ex_.consume();
+            }
+            if (ok) ok = expect_end("GOSUB'");
+            break;
+        }
+
+        case 0x27: {                                // DEFFN' — помеченный вход
+            // За меткой четыре байта адреса возврата: интерпретатор машины
+            // заполняет их при первом вызове, в свежем файле там нули.
+            // Дальше формальные параметры — индексы переменных подряд,
+            // без разделителей.
+            if (len_ < 5) { ok = err("DEFFN': короткая шапка"); break; }
+            s.kind = ST_DEFFN;
+            s.label = ops_[0];
+            for (raw_ = 5; raw_ < len_; ++raw_) {
+                const uint8_t v = ops_[raw_];
+                if (v > VAR_MAX) {
+                    ok = err("DEFFN': непонятный параметр " + hex2(v));
+                    break;
+                }
+                s.params.push_back(v);
+            }
+            break;
+        }
+
+        case 0x3A: {                                // DEFFN' с текстом
+            // Определение клавиши специальных функций: нажатие подставляет
+            // текст. Подпрограммой такая метка не является. Шапка та же,
+            // что у 27, а дальше ровно один литерал — в кавычках (E3), в
+            // апострофах (E4) или шестнадцатеричный (E2, SCOPE 1).
+            if (len_ < 5) { ok = err("DEFFN': короткая шапка"); break; }
+            s.kind = ST_DEFFN;
+            s.label = ops_[0];
+            src_.set_pos(5);
+            Tok t;
+            if (!ex_.take(t, true)) { ok = err(ex_.error()); break; }
+            if (t.t != Tok::STR && t.t != Tok::FN_HEX) {
+                ok = err("DEFFN': ожидался текст клавиши");
+                break;
+            }
+            s.has_prompt = true;
+            s.prompt = t.s;
+            ok = expect_end("DEFFN'");
+            break;
+        }
 
         case 0x26: {                                // ON <выражение> GOTO/GOSUB
             s.kind = ST_ON;

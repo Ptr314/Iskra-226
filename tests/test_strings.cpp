@@ -141,6 +141,23 @@ void test_val()
         "20 PRINT VAL(X¤);VAL(X¤,2);VAL(STR(X¤,2))\n";
     if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
     CHECK_STR(line_of(screen, 1), " 2  512  0");
+
+    // Оба примера книги целиком.
+    error.clear();
+    const char * src2 =
+        "10 A¤=HEX(00):PRINT VAL(A¤)\n"
+        "20 A¤=HEX(FF):PRINT VAL(A¤)\n"
+        "30 A¤=HEX(0001):PRINT VAL(A¤,2)\n";
+    if (!run_text(src2, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), " 0");
+    CHECK_STR(line_of(screen, 2), " 255");
+    CHECK_STR(line_of(screen, 3), " 1");
+
+    // «Первого байта или первых двух байтов» — других длин грамматика книги
+    // не даёт, и в корпусе других не встречается.
+    error.clear();
+    CHECK(!run_text("10 A¤=HEX(0102)\n20 PRINT VAL(A¤,3)\n", screen, error));
+    CHECK(error.find("только 2") != std::string::npos);
 }
 
 // Разд. 15.1: POS ищет один байт по заданному отношению, 0 если не найден.
@@ -335,6 +352,54 @@ void test_tokenized_strings()
     CHECK_STR(line_of(screen, 1), "БВ");
 }
 
+// PRINT VAL(X¤);VAL(X¤,2) при X¤=HEX(0200)
+//
+// Проверяется то, чего в текстовой записи нет: второй аргумент VAL( — это
+// пара DE DB, где сам DB и означает двойку. Форма взята из VICT 2250
+// (EF 11 DE DB = VAL(Y2¤,2)); в EDITOR 1315 она же с вложенным STR(.
+void test_tokenized_val()
+{
+    TokenBuilder b;
+    b.add_string_var(1, 2);                      // переменная 0: X¤ в два байта
+
+    // 36 06 00 D9 E2 02 02 00      X¤=HEX(0200)
+    static const int let[] = { 0x36, 0x06, 0x00, 0xD9, 0xE2, 0x02, 0x02, 0x00 };
+    b.add_line(10, bytes(let, 8));
+
+    // 4C 07 EF 00 DD EF 00 DE DB   PRINT VAL(X¤);VAL(X¤,2)
+    //       └ VAL( X¤  ;  VAL( X¤  ,  2      — закрывающих скобок нет
+    static const int pr[] = { 0x4C, 0x07, 0xEF, 0x00, 0xDD, 0xEF, 0x00,
+                              0xDE, 0xDB };
+    b.add_line(20, bytes(pr, 9));
+
+    Program prog;
+    std::string error;
+    if (!parse_tokenized(b.file(), prog, error)) {
+        std::printf("  разбор: %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(prog.lines.size(), 2u);
+
+    std::string screen;
+    if (!run_program(prog, 0, screen, error)) {
+        std::printf("  исполнение: %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_STR(line_of(screen, 1), " 2  512");
+
+    // Та же программа текстом должна дать тот же экран.
+    std::string text_screen;
+    if (!run_text("10 X¤=HEX(0200)\n20 PRINT VAL(X¤);VAL(X¤,2)\n",
+                  text_screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK(screen == text_screen);
+}
+
 } // namespace
 
 int main()
@@ -350,5 +415,6 @@ int main()
     test_string_array();
     test_input();
     test_tokenized_strings();
+    test_tokenized_val();
     return test::summary("символьные переменные и STR(");
 }

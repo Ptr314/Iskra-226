@@ -175,13 +175,29 @@ bool ExprParser::parse_implicit(Expr & out, ExprKind kind)
             if (!peek(t, false)) return false;
         }
     } else if (kind == EX_VAL && t.t == Tok::COMMA) {
-        // VAL( допускает второй аргумент: в потоке это пара DE DB.
+        // «Преобразует двоичное значение содержимого первого байта или первых
+        // двух байтов» (разд. 14.2): второй аргумент — только 2, других
+        // значений грамматика книги не даёт. В потоке это пара DE DB, где DB
+        // и означает двойку: EDITOR 1315 EF E1 10 E8 04 D0 DE DB =
+        // VAL(STR(Z¤,4),2), VICT 2250 EF 11 DE DB = VAL(Y2¤,2).
         consume();
         Tok second;
         if (!take(second, true)) return false;
+
+        long bytes = 2;
+        if (second.t == Tok::NUM) {
+            if (!second.num.to_int(bytes) || bytes != 2) {
+                fail("второй аргумент VAL( бывает только 2");
+                return false;
+            }
+        } else if (second.t != Tok::HASH) {
+            fail("непонятный второй аргумент VAL(");
+            return false;
+        }
+
         Expr n;
         n.kind = EX_NUM;
-        n.num = (second.t == Tok::NUM) ? second.num : Number::from_int(2);
+        n.num = Number::from_int(bytes);
         out.a.push_back(n);
         if (!peek(t, false)) return false;
     }

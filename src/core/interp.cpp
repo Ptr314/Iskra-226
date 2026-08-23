@@ -29,8 +29,8 @@ bool Program::find(unsigned number, unsigned & index) const
 }
 
 Interp::Interp(const Program & prog, Host & host)
-    : prog_(prog), host_(host), li_(0), si_(0), jumped_(false), stopped_(false),
-      max_steps_(2000000)
+    : prog_(prog), host_(host), labels_ready_(false), li_(0), si_(0),
+      jumped_(false), stopped_(false), max_steps_(2000000)
 {
 }
 
@@ -581,7 +581,9 @@ bool Interp::eval(const Expr & e, Value & v)
 
         case EX_VAL: {
             // «Преобразует двоичное значение содержимого первого байта или
-            // первых двух байтов» (разд. 14.2).
+            // первых двух байтов» (разд. 14.2). Старший байт первый — так
+            // велит тождество из книги:
+            // VAL(X¤,2) = VAL(X¤)*256 + VAL(STR(X¤,2)).
             std::string s;
             if (!eval_str(e.a[0], s)) return false;
             if (s.empty()) return fail("VAL( от пустой строки");
@@ -935,6 +937,75 @@ bool Interp::do_next(const Stmt & s)
     return true;
 }
 
+void Interp::build_labels()
+{
+    labels_ready_ = true;
+    for (unsigned l = 0; l < prog_.lines.size(); ++l) {
+        const std::vector<Stmt> & st = prog_.lines[l].stmts;
+        for (unsigned i = 0; i < st.size(); ++i) {
+            if (st[i].kind != ST_DEFFN) continue;
+            // Определение клавиши специальных функций подпрограммой не
+            // является — на его метку GOSUB' не переходит.
+            if (st[i].has_prompt) continue;
+            // Машина просматривает текст сверху вниз, поэтому при повторе
+            // имени побеждает первое определение.
+            if (labels_.find(st[i].label) != labels_.end()) continue;
+            labels_[st[i].label] = std::make_pair(l, i);
+        }
+    }
+}
+
+bool Interp::do_gosubq(const Stmt & s)
+{
+    if (!labels_ready_) build_labels();
+
+    std::map<unsigned, std::pair<unsigned, unsigned> >::const_iterator it =
+        labels_.find(s.label);
+    if (it == labels_.end())
+        return fail("нет подпрограммы с именем " + num_str(s.label));
+
+    const Stmt & def = prog_.lines[it->second.first].stmts[it->second.second];
+    if (def.params.size() != s.args.size())
+        return fail("подпрограмме " + num_str(s.label) + " передано " +
+                    num_str(static_cast<unsigned>(s.args.size())) +
+                    " параметров, а описано " +
+                    num_str(static_cast<unsigned>(def.params.size())));
+
+    // Все фактические параметры вычисляются до первого присваивания:
+    // подпрограмму зовут и через её же формальные переменные, например
+    // GOSUB '100(L3,A%,1) при DEFFN '100(L1,L4,L3).
+    std::vector<Value> vals(s.args.size());
+    for (unsigned i = 0; i < s.args.size(); ++i)
+        if (!eval(s.args[i], vals[i])) return false;
+
+    for (unsigned i = 0; i < def.params.size(); ++i) {
+        const unsigned v = def.params[i];
+        const bool want_str = v < prog_.vars.size() && prog_.vars[v].is_string;
+        if (want_str != vals[i].is_str)
+            return fail("параметр " + num_str(i + 1) + " подпрограммы " +
+                        num_str(s.label) + ": не совпадают типы");
+
+        Expr target;
+        target.kind = EX_VAR;
+        target.var = v;
+        if (want_str) {
+            if (!assign_string(target, vals[i].str)) return false;
+        } else {
+            Number * cell = 0;
+            if (!slot(target, cell)) return false;
+            *cell = vals[i].num;
+        }
+    }
+
+    if (calls_.size() > 1000) return fail("слишком глубокая вложенность GOSUB");
+    calls_.push_back(std::make_pair(li_, si_ + 1));
+
+    li_ = it->second.first;
+    si_ = it->second.second + 1;      // первый оператор после DEFFN'
+    jumped_ = true;
+    return true;
+}
+
 bool Interp::jump(unsigned line_number)
 {
     unsigned idx = 0;
@@ -1021,6 +1092,15 @@ bool Interp::exec(const Stmt & s)
             }
             return jump(target);
         }
+
+        case ST_DEFFN:
+            // Помеченный вход сам по себе ничего не делает: встреченный по
+            // ходу исполнения, он «не влияет на ход выполнения программы»
+            // (руководство, разд. 10.4).
+            return true;
+
+        case ST_GOSUBQ:
+            return do_gosubq(s);
 
         case ST_RETURN: {
             if (calls_.empty()) return fail("RETURN без GOSUB");

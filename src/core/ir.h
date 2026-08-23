@@ -112,6 +112,8 @@ enum StmtKind {
     ST_IF,
     ST_GOTO,
     ST_GOSUB,
+    ST_DEFFN,        // DEFFN' — помеченный вход в подпрограмму
+    ST_GOSUBQ,       // GOSUB' — вызов помеченной подпрограммы
     ST_RETURN,
     ST_ON,
     ST_STOP,
@@ -120,8 +122,8 @@ enum StmtKind {
 };
 
 struct Stmt {
-    Stmt() : kind(ST_REM), var(0), line(0), is_gosub(false), has_prompt(false),
-             has_step(false), newline(true) {}
+    Stmt() : kind(ST_REM), var(0), line(0), label(0), is_gosub(false),
+             has_prompt(false), has_step(false), newline(true) {}
 
     StmtKind kind;
 
@@ -134,8 +136,16 @@ struct Stmt {
     unsigned var;                    // FOR, NEXT
     unsigned line;                   // GOTO, GOSUB, IF … THEN <строка>
     std::vector<unsigned> lines;     // ON … GOTO/GOSUB — список переходов
+
+    // Помеченные подпрограммы: имя — целое 0…255, оно же двоичная метка
+    // в оттранслированной форме.
+    unsigned label;                  // DEFFN', GOSUB'
+    std::vector<unsigned> params;    // DEFFN' — формальные параметры
+    std::vector<Expr> args;          // GOSUB' — фактические параметры
+
     bool is_gosub;                   // ON: переход с возвратом
-    std::string prompt;              // INPUT — подсказка; CONVERT — образ
+    // INPUT — подсказка; CONVERT — образ; DEFFN' — текст клавиши спецфункции
+    std::string prompt;
     bool has_prompt;
     bool has_step;
     bool newline;                    // PRINT без хвостового разделителя
