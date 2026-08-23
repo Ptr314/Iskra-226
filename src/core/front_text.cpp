@@ -16,7 +16,17 @@ unsigned NameTable::index(const std::string & name)
 {
     for (unsigned i = 0; i < names_.size(); ++i)
         if (names_[i] == name) return i;
+
     names_.push_back(name);
+
+    VarInfo v;
+    v.known = true;
+    const char last = name[name.size() - 1];
+    v.is_string = (last == '$');
+    v.is_integer = (last == '%');
+    if (v.is_string) v.str_len = 16;      // длина по умолчанию
+    vars_.push_back(v);
+
     return static_cast<unsigned>(names_.size() - 1);
 }
 
@@ -42,6 +52,11 @@ const Keyword KEYWORDS[] = {
     { "GOTO",   Tok::KW_GOTO,  false },
     { "STOP",   Tok::UNKNOWN,  false },
     { "HEX",    Tok::FN_HEX,   true  },
+    { "STR",    Tok::FN_STR,   true  },
+    { "LEN",    Tok::FN_LEN,   true  },
+    { "NUM",    Tok::FN_NUM,   true  },
+    { "VAL",    Tok::FN_VAL,   true  },
+    { "POS",    Tok::FN_POS,   true  },
     { "SQR",    Tok::FN_SQR,   true  },
     { "ABS",    Tok::FN_ABS,   true  },
     { "INT",    Tok::FN_INT,   true  },
@@ -208,8 +223,21 @@ bool TextLexer::next(Tok & t, bool /*operand_expected*/)
         // списка индексов шёл так же, как в токенах, где её нет вовсе.
         const unsigned save = p_;
         skip_spaces();
-        if (p_ < end_ && s_[p_] == '(') { ++p_; t.indexed = true; }
-        else p_ = save;
+        if (p_ < end_ && s_[p_] == '(') {
+            ++p_;
+            // Пустые скобки — ссылка на массив целиком: A¤().
+            const unsigned after = p_;
+            skip_spaces();
+            if (p_ < end_ && s_[p_] == ')') { ++p_; t.t = Tok::ARRAY; }
+            else { p_ = after; t.indexed = true; }
+
+            // Обращение с индексом объявляет массив неявно; размерность по
+            // умолчанию — десять элементов.
+            VarInfo & v = names_.vars()[t.var];
+            if (!v.is_array) { v.is_array = true; if (!v.dim1) v.dim1 = 10; }
+        } else {
+            p_ = save;
+        }
         return true;
     }
 
@@ -377,6 +405,14 @@ bool LineParser::dim_list(Stmt & s, ExprParser & ex)
                 d.str_len = static_cast<unsigned>(v);
             }
         }
+        // Разобранное объявление сразу попадает в таблицу переменных:
+        // дальше по программе разбор опирается на неё так же, как
+        // токенизированный опирается на таблицы файла.
+        if (d.var < names_.vars().size()) {
+            VarInfo & v = names_.vars()[d.var];
+            if (d.dim1) { v.is_array = true; v.dim1 = d.dim1; v.dim2 = d.dim2; }
+            if (d.str_len) v.str_len = d.str_len;
+        }
         s.dims.push_back(d);
 
         Tok sep;
@@ -391,7 +427,8 @@ bool LineParser::parse_stmt(Stmt & s)
 {
     lex_.skip_spaces();
 
-    if (lex_.take_word("REM")) {
+    if (lex_.take_word("REM") || lex_.take_word("%")) {
+        // % — краткая запись REM; остаток строки это текст.
         s.kind = ST_REM;
         lex_.set_pos(lex_.end());
         return true;
@@ -577,6 +614,10 @@ bool parse_text(const std::string & koi8, Program & prog, NameTable & names,
     }
 
     if (prog.lines.empty()) { error = "в программе нет ни одной строки"; return false; }
+
+    // Типы и размеры переменных нужны интерпретатору так же, как таблицы
+    // файла — при разборе оттранслированной формы.
+    prog.vars = names.vars();
     return true;
 }
 

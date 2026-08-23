@@ -146,11 +146,168 @@ bool Interp::slot(const Expr & e, Number *& out)
     return true;
 }
 
+// --- Символьные данные ------------------------------------------------------
+
+// Поле переменной: длина элемента на число элементов. Заводится при первом
+// обращении и заполняется пробелами — «начальное значение символьных
+// переменных — пробел» (руководство, разд. 4.3).
+std::string & Interp::str_field(unsigned var)
+{
+    std::map<unsigned, std::string>::iterator it = strs_.find(var);
+    if (it != strs_.end()) return it->second;
+
+    unsigned len = 16;                      // длина по умолчанию
+    unsigned count = 1;
+    if (var < prog_.vars.size()) {
+        const VarInfo & v = prog_.vars[var];
+        if (v.str_len) len = v.str_len;
+        if (v.is_array) count = (v.dim1 ? v.dim1 : 10) * (v.dim2 ? v.dim2 : 1);
+    }
+    if (len < 1) len = 1;
+    if (len > 253) len = 253;               // предел из разд. 4.2
+
+    strs_[var] = std::string(static_cast<std::size_t>(len) * count, ' ');
+    return strs_[var];
+}
+
+bool Interp::is_string_expr(const Expr & e) const
+{
+    switch (e.kind) {
+        case EX_STR:
+        case EX_HEX:
+        case EX_SUBSTR:
+        case EX_ARRAY:
+            return true;
+        case EX_VAR:
+        case EX_ELEM:
+            return e.var < prog_.vars.size() && prog_.vars[e.var].is_string;
+        default:
+            return false;
+    }
+}
+
+// Место в поле символьной переменной: сама переменная, элемент массива,
+// массив целиком или подстрока STR( от любого из них.
+bool Interp::str_loc(const Expr & e, StrLoc & loc)
+{
+    switch (e.kind) {
+        case EX_VAR:
+        case EX_ARRAY: {
+            loc.data = &str_field(e.var);
+            loc.off = 0;
+            loc.len = static_cast<unsigned>(loc.data->size());
+            return true;
+        }
+
+        case EX_ELEM: {
+            std::string & f = str_field(e.var);
+            unsigned len = 16, d1 = 10, d2 = 0;
+            if (e.var < prog_.vars.size()) {
+                const VarInfo & v = prog_.vars[e.var];
+                if (v.str_len) len = v.str_len;
+                if (v.dim1) d1 = v.dim1;
+                d2 = v.dim2;
+            }
+
+            unsigned idx[2] = { 0, 0 };
+            for (unsigned k = 0; k < e.a.size() && k < 2; ++k) {
+                Number n;
+                if (!eval_num(e.a[k], n)) return false;
+                long v = 0;
+                if (!Number::from_double(std::floor(n.to_double())).to_int(v))
+                    return fail("индекс массива не целое число");
+                if (v < 1) return fail("индекс массива меньше единицы");
+                idx[k] = static_cast<unsigned>(v);
+            }
+
+            unsigned n;
+            if (d2) {
+                if (e.a.size() != 2) return fail("двумерному массиву нужны два индекса");
+                if (idx[0] > d1 || idx[1] > d2) return fail("индекс за границей массива");
+                n = (idx[0] - 1) * d2 + (idx[1] - 1);
+            } else {
+                if (e.a.size() != 1) return fail("одномерному массиву нужен один индекс");
+                if (idx[0] > d1) return fail("индекс за границей массива");
+                n = idx[0] - 1;
+            }
+
+            // Поле при необходимости растёт. По таблицам «строка-скаляр или
+            // массив строк» не различается (разд. 6), так что описание может
+            // занижать число элементов; обрывать из-за этого разбор нечестно.
+            const std::size_t off = static_cast<std::size_t>(n) * len;
+            if (off + len > f.size()) {
+                if (off + len > 64u * 1024u) return fail("слишком большой символьный массив");
+                f.resize(off + len, ' ');
+            }
+            loc.data = &f;
+            loc.off = static_cast<unsigned>(off);
+            loc.len = len;
+            return true;
+        }
+
+        case EX_SUBSTR: {
+            StrLoc base;
+            if (!str_loc(e.a[0], base)) return false;
+
+            Number n;
+            if (!eval_num(e.a[1], n)) return false;
+            long start = 0;
+            if (!Number::from_double(std::floor(n.to_double())).to_int(start))
+                return fail("STR(: начало не целое число");
+            if (start < 1) return fail("STR(: начало меньше единицы");
+            if (static_cast<unsigned long>(start) > base.len)
+                return fail("STR(: начало за границей строки");
+
+            unsigned off = static_cast<unsigned>(start) - 1;
+            unsigned len = base.len - off;          // по умолчанию до конца
+
+            if (e.a.size() > 2) {
+                if (!eval_num(e.a[2], n)) return false;
+                long want = 0;
+                if (!Number::from_double(std::floor(n.to_double())).to_int(want))
+                    return fail("STR(: длина не целое число");
+                if (want < 1) return fail("STR(: длина меньше единицы");
+                if (static_cast<unsigned long>(want) > len)
+                    return fail("STR(: длина за границей строки");
+                len = static_cast<unsigned>(want);
+            }
+
+            loc.data = base.data;
+            loc.off = base.off + off;
+            loc.len = len;
+            return true;
+        }
+
+        default:
+            return fail("здесь ожидалась символьная переменная");
+    }
+}
+
+// «Если длина присваиваемого значения больше размерности символьной
+// переменной, то крайние справа символы игнорируются» (разд. 4.3);
+// остаток поля добивается пробелами.
+bool Interp::assign_string(const Expr & target, const std::string & value)
+{
+    StrLoc loc;
+    if (!str_loc(target, loc)) return false;
+
+    for (unsigned i = 0; i < loc.len; ++i)
+        (*loc.data)[loc.off + i] = (i < value.size()) ? value[i] : ' ';
+    return true;
+}
+
 bool Interp::do_dim(const Stmt & s)
 {
     for (unsigned i = 0; i < s.dims.size(); ++i) {
         const DimEntry & d = s.dims[i];
-        if (d.str_len && !d.dim1) continue;         // объявление длины строки
+        const bool is_string = d.var < prog_.vars.size() && prog_.vars[d.var].is_string;
+        if (is_string) {
+            // Поле заводится по описанию из таблицы переменных; повторное
+            // объявление очищает его.
+            strs_.erase(d.var);
+            str_field(d.var);
+            continue;
+        }
         if (!array_alloc(d.var, d.dim1, d.dim2)) return false;
     }
     return true;
@@ -165,9 +322,176 @@ bool Interp::eval_num(const Expr & e, Number & n)
     return true;
 }
 
+bool Interp::eval_str(const Expr & e, std::string & out)
+{
+    Value v;
+    if (!eval(e, v)) return false;
+    if (!v.is_str) return fail("здесь ожидалась строка, а не число");
+    out = v.str;
+    return true;
+}
+
+namespace {
+
+// LEN: «количество символов от крайнего левого байта и до последнего не
+// равного пробелу включительно; если строка из всех пробелов — 1».
+unsigned str_len_value(const std::string & s)
+{
+    for (std::size_t i = s.size(); i-- > 0; )
+        if (s[i] != ' ') return static_cast<unsigned>(i + 1);
+    return 1;
+}
+
+// NUM: длина ведущей правильной записи числа. Пробелы до и после числа
+// входят в счёт, но только если дальше ничего, кроме пробелов, нет —
+// это единственное прочтение, при котором сходятся все три примера
+// руководства (разд. 13.6): «+ 1.2   -14 …» → 5, «98.1E+10» → 16, «0..» → 2.
+unsigned str_num_value(const std::string & s)
+{
+    std::size_t p = 0;
+    while (p < s.size() && s[p] == ' ') ++p;
+
+    // Между знаком и цифрами пробел допускается: в примере руководства
+    // «+ 1.2   -14   +1.2587» ответом служит 5, то есть «+ 1.2» целиком.
+    if (p < s.size() && (s[p] == '+' || s[p] == '-')) {
+        ++p;
+        while (p < s.size() && s[p] == ' ') ++p;
+    }
+
+    std::size_t digits = 0;
+    while (p < s.size() && s[p] >= '0' && s[p] <= '9') { ++p; ++digits; }
+    if (p < s.size() && s[p] == '.') {
+        ++p;
+        while (p < s.size() && s[p] >= '0' && s[p] <= '9') { ++p; ++digits; }
+    }
+    if (!digits) return 0;
+
+    if (p < s.size() && (s[p] == 'E' || s[p] == 'e')) {
+        const std::size_t save = p;
+        ++p;
+        if (p < s.size() && (s[p] == '+' || s[p] == '-')) ++p;
+        std::size_t ed = 0;
+        while (p < s.size() && s[p] >= '0' && s[p] <= '9') { ++p; ++ed; }
+        if (!ed) p = save;
+    }
+
+    // Хвост из одних пробелов входит в длину, иначе — нет.
+    std::size_t tail = p;
+    while (tail < s.size() && s[tail] == ' ') ++tail;
+    if (tail == s.size()) return static_cast<unsigned>(s.size());
+    return static_cast<unsigned>(p);
+}
+
+} // namespace
+
 bool Interp::eval(const Expr & e, Value & v)
 {
     v = Value();
+
+    // Символьные значения: переменная, элемент, массив целиком, подстрока.
+    if (e.kind == EX_SUBSTR || e.kind == EX_ARRAY ||
+        ((e.kind == EX_VAR || e.kind == EX_ELEM) && is_string_expr(e))) {
+        StrLoc loc;
+        if (!str_loc(e, loc)) return false;
+        v.is_str = true;
+        v.str = loc.data->substr(loc.off, loc.len);
+        return true;
+    }
+
+    switch (e.kind) {
+        case EX_LEN: {
+            std::string s;
+            if (!eval_str(e.a[0], s)) return false;
+            v.num = Number::from_int(static_cast<long>(str_len_value(s)));
+            return true;
+        }
+
+        case EX_NUMF: {
+            std::string s;
+            if (!eval_str(e.a[0], s)) return false;
+            v.num = Number::from_int(static_cast<long>(str_num_value(s)));
+            return true;
+        }
+
+        case EX_VAL: {
+            // «Преобразует двоичное значение содержимого первого байта или
+            // первых двух байтов» (разд. 14.2).
+            std::string s;
+            if (!eval_str(e.a[0], s)) return false;
+            if (s.empty()) return fail("VAL( от пустой строки");
+            unsigned long r = static_cast<unsigned char>(s[0]);
+            if (e.a.size() > 1) {
+                if (s.size() < 2) return fail("VAL( с двумя байтами от строки короче двух");
+                r = r * 256 + static_cast<unsigned char>(s[1]);
+            }
+            v.num = Number::from_int(static_cast<long>(r));
+            return true;
+        }
+
+        case EX_POS: {
+            // «Поиск проводится с начала поисковой переменной, и за одну
+            // операцию находится только одна величина» (разд. 15.1).
+            std::string s;
+            if (!eval_str(e.a[0], s)) return false;
+            if (e.a.size() < 2) return fail("POS( без искомого значения");
+
+            int want;
+            if (is_string_expr(e.a[1])) {
+                std::string p;
+                if (!eval_str(e.a[1], p)) return false;
+                if (p.empty()) return fail("POS( с пустым образцом");
+                want = static_cast<unsigned char>(p[0]);
+            } else {
+                Number n;
+                if (!eval_num(e.a[1], n)) return false;
+                long b = 0;
+                n.to_int(b);
+                want = static_cast<int>(b);
+            }
+
+            unsigned found = 0;
+            for (std::size_t i = 0; i < s.size(); ++i) {
+                const int c = static_cast<unsigned char>(s[i]);
+                bool hit = false;
+                switch (e.rel) {
+                    case EX_EQ: hit = (c == want); break;
+                    case EX_NE: hit = (c != want); break;
+                    case EX_LT: hit = (c <  want); break;
+                    case EX_LE: hit = (c <= want); break;
+                    case EX_GT: hit = (c >  want); break;
+                    default:    hit = (c >= want); break;
+                }
+                if (hit) { found = static_cast<unsigned>(i + 1); break; }
+            }
+            v.num = Number::from_int(static_cast<long>(found));
+            return true;
+        }
+
+        default: break;
+    }
+
+    // Сравнение строк — побайтовое; более короткая дополняется пробелами.
+    if (e.kind >= EX_EQ && e.kind <= EX_GE &&
+        (is_string_expr(e.a[0]) || is_string_expr(e.a[1]))) {
+        std::string x, y;
+        if (!eval_str(e.a[0], x)) return false;
+        if (!eval_str(e.a[1], y)) return false;
+        while (x.size() < y.size()) x += ' ';
+        while (y.size() < x.size()) y += ' ';
+
+        const int c = x.compare(y);
+        bool r = false;
+        switch (e.kind) {
+            case EX_EQ: r = (c == 0); break;
+            case EX_NE: r = (c != 0); break;
+            case EX_LT: r = (c <  0); break;
+            case EX_LE: r = (c <= 0); break;
+            case EX_GT: r = (c >  0); break;
+            default:    r = (c >= 0); break;
+        }
+        v.num = Number::from_int(r ? 1 : 0);
+        return true;
+    }
 
     switch (e.kind) {
         case EX_NUM: v.num = e.num; return true;
@@ -351,8 +675,20 @@ bool Interp::do_input(const Stmt & s)
     unsigned p = 0;
     for (unsigned i = 0; i < s.targets.size(); ++i) {
         std::string field;
-        while (p < line.size() && line[p] != ',') field += line[p++];
-        if (p < line.size()) ++p;
+        if (s.targets.size() == 1 && is_string_expr(s.targets[i])) {
+            // Единственный символьный приёмник получает строку целиком:
+            // запятая в ней — обычный символ.
+            field = line;
+            p = static_cast<unsigned>(line.size());
+        } else {
+            while (p < line.size() && line[p] != ',') field += line[p++];
+            if (p < line.size()) ++p;
+        }
+
+        if (is_string_expr(s.targets[i])) {
+            if (!assign_string(s.targets[i], field)) return false;
+            continue;
+        }
 
         Number n;
         if (!Number::parse(field, n)) return fail("INPUT: не число «" + field + "»");
@@ -439,6 +775,22 @@ bool Interp::exec(const Stmt & s)
             return do_input(s);
 
         case ST_LET: {
+            // Символьное присваивание: и цель, и значение — строки.
+            bool to_string = false;
+            for (unsigned i = 0; i < s.targets.size(); ++i)
+                if (is_string_expr(s.targets[i])) to_string = true;
+
+            if (to_string) {
+                std::string value;
+                if (!eval_str(s.e, value)) return false;
+                for (unsigned i = 0; i < s.targets.size(); ++i) {
+                    if (!is_string_expr(s.targets[i]))
+                        return fail("в одном присваивании смешаны символьная и числовая цели");
+                    if (!assign_string(s.targets[i], value)) return false;
+                }
+                return true;
+            }
+
             Number n;
             if (!eval_num(s.e, n)) return false;
             for (unsigned i = 0; i < s.targets.size(); ++i) {

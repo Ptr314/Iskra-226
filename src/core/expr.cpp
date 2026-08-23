@@ -79,13 +79,127 @@ bool ExprParser::parse_indices(Expr & out, const Tok & name)
     return true;
 }
 
+// STR(что, начало [, длина]). Первая запятая в потоке не кодируется, поэтому
+// после первого аргумента разбор возвращается в состояние «ожидается
+// операнд» (docs/format.md, разд. 5).
+bool ExprParser::parse_substr(Expr & out)
+{
+    out = Expr();
+    out.kind = EX_SUBSTR;
+
+    Tok t;
+    if (!take(t, true)) return false;
+    if (t.t == Tok::ARRAY) {
+        Expr whole;
+        whole.kind = EX_ARRAY;
+        whole.var = t.var;
+        out.a.push_back(whole);
+    } else if (t.t == Tok::VAR) {
+        Expr v;
+        if (t.indexed) {
+            if (!parse_indices(v, t)) return false;
+        } else {
+            v.kind = EX_VAR;
+            v.var = t.var;
+        }
+        out.a.push_back(v);
+    } else if (t.t == Tok::STR) {
+        Expr lit;
+        lit.kind = EX_STR;
+        lit.str = t.s;
+        out.a.push_back(lit);
+    } else {
+        fail("STR( ждёт символьную переменную");
+        return false;
+    }
+
+    // Первая запятая STR( в потоке не кодируется, поэтому заглядывать надо
+    // в состоянии «ожидается операнд»: следом сразу идёт второй аргумент.
+    // В текстовой записи запятая есть и читается здесь же — текстовому
+    // лексеру состояние безразлично.
+    if (!peek(t, true)) return false;
+    if (t.t == Tok::COMMA) consume();
+
+    for (;;) {
+        Expr arg;
+        if (!parse_compare(arg)) return false;
+        out.a.push_back(arg);
+
+        if (!peek(t, false)) return false;
+        if (t.t == Tok::COMMA) {
+            if (out.a.size() >= 3) { fail("у STR( не больше трёх аргументов"); return false; }
+            consume();
+            continue;
+        }
+        if (t.t == Tok::RPAR) { consume(); break; }
+        fail("STR( не закрыт");
+        return false;
+    }
+    return true;
+}
+
+// LEN(, NUM(, VAL(, POS( — закрывающей скобки в потоке нет: аргументом
+// служит один терм, и функция закрывается первой же операцией своего
+// уровня. В текстовой записи скобка есть, поэтому съедаем её, если она тут.
+bool ExprParser::parse_implicit(Expr & out, ExprKind kind)
+{
+    out = Expr();
+    out.kind = kind;
+
+    Expr arg;
+    if (!parse_primary(arg)) return false;
+    out.a.push_back(arg);
+
+    Tok t;
+    if (!peek(t, false)) return false;
+
+    if (kind == EX_POS) {
+        // POS( поглощает сравнение целиком: POS(I¤=A¤).
+        ExprKind rel = EX_EQ;
+        bool found = true;
+        switch (t.t) {
+            case Tok::EQ: rel = EX_EQ; break;
+            case Tok::NE: rel = EX_NE; break;
+            case Tok::LT: rel = EX_LT; break;
+            case Tok::LE: rel = EX_LE; break;
+            case Tok::GT: rel = EX_GT; break;
+            case Tok::GE: rel = EX_GE; break;
+            default: found = false; break;
+        }
+        if (found) {
+            consume();
+            out.rel = rel;
+            Expr rhs;
+            if (!parse_primary(rhs)) return false;
+            out.a.push_back(rhs);
+            if (!peek(t, false)) return false;
+        }
+    } else if (kind == EX_VAL && t.t == Tok::COMMA) {
+        // VAL( допускает второй аргумент: в потоке это пара DE DB.
+        consume();
+        Tok second;
+        if (!take(second, true)) return false;
+        Expr n;
+        n.kind = EX_NUM;
+        n.num = (second.t == Tok::NUM) ? second.num : Number::from_int(2);
+        out.a.push_back(n);
+        if (!peek(t, false)) return false;
+    }
+
+    if (t.t == Tok::RPAR) consume();      // текстовая запись
+    return true;
+}
+
 bool ExprParser::parse_lvalue(Expr & out)
 {
     Tok t;
+    if (!peek(t, true)) return false;
+    if (t.t == Tok::FN_STR) { consume(); return parse_substr(out); }
+
     if (!take(t, true)) return false;
     if (t.t != Tok::VAR) {
-        fail("непонятная цель присваивания; символьные переменные и STR( "
-             "ещё не поддержаны");
+        fail("слева от знака равенства ожидалась переменная, элемент массива "
+             "или STR(");
         return false;
     }
 
@@ -298,6 +412,17 @@ bool ExprParser::parse_primary(Expr & out)
         case Tok::FN_EXP: return parse_call(out, EX_EXP, 1, 1);
         case Tok::FN_AT:  return parse_call(out, EX_AT, 2, 3);
         case Tok::FN_TAB: return parse_call(out, EX_TAB, 1, 1);
+
+        case Tok::FN_STR: return parse_substr(out);
+        case Tok::FN_LEN: return parse_implicit(out, EX_LEN);
+        case Tok::FN_NUM: return parse_implicit(out, EX_NUMF);
+        case Tok::FN_VAL: return parse_implicit(out, EX_VAL);
+        case Tok::FN_POS: return parse_implicit(out, EX_POS);
+
+        case Tok::ARRAY:
+            out.kind = EX_ARRAY;
+            out.var = t.var;
+            return true;
 
         case Tok::UNKNOWN:
             fail("не поддержано: " + t.s);

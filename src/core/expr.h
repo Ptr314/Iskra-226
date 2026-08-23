@@ -24,6 +24,10 @@ struct Tok {
         FN_ABS, FN_INT, FN_SGN, FN_SQR, FN_LOG, FN_EXP,
         FN_HEX,         // строка байт уже разобрана в s
         FN_AT, FN_TAB,
+        FN_STR,                 // STR( — первая запятая в потоке не кодируется
+        FN_LEN, FN_NUM, FN_VAL, FN_POS,   // неявные: закрывающей скобки нет
+        ARRAY,                  // ссылка на массив целиком
+        HASH,                   // DB — второй аргумент VAL(
         KW_TO, KW_STEP, KW_THEN, KW_GOTO, KW_GOSUB,
         UNKNOWN         // распознано, но не поддержано — текст в s
     };
@@ -89,6 +93,8 @@ private:
     bool parse_primary(Expr & out);
     bool parse_call(Expr & out, ExprKind kind, unsigned args_min, unsigned args_max);
     bool parse_indices(Expr & out, const Tok & name);
+    bool parse_substr(Expr & out);
+    bool parse_implicit(Expr & out, ExprKind kind);
 
     TokenSource & src_;
     Tok pending_;

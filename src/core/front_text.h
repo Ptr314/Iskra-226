@@ -23,8 +23,14 @@ public:
     unsigned count() const { return static_cast<unsigned>(names_.size()); }
     const std::string & name(unsigned i) const { return names_[i]; }
 
+    // Тип переменной виден прямо из имени: ¤ — символьная, % — целая.
+    // Заполняется при первом появлении имени, дальше уточняется из DIM.
+    const std::vector<VarInfo> & vars() const { return vars_; }
+    std::vector<VarInfo> & vars() { return vars_; }
+
 private:
     std::vector<std::string> names_;
+    std::vector<VarInfo> vars_;
 };
 
 // Текст программы в КОИ-8: строки разделяются байтом 85 (как на дискете)

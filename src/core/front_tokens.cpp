@@ -135,6 +135,25 @@ bool ByteSource::number_e5(Tok & t, bool with_exponent)
     return true;
 }
 
+// Может ли байт начинать операнд. Нужно там, где «массив или скаляр»
+// по таблицам не разрешается, — у символьных переменных (docs/format.md,
+// разд. 7): за именем идёт либо список индексов, либо операция.
+bool looks_like_operand(uint8_t b)
+{
+    if (b <= VAR_MAX) return true;                 // индекс переменной
+    switch (b) {
+        case 0xE1:                                 // STR(
+        case 0xE5: case 0xE6: case 0xE7: case 0xE8:   // константы
+        case 0xEB:                                 // (
+        case 0xF1:                                 // #PI
+        case 0xF2: case 0xF3: case 0xF4: case 0xF5:
+        case 0xF6: case 0xF7: case 0xF8:           // функции
+            return true;
+        default:
+            return false;
+    }
+}
+
 bool ByteSource::next(Tok & t, bool operand_expected)
 {
     t = Tok();
@@ -152,9 +171,17 @@ bool ByteSource::next(Tok & t, bool operand_expected)
         }
         t.t = Tok::VAR;
         t.var = c;
-        // Скобки у индекса в потоке нет: список индексов узнаётся только по
-        // тому, что переменная объявлена массивом (таблицы 1 и 2/3).
-        t.indexed = vars_ && c < vars_->size() && (*vars_)[c].is_array;
+
+        // Скобки у индекса в потоке нет. У числовых переменных массив
+        // виден по таблицам: числовой скаляр дескриптора не получает.
+        // У символьных так нельзя — отличить строку-скаляр от массива строк
+        // можно только по разностям адресов, а те бывают нулевыми. Поэтому
+        // здесь работает правило из разд. 7: смотрим, операнд ли дальше.
+        if (vars_ && c < vars_->size()) {
+            const VarInfo & v = (*vars_)[c];
+            t.indexed = v.is_string ? (i_ < n_ && looks_like_operand(p_[i_]))
+                                    : v.is_array;
+        }
         return true;
     }
 
@@ -163,6 +190,14 @@ bool ByteSource::next(Tok & t, bool operand_expected)
         switch (c) {
             case 0xD5: t.t = Tok::FN_AT; return true;
             case 0xDF: t.t = Tok::FN_TAB; return true;
+            case 0xE0: {                                // ссылка на массив целиком
+                if (i_ >= n_) return fail("ссылка на массив оборвалась");
+                const uint8_t v = p_[i_++];
+                if (v > VAR_MAX) return fail("после E0 не индекс переменной");
+                t.t = Tok::ARRAY;
+                t.var = v;
+                return true;
+            }
             case 0xE9: t.t = Tok::MINUS; return true;   // унарный минус
             case 0xE5: return number_e5(t, false);
             case 0xE6: return number_e5(t, true);
@@ -227,6 +262,12 @@ bool ByteSource::next(Tok & t, bool operand_expected)
         case 0xDD: t.t = Tok::SEMI; return true;
         case 0xEA: t.t = Tok::PLUS; return true;
         case 0xEB: t.t = Tok::LPAR; return true;
+        case 0xDB: t.t = Tok::HASH; return true;
+        case 0xE1: t.t = Tok::FN_STR; return true;
+        case 0xEC: t.t = Tok::FN_POS; return true;
+        case 0xED: t.t = Tok::FN_LEN; return true;
+        case 0xEE: t.t = Tok::FN_NUM; return true;
+        case 0xEF: t.t = Tok::FN_VAL; return true;
         case 0xF1: t.t = Tok::PI; return true;
         case 0xF2: t.t = Tok::FN_ABS; return true;
         case 0xF3: t.t = Tok::FN_INT; return true;
@@ -570,9 +611,16 @@ void build_vars(const std::vector<uint8_t> & code, unsigned L1, unsigned L2,
 
         if (v.is_string) {
             // Размерный код = 2 x размер элемента, младший бит — «длина
-            // задана явно». Отличить строку-скаляр от массива строк без
-            // адресов нельзя, но символьных переменных мы пока и не умеем.
+            // задана явно».
             v.str_len = sizecode >> 1;
+            if (!v.str_len) v.str_len = 16;
+            // Отличить строку-скаляр от массива строк по таблицам нельзя:
+            // нужны разности адресов, а они бывают нулевыми. Для исполнения
+            // это безразлично — скаляр просто частный случай с одним
+            // элементом, — но для разбора важно: у массива за именем идёт
+            // список индексов. Считаем массивом всё, где элементов больше
+            // одного либо задана вторая размерность.
+            v.is_array = (v.dim2 != 0) || (v.dim1 > 1);
         } else {
             // Числовые скаляры дескриптора не получают: раз он есть — массив.
             v.is_array = true;

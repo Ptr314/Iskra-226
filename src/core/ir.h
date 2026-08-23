@@ -32,7 +32,15 @@ enum ExprKind {
 
     EX_HEX,          // HEX(...) — байты лежат в str
     EX_AT,           // AT(строка, позиция [, сколько стереть])
-    EX_TAB           // TAB(позиция), позиции нумеруются с нуля
+    EX_TAB,          // TAB(позиция), позиции нумеруются с нуля
+
+    // Символьные данные
+    EX_ARRAY,        // ссылка на массив целиком: A¤() — одна длинная строка
+    EX_SUBSTR,       // STR(что, начало [, длина])
+    EX_LEN,          // LEN(  — до последнего непробельного байта, но не 0
+    EX_NUMF,         // NUM(  — длина ведущей правильной записи числа
+    EX_VAL,          // VAL(  — байт (или два) как число
+    EX_POS           // POS(  — поиск байта по отношению; a[0] строка, a[1] образец
 };
 
 // Что известно о переменной. В оттранслированной форме — из таблиц
@@ -52,12 +60,13 @@ struct VarInfo {
 };
 
 struct Expr {
-    Expr() : kind(EX_NUM), var(0) {}
+    Expr() : kind(EX_NUM), var(0), rel(EX_EQ) {}
 
     ExprKind kind;
     Number num;
     std::string str;
     unsigned var;
+    ExprKind rel;                // POS(: знак отношения
     std::vector<Expr> a;
 };
 

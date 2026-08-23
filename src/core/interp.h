@@ -51,12 +51,27 @@ private:
     bool exec(const Stmt & s);
     bool eval(const Expr & e, Value & v);
     bool eval_num(const Expr & e, Number & n);
+    bool eval_str(const Expr & e, std::string & out);
 
     bool do_print(const Stmt & s);
     bool do_dim(const Stmt & s);
     // Ячейка переменной или элемента массива — и для чтения, и для записи.
     bool slot(const Expr & e, Number *& out);
     bool array_alloc(unsigned var, unsigned dim1, unsigned dim2);
+
+    // Символьная переменная — поле байт постоянной длины, заполненное
+    // пробелами. Массив строк — одно непрерывное поле: «символьный массив
+    // рассматривается как одна непрерывная строка» (руководство, разд. 13.2).
+    struct StrLoc {
+        StrLoc() : data(0), off(0), len(0) {}
+        std::string * data;
+        unsigned off;
+        unsigned len;
+    };
+    std::string & str_field(unsigned var);
+    bool str_loc(const Expr & e, StrLoc & loc);
+    bool is_string_expr(const Expr & e) const;
+    bool assign_string(const Expr & target, const std::string & value);
     bool do_input(const Stmt & s);
     bool do_for(const Stmt & s);
     bool do_next(const Stmt & s);
@@ -79,6 +94,7 @@ private:
 
     std::map<unsigned, Number> vars_;
     std::map<unsigned, Array> arrays_;
+    std::map<unsigned, std::string> strs_;
     std::vector<Frame> loops_;
     std::vector<std::pair<unsigned, unsigned> > calls_;   // GOSUB: куда вернуться
 
