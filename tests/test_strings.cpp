@@ -160,6 +160,82 @@ void test_val()
     CHECK(error.find("только 2") != std::string::npos);
 }
 
+// Разд. 14.2: BIN — операция, обратная VAL. Пример 14.4 книги целиком.
+// В книге состояние A¤ печатается через HEXPRINT, которого ещё нет, поэтому
+// оба байта читаются обратно через VAL(A¤,2): 0100 = 256, 2000 = 8192 и т. д.
+void test_bin()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM A¤2\n"
+        "20 A¤=HEX(0000)\n"
+        "30 BIN(A¤)=1:PRINT VAL(A¤,2)\n"
+        "40 BIN(A¤)=32:PRINT VAL(A¤,2)\n"
+        "50 BIN(A¤)=47:PRINT VAL(A¤,2)\n"
+        "60 BIN(STR(A¤,2,1))=255:PRINT VAL(A¤,2)\n"
+        "70 BIN(A¤,2)=1:PRINT VAL(A¤,2)\n"
+        "80 BIN(A¤,2)=33:PRINT VAL(A¤,2)\n"
+        "90 BIN(A¤,2)=256:PRINT VAL(A¤,2)\n"
+        "100 BIN(A¤,2)=65534:PRINT VAL(A¤,2)\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+
+    static const char * WANT[] = {
+        " 256",      // 0100 — записан только первый байт, второй не тронут
+        " 8192",     // 2000
+        " 12032",    // 2F00
+        " 12287",    // 2FFF — BIN( во второй байт через STR(
+        " 1",        // 0001
+        " 33",       // 0021
+        " 256",      // 0100
+        " 65534"     // FFFE
+    };
+    for (unsigned i = 0; i < sizeof(WANT) / sizeof(WANT[0]); ++i)
+        CHECK_STR(line_of(screen, i + 1), WANT[i]);
+}
+
+void test_bin_limits()
+{
+    std::string screen, error;
+
+    // «Преобразует целую часть арифметического выражения».
+    if (!run_text("10 DIM A¤2\n20 A¤=HEX(0000)\n30 BIN(A¤)=47.9\n40 PRINT VAL(A¤)\n",
+                  screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_STR(line_of(screen, 1), " 47");
+
+    // «Значение арифметического выражения должно быть в пределах 0 ≤ A ≤ 255»
+    // без параметра и 0 ≤ A ≤ 65535 с параметром 2.
+    error.clear();
+    CHECK(!run_text("10 DIM A¤2\n20 BIN(A¤)=256\n", screen, error));
+    CHECK(error.find("0…255") != std::string::npos);
+
+    error.clear();
+    CHECK(!run_text("10 DIM A¤2\n20 BIN(A¤,2)=65536\n", screen, error));
+    CHECK(error.find("0…65535") != std::string::npos);
+
+    error.clear();
+    CHECK(!run_text("10 DIM A¤2\n20 BIN(A¤)=-1\n", screen, error));
+    CHECK(error.find("0…255") != std::string::npos);
+
+    // Двум байтам нужен приёмник хотя бы в два байта.
+    error.clear();
+    CHECK(!run_text("10 DIM A¤2\n20 BIN(STR(A¤,2,1),2)=1\n", screen, error));
+    CHECK(error.find("короче") != std::string::npos);
+
+    // Других значений параметра книга не даёт.
+    error.clear();
+    CHECK(!run_text("10 DIM A¤4\n20 BIN(A¤,3)=1\n", screen, error));
+    CHECK(error.find("только 2") != std::string::npos);
+
+    // «BIN(<символьная переменная>)» — числовая приёмником не бывает.
+    error.clear();
+    CHECK(!run_text("10 BIN(X)=1\n", screen, error));
+    CHECK(error.find("символьную") != std::string::npos);
+}
+
 // Разд. 15.1: POS ищет один байт по заданному отношению, 0 если не найден.
 void test_pos()
 {
@@ -400,6 +476,80 @@ void test_tokenized_val()
     CHECK(screen == text_screen);
 }
 
+// BIN(A¤)=J : BIN(STR(B¤,1),2)=J
+//
+// Главное здесь — приёмник без «,2»: за ним сразу идёт индекс переменной
+// (EDITOR 3650 = 4B 02 22 3B), и заглядывание вперёд приняло бы значение за
+// список индексов. Массив это или скаляр, решается только по таблицам.
+void test_tokenized_bin()
+{
+    TokenBuilder b;
+    b.add_string_var(1, 2);                      // переменная 0: A¤ — скаляр в 2 байта
+    b.add_numeric_var();                         // переменная 1: J
+    b.add_string_var(1, 4);                      // переменная 2: B¤ — скаляр в 4 байта
+
+    // 36 04 01 D9 E8 47            J=47
+    static const int let[] = { 0x36, 0x04, 0x01, 0xD9, 0xE8, 0x47 };
+    b.add_line(10, bytes(let, 6));
+
+    // 36 06 00 D9 E2 02 00 00      A¤=HEX(0000)
+    static const int zero[] = { 0x36, 0x06, 0x00, 0xD9, 0xE2, 0x02, 0x00, 0x00 };
+    b.add_line(20, bytes(zero, 8));
+
+    // 4B 02 00 01                  BIN(A¤)=J     — ни скобки, ни знака равенства
+    static const int bin1[] = { 0x4B, 0x02, 0x00, 0x01 };
+    b.add_line(30, bytes(bin1, 4));
+
+    // 4C 04 EF 00 DE DB            PRINT VAL(A¤,2)
+    static const int pr1[] = { 0x4C, 0x04, 0xEF, 0x00, 0xDE, 0xDB };
+    b.add_line(40, bytes(pr1, 6));
+
+    // 36 06 02 D9 E2 02 00 00      B¤=HEX(0000)  — пишем только первые два байта
+    static const int zero2[] = { 0x36, 0x06, 0x02, 0xD9, 0xE2, 0x02, 0x00, 0x00 };
+    b.add_line(50, bytes(zero2, 8));
+
+    // 4B 08 E1 02 E8 01 D0 DE DB 01   BIN(STR(B¤,1),2)=J   — форма EDITOR 1222
+    static const int bin2[] = { 0x4B, 0x08, 0xE1, 0x02, 0xE8, 0x01, 0xD0,
+                                0xDE, 0xDB, 0x01 };
+    b.add_line(60, bytes(bin2, 10));
+
+    // 4C 04 EF 02 DE DB            PRINT VAL(B¤,2)
+    static const int pr2[] = { 0x4C, 0x04, 0xEF, 0x02, 0xDE, 0xDB };
+    b.add_line(70, bytes(pr2, 6));
+
+    Program prog;
+    std::string error;
+    if (!parse_tokenized(b.file(), prog, error)) {
+        std::printf("  разбор: %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(prog.lines.size(), 7u);
+
+    std::string screen;
+    if (!run_program(prog, 0, screen, error)) {
+        std::printf("  исполнение: %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_STR(line_of(screen, 1), " 12032");     // 2F00 — один байт
+    CHECK_STR(line_of(screen, 2), " 47");        // 002F — два байта
+
+    // Та же программа текстом должна дать тот же экран.
+    const char * src =
+        "10 J=47\n"
+        "20 DIM A¤2,B¤4\n"
+        "25 A¤=HEX(0000)\n"
+        "30 BIN(A¤)=J\n"
+        "40 PRINT VAL(A¤,2)\n"
+        "50 B¤=HEX(0000)\n"
+        "60 BIN(STR(B¤,1),2)=J\n"
+        "70 PRINT VAL(B¤,2)\n";
+    std::string text_screen;
+    if (!run_text(src, text_screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK(screen == text_screen);
+}
+
 } // namespace
 
 int main()
@@ -414,7 +564,10 @@ int main()
     test_comparison();
     test_string_array();
     test_input();
+    test_bin();
+    test_bin_limits();
     test_tokenized_strings();
     test_tokenized_val();
+    test_tokenized_bin();
     return test::summary("символьные переменные и STR(");
 }

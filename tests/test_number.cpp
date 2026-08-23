@@ -139,6 +139,35 @@ void test_int_conversion()
     CHECK(!num("1E30").to_int(v));
 }
 
+// «Ближайшее меньшее целое число» (разд. 4.3). Считать это через double
+// нельзя по той же причине, по какой нельзя считать в нём всё остальное:
+// 255 — это 2.55 x 10^2, в двоичной плавающей точке 254.99999999999997,
+// и INT(255) выходил 254. Список ниже — те значения, где round-trip через
+// double врал, плюс оба примера книги.
+void test_floor()
+{
+    long v = -1;
+
+    CHECK(num("255").floor_to_int(v));      CHECK_EQ(v, 255);
+    CHECK(num("256.9").floor_to_int(v));    CHECK_EQ(v, 256);
+    CHECK(num("47").floor_to_int(v));       CHECK_EQ(v, 47);
+    CHECK(num("65535").floor_to_int(v));    CHECK_EQ(v, 65535);
+    CHECK(num("1000000").floor_to_int(v));  CHECK_EQ(v, 1000000);
+    CHECK(num("0").floor_to_int(v));        CHECK_EQ(v, 0);
+    CHECK(num(".9").floor_to_int(v));       CHECK_EQ(v, 0);
+
+    // Вниз, а не к нулю: INT(-17.2) = -18.
+    CHECK(num("-17.2").floor_to_int(v));    CHECK_EQ(v + 100, 82);
+    CHECK(num("-17").floor_to_int(v));      CHECK_EQ(v + 100, 83);
+    CHECK(num("-.5").floor_to_int(v));      CHECK_EQ(v + 100, 99);
+
+    CHECK_STR(num("256.9").floor().to_display(), " 256");
+    CHECK_STR(num("-17.2").floor().to_display(), "-18");
+    CHECK_STR(num("255").floor().to_display(), " 255");
+    // Целое за пределами long остаётся собой, а не портится.
+    CHECK_STR(num("1E30").floor().to_display(), " 1.00000000E+30");
+}
+
 // Главное, ради чего десятичная арифметика: цикл FOR со дробным шагом.
 // В double .01 непредставима, и после 6600 сложений набегает заметная
 // ошибка — счётчик цикла промахивается мимо границы.
@@ -166,6 +195,7 @@ int main()
     test_power_and_root();
     test_compare();
     test_int_conversion();
+    test_floor();
     test_for_loop_accumulation();
     return test::summary("десятичная арифметика");
 }

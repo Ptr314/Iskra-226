@@ -354,6 +354,35 @@ bool Number::to_int(long & out) const
     return true;
 }
 
+Number Number::floor() const
+{
+    if (is_zero()) return *this;
+
+    // |значение| < 1: целой части нет, а вниз от отрицательного — минус один.
+    if (exp_ < 0) return neg_ ? from_int(-1) : Number();
+
+    const unsigned n = static_cast<unsigned>(exp_) + 1;
+    if (n >= DIGITS) return *this;              // дробных разрядов нет вовсе
+
+    Number r = *this;
+    bool frac = false;
+    for (unsigned i = n; i < DIGITS; ++i) {
+        if (r.d_[i]) frac = true;
+        r.d_[i] = 0;
+    }
+    // Старший разряд не обнуляется никогда (n >= 1), поэтому r нормализовано.
+    if (!frac || !neg_) return r;
+
+    Number out;
+    if (!sub(r, from_int(1), out)) return r;    // порядок тут переполниться не может
+    return out;
+}
+
+bool Number::floor_to_int(long & out) const
+{
+    return floor().to_int(out);
+}
+
 double Number::to_double() const
 {
     if (is_zero()) return 0.0;

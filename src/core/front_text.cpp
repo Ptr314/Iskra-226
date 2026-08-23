@@ -598,6 +598,31 @@ bool LineParser::parse_stmt(Stmt & s)
         return true;
     }
     if (lex_.take_word("RETURN")) { s.kind = ST_RETURN; return true; }
+    if (lex_.take_word("BIN")) {
+        // BIN(<символьная переменная>[,2])=<а.в.> (руководство, разд. 14.2).
+        if (!lex_.take_word("(")) return err("BIN без открывающей скобки");
+        s.kind = ST_BIN;
+        s.bytes = 1;
+
+        ExprParser ex(lex_);
+        Expr target;
+        if (!ex.parse_lvalue(target, true)) return err(ex.error());
+        s.targets.push_back(target);
+
+        Tok t;
+        if (!ex.take(t, false)) return err(ex.error());
+        if (t.t == Tok::COMMA) {
+            long n = 0;
+            if (!ex.take(t, true) || t.t != Tok::NUM || !t.num.to_int(n) || n != 2)
+                return err("второй аргумент BIN( бывает только 2");
+            s.bytes = 2;
+            if (!ex.take(t, false)) return err(ex.error());
+        }
+        if (t.t != Tok::RPAR) return err("BIN( без закрывающей скобки");
+        if (!ex.take(t, false) || t.t != Tok::EQ) return err("BIN( без знака равенства");
+        if (!ex.parse(s.e)) return err(ex.error());
+        return true;
+    }
     if (lex_.take_word("DEFFN")) {
         // Апостроф отличает помеченный вход в подпрограмму от DEFFN —
         // определения функции пользователя, которого пока нет.

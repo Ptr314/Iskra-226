@@ -125,7 +125,7 @@ bool Interp::slot(const Expr & e, Number *& out)
         Number n;
         if (!eval_num(e.a[k], n)) return false;
         long v = 0;
-        if (!Number::from_double(std::floor(n.to_double())).to_int(v))
+        if (!n.floor_to_int(v))
             return fail("индекс массива не целое число");
         if (v < 1) return fail("индекс массива меньше единицы");
         idx[k] = static_cast<unsigned>(v);
@@ -214,7 +214,7 @@ bool Interp::str_loc(const Expr & e, StrLoc & loc)
                 Number n;
                 if (!eval_num(e.a[k], n)) return false;
                 long v = 0;
-                if (!Number::from_double(std::floor(n.to_double())).to_int(v))
+                if (!n.floor_to_int(v))
                     return fail("индекс массива не целое число");
                 if (v < 1) return fail("индекс массива меньше единицы");
                 idx[k] = static_cast<unsigned>(v);
@@ -252,7 +252,7 @@ bool Interp::str_loc(const Expr & e, StrLoc & loc)
             Number n;
             if (!eval_num(e.a[1], n)) return false;
             long start = 0;
-            if (!Number::from_double(std::floor(n.to_double())).to_int(start))
+            if (!n.floor_to_int(start))
                 return fail("STR(: начало не целое число");
             if (start < 1) return fail("STR(: начало меньше единицы");
             if (static_cast<unsigned long>(start) > base.len)
@@ -264,7 +264,7 @@ bool Interp::str_loc(const Expr & e, StrLoc & loc)
             if (e.a.size() > 2) {
                 if (!eval_num(e.a[2], n)) return false;
                 long want = 0;
-                if (!Number::from_double(std::floor(n.to_double())).to_int(want))
+                if (!n.floor_to_int(want))
                     return fail("STR(: длина не целое число");
                 if (want < 1) return fail("STR(: длина меньше единицы");
                 if (static_cast<unsigned long>(want) > len)
@@ -432,7 +432,7 @@ bool Interp::do_redim(const Stmt & s)
             Number n;
             if (!eval_num(d.sizes[k], n)) return false;
             long v = 0;
-            if (!Number::from_double(std::floor(n.to_double())).to_int(v) || v < 1)
+            if (!n.floor_to_int(v) || v < 1)
                 return fail("MAT REDIM: размерность не положительное целое");
             dim[k] = static_cast<unsigned>(v);
         }
@@ -704,7 +704,7 @@ bool Interp::eval(const Expr & e, Value & v)
     }
     if (e.kind == EX_INT) {
         // Отбрасывание дробной части вниз, как INT в Бейсике.
-        v.num = Number::from_double(std::floor(a.to_double()));
+        v.num = a.floor();
         return true;
     }
     if (e.kind == EX_SQR) {
@@ -937,6 +937,44 @@ bool Interp::do_next(const Stmt & s)
     return true;
 }
 
+// «Преобразует целую часть арифметического выражения в двоичное число и
+// записывает это число в первом байте или в первых двух байтах символьной
+// переменной» (руководство, разд. 14.2). Операция, обратная функции VAL(.
+bool Interp::do_bin(const Stmt & s)
+{
+    if (s.targets.empty()) return fail("BIN( без приёмника");
+    if (!is_string_expr(s.targets[0]))
+        return fail("BIN( записывает в символьную переменную");
+
+    Number n;
+    if (!eval_num(s.e, n)) return false;
+    long v = 0;
+    if (!n.floor_to_int(v))
+        return fail("BIN(: значение не помещается в целое");
+
+    // «Если значение арифметического выражения превысит соответствующие
+    // пределы, то при выполнении оператора возникнет ошибка».
+    const long limit = (s.bytes == 2) ? 65535 : 255;
+    if (v < 0 || v > limit)
+        return fail("BIN(: значение вне пределов 0…" + num_str(static_cast<unsigned>(limit)));
+
+    StrLoc loc;
+    if (!str_loc(s.targets[0], loc)) return false;
+    if (loc.len < s.bytes)
+        return fail("BIN(: приёмник короче " + num_str(s.bytes) + " байт");
+
+    // Пишем только эти байты: остаток поля BIN не трогает — в примере 14.4
+    // BIN(A¤)=1 при A¤ из двух нулевых байт даёт 0100, а не 01.
+    unsigned long u = static_cast<unsigned long>(v);
+    if (s.bytes == 2) {
+        (*loc.data)[loc.off]     = static_cast<char>((u >> 8) & 0xFF);
+        (*loc.data)[loc.off + 1] = static_cast<char>(u & 0xFF);
+    } else {
+        (*loc.data)[loc.off] = static_cast<char>(u & 0xFF);
+    }
+    return true;
+}
+
 void Interp::build_labels()
 {
     labels_ready_ = true;
@@ -1068,6 +1106,9 @@ bool Interp::exec(const Stmt & s)
         case ST_CONVERT:
             return do_convert(s);
 
+        case ST_BIN:
+            return do_bin(s);
+
         case ST_GOTO:
             return jump(s.line);
 
@@ -1082,7 +1123,7 @@ bool Interp::exec(const Stmt & s)
             Number n;
             if (!eval_num(s.e, n)) return false;
             long v = 0;
-            if (!Number::from_double(std::floor(n.to_double())).to_int(v)) return true;
+            if (!n.floor_to_int(v)) return true;
             if (v < 1 || static_cast<unsigned long>(v) > s.lines.size()) return true;
 
             const unsigned target = s.lines[static_cast<unsigned>(v) - 1];

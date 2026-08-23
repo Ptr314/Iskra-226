@@ -206,7 +206,7 @@ bool ExprParser::parse_implicit(Expr & out, ExprKind kind)
     return true;
 }
 
-bool ExprParser::parse_lvalue(Expr & out)
+bool ExprParser::parse_lvalue(Expr & out, bool by_table)
 {
     Tok t;
     if (!peek(t, true)) return false;
@@ -219,7 +219,7 @@ bool ExprParser::parse_lvalue(Expr & out)
         return false;
     }
 
-    if (t.indexed) return parse_indices(out, t);
+    if (by_table ? t.table_array : t.indexed) return parse_indices(out, t);
 
     out = Expr();
     out.kind = EX_VAR;

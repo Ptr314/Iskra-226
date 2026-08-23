@@ -105,6 +105,7 @@ enum StmtKind {
     ST_REDIM,        // MAT REDIM — размерности вычисляются на ходу
     ST_LINPUT,       // ввод строки целиком, без разбора на поля
     ST_CONVERT,      // CONVERT: символьное представление числа и обратно
+    ST_BIN,          // BIN(  — число в один или два двоичных байта
     ST_INPUT,
     ST_LET,
     ST_FOR,
@@ -122,8 +123,9 @@ enum StmtKind {
 };
 
 struct Stmt {
-    Stmt() : kind(ST_REM), var(0), line(0), label(0), is_gosub(false),
-             has_prompt(false), has_step(false), newline(true) {}
+    Stmt() : kind(ST_REM), var(0), line(0), label(0), bytes(1),
+             is_gosub(false), has_prompt(false), has_step(false),
+             newline(true) {}
 
     StmtKind kind;
 
@@ -142,6 +144,11 @@ struct Stmt {
     unsigned label;                  // DEFFN', GOSUB'
     std::vector<unsigned> params;    // DEFFN' — формальные параметры
     std::vector<Expr> args;          // GOSUB' — фактические параметры
+
+    // BIN( — сколько байт занимает результат: 1 или 2. «Параметр 2 определяет
+    // число байтов, содержащих преобразованное арифметическое выражение»
+    // (руководство, разд. 14.2); других значений там нет.
+    unsigned bytes;
 
     bool is_gosub;                   // ON: переход с возвратом
     // INPUT — подсказка; CONVERT — образ; DEFFN' — текст клавиши спецфункции
