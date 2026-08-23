@@ -1,0 +1,60 @@
+10 REM ПРОГРАММА <STAT06>
+20 DIM N(2),S(2),U(2),M(2),X1(300),X2(300),G¤(300)5
+30 DIM B2¤42,A1¤60
+40 B2¤="------------------------------------------":T2=12:PRINT HEX(03):STOP "ВКЛ.ПРИНТЕР!"
+50 PRINT HEX(03);TAB(15);HEX(12);" ПРОГРАММА  <STAT06>  ВЫЧИСЛЯЕТ Т-КРИТЕРИЙ : ";HEX(110A)
+60 PRINT TAB(T2);"1) СРЕДНЕЕ ВЫБОРКИ  М(1)=K,  K-ЗАДАННАЯ ВЕЛИЧИНА";HEX(0A):PRINT TAB(T2);"2) ДЛЯ ДВУХ ВЫБОРОК  M(1)=M(2),  СИГМА(1)=СИГМА(2)";HEX(0A)
+70 PRINT TAB(T2);"3) ДЛЯ ДВУХ ВЫБОРОК  М(1)=M(2),  СИГМА(1)<>СИГМА(2)";HEX(0A):PRINT TAB(T2);"4) ДЛЯ ДВУХ СВЯЗАННЫХ ПОПАРНО ВЫБОРОК  М(1)=M(2)"
+80 PRINT TAB(12);"---------------------------------------------------":PRINT TAB(30);:INPUT "NO.",H:IF H=0THEN500
+90 PRINT HEX(03);TAB(30);"ВВОД    ДАННЫХ :";HEX(0A):PRINT TAB(22);"ПУЛЬТ            =====> ";HEX(12);"<1>";HEX(110A):PRINT TAB(22);"ГИБКИЙ ДИСК (R)  =====> ";HEX(12);"<2>";HEX(110A)
+100 PRINT TAB(22);"ЖЕСТКИЙ ДИСК (R) =====> ";HEX(12);"<3>";HEX(110A):PRINT TAB(32);:INPUT "NO.",K0:ON K0GOTO110,150,160
+110 PRINT HEX(0A0A0A);TAB(30);"ЗАПИСЬ ДАННЫХ :";HEX(0A):PRINT TAB(22);"ГИБКИЙ ДИСК (R)  =====> ";HEX(12);"<1>";HEX(110A):PRINT TAB(22);"ЖЕСТКИЙ ДИСК (R) =====> ";HEX(12);"<2>";HEX(110A):PRINT TAB(32);:INPUT "NO.",K1:ON K1GOTO120,160
+120 PRINT HEX(0A0A);"  УСТАНОВИТЕ НА <18 R> ГИБКИЙ ДИСК, ИМЕЮЩИЙ 500 СВОБОДНЫХ  СЕКТОРОВ !":STOP :SELECT DISK18R:LIST DC R
+130 PRINT HEX(0A);TAB(7);"СТЕРЕТЬ ===> ";HEX(12);"<0>";HEX(11);"  ПРОДОЛЖАТЬ ===> ";HEX(12);;"<1>";HEX(11);"  ЗАМЕНА ДИСКА ===> ";HEX(12);"<2>";HEX(11);:INPUT " ",Y:ON YGOTO170,120
+140 SCRATCH DISK RLS=5,END=1000:GOTO 170
+150 SELECT DISK18R:GOTO 170
+160 SELECT DISK1CR
+170 PRINT HEX(0A);TAB(20);:INPUT "ИМЯ ФАЙЛА ДАННЫХ ",A¤:IF K0>1THEN190
+180 PRINT HEX(0A);"НАЗВАНИЕ  АНАЛИЗИРУЕМОЙ  ИНФОРМАЦИИ";HEX(0A):INPUT A1¤
+190 PRINT HEX(0A);TAB(20);:INPUT "ЧИСЛО ПАР ВЫБОРОК, МАКС. ЧИСЛО ДАННЫХ ",D0,N0
+200 MAT REDIM X1(N0),X2(N0),G¤(N0)5
+210 ON K0GOTO220,230,230
+220 DATA SAVE DC OPEN T(500)A¤:GOTO 240
+230 DATA LOAD DC OPEN TA¤:DSKIP END:DBACKSPACE 1:DATA LOAD DC A1¤,E1,E2:PRINT HEX(0A0A);A1¤:PRINT HEX(0A);"ЧИСЛО ПАР ВЫБОРОК =";E1:PRINT HEX(0A);"ЧИСЛО ДАННЫХ =";E2;HEX(0A):INPUT " ДА  <1/0> ",Y:IF Y=0THEN170:DBACKSPACE BEG
+240 PRINT HEX(03):FOR D=1TOD0:ON HGOTO250,260,260,370
+250 I0=1:GOTO 270
+260 I0=2
+270 FOR I=1TOI0:S(I),U(I)=0:PRINT HEX(0A);"ПАРА  NO.";D;HEX(0A):PRINT "ЧИСЛО ДАННЫХ ВЫБОРКИ NO.";I;:INPUT " ",N(I):ON K0GOTO290,280,280
+280 DATA LOAD DC G¤():UNPACK(+#.#####^^^^)G¤()TOX1():GOTO 300
+290 FOR K=1TON(I):PRINT D;" ";I;"  X(";K;")";:INPUT X1(K):NEXT K:PRINT B2¤
+300 SELECT P1:FOR K=1TON(I):PRINTUSING 520,D,I,K,X1(K):NEXT K:SELECT P0:PRINT B2¤
+310 INPUT "<0=ПРОДОЛЖАТЬ,###=ИСПРАВИТЬ> NO.",Y:IF Y=0THEN320:PRINT "X(";U;")=";:INPUT X(Y):GOTO 300
+320 FOR K=1TON(I):S(I)=S(I)+X1(K):U(I)=U(I)+X1(K)*X1(K):NEXT K:M(I)=S(I)/N(I):S(I)=(U(I)-S(I)*S(I)/N(I))/(N(I)-1):IF K0>1THEN330:PACK(+#.#####^^^^)G¤()FROMX1():DATA SAVE DC G¤()
+330 NEXT I:ON HGOTO340,350,360
+340 PRINT HEX(0A);TAB(10);"ВВЕДИТЕ ЗАДАННОЕ СРЕДНЕЕ ЗНАЧЕНИЕ ";:INPUT C:T=(M(1)-C)*SQR(N(1)/S(1)):T0=ABS(T):D1=N(1)-1:GOSUB ' 5:GOTO 440
+350 T=(M(1)-M(2))/SQR(1/N(1)+1/N(2)):D1=N(1)+N(2)-2:T0=ABS(T)/SQR(((N(1)-1)*S(1)+(N(2)-1)*S(2))/D1):GOSUB ' 5:GOTO 440
+360 T=(M(1)-M(2))/SQR(S(1)/N(1)+S(2)/N(2)):D1=(S(1)/N(1)+S(2)/N(2))^2:D1=D1/((S(1)/N(1))^2/(N(1)+1)+(S(2)/N(2))^2/(N(2)+1))-2:D1=INT(D1+.5):T0=ABS(T):GOSUB ' 5:GOTO 440
+370 PRINT "ЧИСЛО ДАННЫХ";:INPUT N(1):ON K0GOTO390,380,380
+380 DATA LOAD DC G¤():UNPACK(+#.#####^^^^)G¤()TOX1():DATA LOAD DC G¤():UNPACK(+#.#####^^^^)G¤()TOX2():GOTO 400
+390 FOR K=1TON(1):PRINT " X1(";K;") X2(";K;")";:INPUT X1(K),X2(K):NEXT K:PRINT B2¤
+400 SELECT P1:FOR K=1TON(1):PRINTUSING 510,K,X1(K),X2(K):NEXT K:SELECT P0:PRINT B2¤
+410 INPUT "<0=ПРОДОЛЖАТЬ,###=ИСПРАВИТЬ> NO.",Y:IF Y=0THEN420:PRINT "X1(";Y;")=";:INPUT X1(Y):PRINT "X2(";Y;")=";:INPUT X2(Y):GOTO 400
+420 S(1),S(2)=0:FOR K=1TON(1):E1=X1(K)-X2(K):S(1)=S(1)+E1:S(2)=S(2)+E1*E1:NEXT K:T0=ABS(S(1))/N(1)*SQR(N(1)-1):T0=T0/SQR(S(2)/N(1)-(S(1)/N(1))^2):D1=N(1)-1:GOSUB ' 5
+430 IF K0>1THEN440:PACK(+#.#####^^^^)G¤()FROMX1():DATA SAVE DC ¤G¤():PACK(+#.#####^^^^)G¤()FROMX2():DATA SAVE DC ¤G¤()
+440 SELECT PRINT0C(130):ON HGOTO450,460,460,470
+450 PRINTUSING 530,M(1),C,T0,P0,D1:GOTO 480
+460 PRINTUSING 540,M(1),M(2),SQR(S(1)),SQR(S(2)),T0,P0,D1,N(1),N(2):GOTO 480
+470 PRINTUSING 550,S(1),T0,P0,D1
+480 SELECT PRINT05(80):NEXT D:IF K0>1THEN490:DATA SAVE DC ¤A1¤,D0,N0:DATA SAVE DC END
+490 PRINT HEX(03):PRINT AT(7,28):INPUT "ПРОДОЛЖАТЬ <1/0> ",Y:IF Y=1THEN50
+500 END 
+510 % ###   #####.###   #####.###
+520 %##  #  ###  ######.###
+530 % СРЕД. ВЫБ.=#####.###  ОТЛИЧАЕТСЯ ОТ К=####.### ПО Т-КРИТ.=#.### С ВЕРОЯТ.=#.#### СТ.СВ.=###
+540 %СРЕД.(1)=#####.### ОТЛИЧАЕТСЯ ОТ СРЕД.(2)=#####.###  СИГМА(1)=####.### СИГМА(2)=####.### ПО Т-КРИТ.=#.### С ВЕРОЯТ.=#.#### СТ.СВ.=### N(1)=### N(2)=###
+550 %СУММА (X1-X2)=-######.###  ВЫБОРКИ (1)И(2) РАЗЛИЧАЮТСЯ ПО Т-КРИТ.=#.### С ВЕРОЯТ.=#.####  СТ.СВ.=###
+560 DEFFN ' 5:P=1:T=T0*T0:IF T<1THEN570:A=D1:B=1:T1=T:GOTO 580
+570 A=1:B=D1:T1=1/T
+580 A1=2/9/A:B1=2/9/B:Y=ABS((1-B1)*T1^(1/3)-1+A1)/SQR(B1*T1^(2/3)+A1):IF B>=4THEN590:Y=Y*(1+.08*Y^4/B^3)
+590 P=.5/(1+Y*(.196854+Y*(.115194+Y*(.000344+Y*.019527))))^4:IF T>=.5THEN600:P=1-P
+600 P0=INT(1E6*P)/1E6:RETURN 

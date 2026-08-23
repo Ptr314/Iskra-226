@@ -1,0 +1,55 @@
+10 REM ПРОГРАММА <STAT08>
+20 DIM X(300),N(10),G¤(300)5,W(300)
+30 DIM B2¤42,A1¤60
+40 B2¤="------------------------------------------"
+50 PRINT HEX(03);TAB(13);HEX(12);" ПРОГРАММА  <STAT08>  ОДНОФАКТОРНЫЙ  ДИСПЕРСИОННЫЙ  АНАЛИЗ ";HEX(110A0A)
+60 PRINT TAB(13);" 1) ПОВТОРНЫЕ  ИЗМЕРЕНИЯ  НЕ  КОРРЕЛИРУЮТ  МЕЖДУ  СОБОЙ";HEX(0A)
+70 PRINT TAB(13);" 2) ПОВТОРНЫЕ  ИЗМЕРЕНИЯ   КОРРЕЛИРУЮТ  МЕЖДУ  СОБОЙ":PRINT TAB(12);"-----------------------------------------------------------":PRINT TAB(32);:INPUT "NO. ",U
+80 PRINT HEX(03);TAB(30);"ВВОД   ДАННЫХ :";HEX(0A):PRINT TAB(22);"ПУЛЬТ              =====>  ";HEX(12);"<1>";HEX(110A):PRINT TAB(22);"ГИБКИЙ  ДИСК (R)   =====>  ";HEX(12);"<2>";HEX(110A)
+90 PRINT TAB(22);"ЖЕСТКИЙ  ДИСК (R)  =====>  ";HEX(12);"<3>";HEX(110A):PRINT TAB(32);:INPUT "NO.",K0:ON K0GOTO100,140,150
+100 PRINT HEX(0A0A0A);TAB(30);"ЗАПИСЬ   ДАННЫХ :";HEX(0A):PRINT TAB(22);"ГИБКИЙ  ДИСК (R)   =====>  ";HEX(12);"<1>";HEX(110A):PRINT TAB(22);"ЖЕСТКИЙ  ДИСК (R)  =====>  ";HEX(12);"<2>";HEX(110A):PRINT TAB(32);:INPUT "NO.",K1:ON K1GOTO110,150
+110 PRINT HEX(0A0A);"  УСТАНОВИТЕ  НА <18 R>  ГИБКИЙ  ДИСК, ИМЕЮЩИЙ  700  СВОБОДНЫХ  СЕКТОРОВ !":STOP :SELECT DISK18R:LIST DC R
+120 PRINT HEX(0A);TAB(7);"СТЕРЕТЬ ===> ";HEX(12);"<0>";HEX(11);"  ПРОДОЛЖАТЬ ===> ";HEX(12);"<1>";HEX(11);"  ЗАМЕНА ДИСКА ===> ";HEX(12);"<2>";HEX(11);:INPUT " ",H:ON HGOTO160,110
+130 SCRATCH DISK RLS=5,END=1000:GOTO 160
+140 SELECT DISK18R:GOTO 160
+150 SELECT DISK1CR
+160 PRINT HEX(0A);TAB(20);:INPUT "ИМЯ  ФАЙЛА  ДАННЫХ ",A¤:IF K0>1THEN180
+170 PRINT HEX(0A);"НАЗВАНИЕ АНАЛИЗИРУЕМОЙ ИНФОРМАЦИИ";HEX(0A):INPUT A1¤
+180 PRINT HEX(0A0A);TAB(10);"ЧИСЛО  УРОВНЕЙ  ФАКТОРА  ";HEX(12);"<А>";HEX(11);" ,  МАКС.  ЧИСЛО  ДАННЫХ ";:INPUT T0,N0
+190 MAT REDIM X(N0),N(T0),G¤(N0)5,W(N0)
+200 ON K0GOTO210,220,220
+210 DATA SAVE DC OPEN T(700)A¤:GOTO 230
+220 DATA LOAD DC OPEN TA¤:DSKIP END:DBACKSPACE 1:DATA LOAD DC A1¤,E1,E2:PRINT HEX(0A0A);A1¤:PRINT HEX(0A);"ЧИСЛО УРОВН. ФАКТОРА (А)=";E1:PRINT HEX(0A);"МАКС. ЧИСЛО ДАННЫХ=";E2;HEX(0A):INPUT " ДА  <1/0> ",H:IF H=0THEN160:DBACKSPACE BEG
+230 PRINT HEX(03):S1,S2,S3,M=0:MAT W=ZER:FOR T=1TOT0:S=0:PRINT HEX(0A);"ЧИСЛО ДАННЫХ НА ";T;" УРОВНЕ";:INPUT N(T):ON K0GOTO250,240,240
+240 DATA LOAD DC G¤():UNPACK(+#.#####^^^^)G¤()TOX():GOTO 260
+250 FOR D=1TON(T):PRINT T;"   X(";D;")";:INPUT X(D):NEXT D:PRINT B2¤
+260 SELECT P1:FOR D=1TON(T):PRINTUSING 540,T,D,X(D):NEXT D:SELECT P0:PRINT B2¤
+270 INPUT "<0=ПРОДОЛЖАТЬ,  ###=ИСПРАВИТЬ>  NO. ",H:IF H=0THEN280:PRINT "X(";H;")=";:INPUT X(H):GOTO 260
+280 ON UGOTO300,290
+290 FOR D=1TON(T):S=S+X(D):S2=S2+X(D)*X(D):W(D)=W(D)+X(D):NEXT D:S1=S1+S:S3=S3+S*S/N(T):M=M+N(T):GOTO 310
+300 FOR D=1TON(T):S=S+X(D):S2=S2+X(D)*X(D):NEXT D:S1=S1+S:S3=S3+S*S/N(T):M=M+N(T)
+310 IF K0>1THEN320:PACK(+#.#####^^^^)G¤()FROMX():DATA SAVE DC ¤G¤()
+320 NEXT T:IF K0>1THEN330:DATA SAVE DC ¤A1¤,T0,N0:DATA SAVE DC END
+330 ON UGOTO350,340
+340 V0,V2=0:FOR D=1TON0:V0=V0+W(D):V2=V2+W(D)*W(D):NEXT D:V1=V0*V0/M:Q1=S2-V1:Q2=S3-V1:Q3=(V2/T0)-V1:Q4=Q1-Q2-Q3:C=M-1:K=T0-1:J=N0-1:I=(N0-1)*(T0-1):L1=Q1/C:L2=Q2/K:L3=Q3/J:L4=Q4/I:F=L2/L4:N9=(Q2/Q1)*100:GOSUB ' 5(K,I):GOTO 360
+350 S1=S1*S1/M:Q1=S2-S1:Q2=S3-S1:Q3=S2-S3:C=M-1:K=T0-1:J=M-T0:L1=Q1/C:L2=Q2/K:L3=Q3/J:F=L2/L3:N9=(Q2/Q1)*100:GOSUB ' 5(K,J)
+360 STOP "ВКЛ. ПРИНТЕР !":SELECT PRINT0C(130):ON UGOTO370,380
+370 PRINT TAB(9);"ОДНОФАКТОРНЫЙ  ДИСПЕРСИОННЫЙ  АНАЛИЗ (БЕЗ КОРР.)":GOTO 390
+380 PRINT TAB(9);"ОДНОФАКТОРНЫЙ  ДИСПЕРСИОННЫЙ  АНАЛИЗ (С КОРР.)"
+390 PRINT " ВАРИАЦИЯ    СУММА КВАД.   СТ.СВ.   ДИСПЕРСИЯ":GOSUB 550:PRINTUSING 490,Q1,C,L1:PRINTUSING 500,Q2,K,L2:PRINTUSING 510,Q3,J,L3:IF U=1THEN400:PRINTUSING 520,Q4,I,L4
+400 GOSUB 550:PRINTUSING 530,F,P0,N9
+410 SELECT PRINT05(80)
+420 END 
+430 DEFFN ' 5(D1,D2):P=1
+440 IF F<1THEN450:A=D1:B=D2:F1=F:GOTO 460
+450 A=D2:B=D1:F1=1/F
+460 A1=2/9/A:B1=2/9/B:Y=ABS((1-B1)*F1^(1/3)-1+A1)/SQR(B1*F1^(2/3)+A1):IF B>=4THEN470:Y=Y*(1+.08*Y^4/B^3)
+470 P=.5/(1+Y*(.196854+Y*(.115194+Y*(.000344+Y*.019527))))^4:IF F>1THEN480:P=P-1
+480 P0=INT(1E6*P)/1E6:RETURN 
+490 %ОБЩАЯ        ######.####    ###   ######.####
+500 %ФАКТОРНАЯ    ######.####    ###   ######.####
+510 %СЛУЧАЙНАЯ    ######.####    ###   ######.####
+520 %ОСТАТОЧНАЯ   ######.####    ###   ######.####
+530 %F-КРИТ.=#####.###  С ВЕРОЯТ.=#.#####  СТ.ВЛИЯН.=###.###
+540 %##     ###   ######.###
+550 PRINT "----------------------------------------------------------":RETURN 

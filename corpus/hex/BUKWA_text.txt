@@ -1,0 +1,153 @@
+0 GOTO 100
+1 SCRATCH F/1C,"BUKWA":SAVE DC F/1C,("BUKWA")"BUKWA":END 
+2 F=1:GOSUB 900:END 
+5 DEFFN ' 0:RUN 300:DEFFN ' 16:RUN 300:DEFFN ' 15"LIST S "
+8 %
+9 %   **********************
+10 %  *  BUKWA.  02.12.85  *
+11 %  **********************
+12 %
+13 % BASIC 02  30.09.84
+14 %
+15 % A.БАТЫРЬ. ИНЭОС АН СССР. 135-93-31
+19 %
+20 % ######  СОЗДАНИE ЗНАКОГЕНЕРАТОРА ДЛЯ ГРАФИЧЕСКОЙ ПЕЧАТИ  ######
+22 %
+24 % НА ДИСКЕТЕ <F> ДОЛЖЕН БЫТЬ БЫТЬ ФАЙЛ С ИМЕНЕМ 'SYMN',
+26 % СОДЕРЖАЩИЙ СИМВОЛЬНЫЙ МАССИВ S¤(2,256)6.
+27 %
+28 % НА ВОПРОС 'СИМВОЛ?' ЛИБО НАЖАТЬ КЛАВИШУ С НУЖНЫМ СИМВОЛОМ,
+30 % ЛИБО ДВЕ КЛАВИШИ [СФ] С HEX-КОДОМ СИМВОЛА.
+32 % 
+34 % ПОСТАВИТЬ ТОЧКУ - КЛАВИША [*], СТЕРЕТЬ - [.]
+35 % СТЕРЕТЬ СТРОКУ - [LINEERASE],  СТОЛБЕЦ - [ERASE].
+36 %
+37 % ПЕРЕМЕЩЕНИЕ КУРСОРА - БЕЛЫЕ КЛАВИШИ И КЛАВИШИ
+38 % [4] (ВЛЕВО), [6] (ВПРАВО), [8] (ВВЕРХ), [2] (ВНИЗ), [5] (В ЦЕНТР),
+39 % [1] (ВЛЕВО ВНИЗ), [7] (ВЛЕВО ВВЕРХ), [3] (ВПРАВО ВНИЗ), [9] (ВПРАВО ВВЕРХ).
+40 % 
+42 % ЗАНЕСЕНИЕ СИМВОЛА В МАССИВ S¤() - [CR/LF],
+43 % ПЕЧАТЬ СИМВОЛА С ЗАНЕСЕНИЕM ЕГО В МАССИВ S¤() - [PRINT],
+44 % ПЕРЕХОД К СЛЕДУЮЩЕМУ СИМВОЛУ - [RUN],
+46 % ПЕРЕХОД К ДРУГОМУ СИМВОЛУ БЕЗ ИЗМЕНЕНИЯ РАСТРА - [RECALL].
+48 % 
+50 % РЕСТАРТ - [СФ 0] ИЛИ 'RUN 300'
+52 % ЗАПИСЬ ЗНАКОГЕНЕРАТОРА НА ДИСКЕТУ <F> В ВИДЕ ФАЙЛА ДАННЫХ - 'RUN 2'
+53 % ЗАПИСЬ ЗНАКОГЕНЕРАТОРА НА ДИСКЕТУ <F> В ВИДЕ ПРОГРАММНОГО ФАЙЛА-'RUN 1000'
+54 % НЕПРЕРЫВНАЯ ПЕЧАТЬ ВСЕГО ЗНАКОГЕНЕРАТОРА - 'RUN 2000'
+90 %
+100 DIM C¤(12,6)1,S¤(2,256)6,A¤1
+110 DIM L1¤(132)6,L2¤(132)6
+120 DIM F¤(2)8,D¤8
+130 F¤(1)="SYM0":F¤(2)="ZNAK"
+190 %
+200 %######## LOAD S¤() ########
+210 F=1:GOSUB 910:IF F¤(1)<>" "THEN220:INIT (00)S¤():GOTO 225
+220 DATA LOAD DC OPEN FF¤(1):DATA LOAD DC S¤()
+225 OR(S¤(),18)
+230 INIT (".")C¤()
+290 %
+300 %###########  RESTART  ###########
+310 SELECT PRINT05(80):RETURN CLEAR ALL
+320 PRINT HEX(03):GOSUB 330:GOTO 400
+330 PRINT AT(5,30,50):PRINT "СИМВОЛ? ";:D=16:A=0:KEYIN A¤,340,340
+340 KEYIN A¤,370,350:GOTO 340
+350 PRINT HEX(07);:A=A+D*VAL(A¤):IF D<2THEN360:D=1:GOTO 340
+360 BIN(A¤)=A
+370 IF A¤<" "ORA¤=HEX(85)THEN380:PRINT A¤;
+380 PRINT "     [ HEX(";:HEXPRINT A¤;:PRINT ") ]"
+390 I%=VAL(A¤)+1:RETURN 
+400 PRINT HEX(01);:FOR J=1TO6:FOR I=1TO12
+410 GOSUB 730
+420 BIN(A¤)=2^(I+K1):AND(A¤,STR(S¤(K2,I%),J,1)):GOSUB 430:GOTO 450
+430 PRINT AT(I,2*J-1):IF A¤=HEX(00)THEN440:C¤(I,J)="*":PRINT HEX(122011):RETURN 
+440 C¤(I,J)=".":PRINT ".":RETURN 
+450 NEXT I:NEXT J
+460 FOR I=1TO12:PRINT AT(I,14):PRINTUSING "##",I:NEXT I
+470 L,P=1:GOTO 620
+480 KEYIN A¤,490,300:GOTO 480
+490 IF A¤=HEX(82)THEN300
+495 IF A¤=HEX(86)ORA¤=HEX(96)ORA¤=HEX(A6)ORA¤=HEX(B6)THEN820
+500 IF A¤<>HEX(9B)THEN510:GOSUB 330:GOTO 470
+510 IF A¤<>HEX(85)THEN512:GOSUB 680:GOTO 300
+512 IF A¤<>HEX(9F)THEN515:A¤=HEX(00):I=L:FOR J=1TO6:GOSUB 430:NEXT J:GOTO 620
+515 IF A¤<>HEX(9E)THEN520:A¤=HEX(00):J=P:FOR I=1TO12:GOSUB 430:NEXT I:GOTO 620
+520 IF A¤="*"ORA¤="."THEN630
+530 IF A¤<HEX(AA)ORA¤>HEX(AF)THEN545
+540 ON VAL(A¤)-169GOSUB550,570,570,590,590,610:GOTO 620
+545 IF A¤<"1"ORA¤>"9"THEN480
+547 ON VAL(A¤)-48GOSUB580,610,615,570,575,590,560,550,600:GOTO 620
+550 % ^ :IF L<2THEN666:L=L-1:RETURN 
+560 % <-^ :GOSUB 550:GOSUB 570:RETURN 
+570 %<---:IF P<2THEN666:P=P-1:RETURN 
+575 % CENTER:L=6:P=3:RETURN 
+580 % <-V :GOSUB 570:GOSUB 610:RETURN 
+590 %--->:IF P>5THEN666:P=P+1:RETURN 
+600 % ->^ :GOSUB 590:GOSUB 550:RETURN 
+610 % V :IF L>11THEN666:L=L+1:RETURN 
+615 % ->V :GOSUB 590:GOSUB 610:RETURN 
+620 PRINT AT(L,2*P-1):GOTO 480
+630 IF A¤="*"THEN640:PRINT AT(L,2*P-1):PRINT A¤:GOTO 650
+640 PRINT AT(L,2*P-1):PRINT HEX(122011)
+650 C¤(L,P)=A¤
+660 GOTO 620
+666 RETURN 
+670 % ##### ЗАНЕСЕНИЕ СИМВОЛА ######
+680 INIT (00)S¤(1,I%),S¤(2,I%)
+690 FOR J=1TO6
+700 FOR I=1TO12
+710 IF C¤(I,J)<>"*"THEN790
+720 GOSUB 730:GOTO 780
+730 ON IGOTO740,740,740,750,750,750,760,760,760,770,770,770
+740 K1=-1:K2=1:RETURN 
+750 K1=+1:K2=1:RETURN 
+760 K1=-7:K2=2:RETURN 
+770 K1=-5:K2=2:RETURN 
+780 BIN(A¤)=2^(I+K1):ADD (STR(S¤(K2,I%),J,1),A¤)
+790 NEXT I
+800 NEXT J:OR(S¤(1,I%),18):OR(S¤(2,I%),18):RETURN 
+820 INIT (20)L1¤(),L2¤():GOSUB 680
+830 FOR I=1TO10:L1¤(I)=S¤(1,I%):L2¤(I)=S¤(2,I%)
+840 NEXT I
+850 N=LEN(STR(L1¤(),1)):GOSUB 3000
+860 DATA SAVE BT #5,STR(L1¤(),1,N):PRINT #5
+870 DATA SAVE BT #5,STR(L2¤(),1,N):PRINT #5,HEX(0A0A0A0A)
+880 GOTO 480
+900 % #### ИМЯ ФАЙЛА ###
+905 GOSUB 910:GOTO 920
+910 PRINT HEX(030A0A0A0A):LINPUT "ИМЯ ФАЙЛА:  ",F¤(F):PRINT :RETURN 
+920 D¤=" ":INPUT "НОВЫЙ - [CR/LF], ВМЕСТО СТАРОГО - ИМЯ СТАРОГО ФАЙЛА",D¤
+930 IF D¤=" "THEN950:SCRATCH FD¤
+950 ON FGOTO960,980
+960 IF D¤=" "THEN965:DATA SAVE DC OPEN F¤(D¤)F¤(1):GOTO 970
+965 DATA SAVE DC OPEN F¤(20)F¤(1)
+970 DATA SAVE DC ¤S¤():DATA SAVE DC ¤END:RETURN 
+980 IF D¤=" "THEN985:SAVE DC F¤(D¤)F¤(2)9501,9528:RETURN 
+985 SAVE DC F¤F¤(2)9501,9528:RETURN 
+990 %
+1000 % #######  ЗАНЕСЕНИЕ S¤() В ПРОГРАММУ  ######
+1005 DIM P¤(28)251,P¤20
+1010 P¤=HEX(1000007CB14907E716E3B14902E76CE3A552FFF6)
+1020 ASMB P¤*
+1030 FOR M%=1TO28:P¤(M%)="     STR(S ¤(),    ,110)=HEX(":STR(P¤(M%),250,2)=HEX(2985)
+1040 CONVERT 9500+M%TOSTR(P¤(M%),1,4),(####)
+1050 CONVERT M%*110-109TOSTR(P¤(M%),16,4),(####)
+1060 A=110:IF M%<28THEN1070:A=101
+1070 ASMB ,76000,STR(S¤(),(M%-1)*110+1,A),STR(P¤(),(M%-1)*251+30)
+1080 NEXT M%
+1090 STR(P¤(28),21,3)="101"
+1100 LOAD P¤()9501,9528,1110
+1110 F=2:GOSUB 900
+1130 CLEAR P9500
+1140 END 
+2000 GOSUB 3000:FOR I=0TO3
+2010 DATA SAVE BT #5,STR(S¤(),I*64*6+1,64*6):PRINT #5
+2015 DATA SAVE BT #5,STR(S¤(),256*6+I*64*6+1,64*6)
+2020 PRINT #5:PRINT #5
+2030 NEXT I
+2040 GOTO 2000
+3000 INIT (00)T¤:¤GIO 'HEX(FB00F00DF800F307FB00D400F800F6FF),T¤
+3010 SELECT #50C
+3020 IF STR(T¤,2,1)=HEX(00)THEN3040
+3030 SELECT #50D:RETURN 
+3040 PRINT /0C,HEX(12):RETURN 
