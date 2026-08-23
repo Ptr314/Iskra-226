@@ -449,11 +449,14 @@ std::string Number::to_display() const
         return s;
     }
 
+    // Мантисса печатается с восемью знаками после точки. Основание —
+    // единственный пример свободного формата в руководстве (разд. 13.6):
+    // CONVERT "-123.05E+14" TO X, PRINT X даёт -1.23050000E+16.
+    const unsigned FRACTION = 8;
     s += static_cast<char>('0' + d_[0]);
-    if (last > 1) {
-        s += '.';
-        for (unsigned i = 1; i < last; ++i) s += static_cast<char>('0' + d_[i]);
-    }
+    s += '.';
+    for (unsigned i = 1; i <= FRACTION; ++i)
+        s += static_cast<char>('0' + (i < D ? d_[i] : 0));
     s += 'E';
     char tmp[16];
     std::sprintf(tmp, "%+03d", exp_);

@@ -296,6 +296,172 @@ bool Interp::assign_string(const Expr & target, const std::string & value)
     return true;
 }
 
+// Образ CONVERT: [+|-] [###] [.] [###] [^^^^] (руководство, разд. 13.6).
+// Знака нет — число пишется без знака; «+» — всегда + или −; «−» — пробел
+// или минус. Младшие разряды, не влезшие в образ, отбрасываются, а не
+// округляются. Слишком длинная целая часть — ошибка.
+bool format_by_image(const Number & value, const std::string & image,
+                     std::string & out, std::string & error)
+{
+    unsigned sign_mode = 0;                   // 0 нет, 1 плюс, 2 минус
+    unsigned p = 0;
+    if (p < image.size() && (image[p] == '+' || image[p] == '-')) {
+        sign_mode = (image[p] == '+') ? 1 : 2;
+        ++p;
+    }
+
+    unsigned ip = 0, fp = 0;
+    while (p < image.size() && image[p] == '#') { ++ip; ++p; }
+    if (p < image.size() && image[p] == '.') {
+        ++p;
+        while (p < image.size() && image[p] == '#') { ++fp; ++p; }
+    }
+
+    bool exponential = false;
+    // В листингах показатель степени изображается как ^^^^, в книге тот же
+    // знак распознан как /\/\/\/\ — принимаем оба написания.
+    while (p < image.size() && (image[p] == '^' || image[p] == '\\' ||
+                                image[p] == '/')) {
+        exponential = true;
+        ++p;
+    }
+    if (p != image.size()) { error = "непонятный образ CONVERT: " + image; return false; }
+    if (!ip && !fp) { error = "в образе CONVERT нет ни одного знака #"; return false; }
+
+    Number v = value;
+    const bool negative = v.is_negative();
+    if (negative) v = v.negated();
+
+    std::string digits;
+    int exponent = 0;
+
+    if (exponential) {
+        // Мантисса приводится к виду с ip цифрами до точки.
+        const std::string d = v.to_display();
+        (void)d;
+        double x = v.to_double();
+        if (x != 0.0) {
+            while (x >= std::pow(10.0, static_cast<double>(ip))) { x /= 10.0; ++exponent; }
+            while (x < std::pow(10.0, static_cast<double>(ip - 1))) { x *= 10.0; --exponent; }
+        }
+        char buf[64];
+        std::sprintf(buf, "%.*f", static_cast<int>(fp) + 2, x);
+        digits = buf;
+    } else {
+        char buf[64];
+        std::sprintf(buf, "%.*f", static_cast<int>(fp) + 2, v.to_double());
+        digits = buf;
+    }
+
+    // Разделяем на целую и дробную части и отбрасываем лишние разряды.
+    std::string whole = digits, frac;
+    const std::size_t dot = digits.find('.');
+    if (dot != std::string::npos) {
+        whole = digits.substr(0, dot);
+        frac = digits.substr(dot + 1);
+    }
+    if (whole.size() > ip) { error = "число не помещается в образ CONVERT"; return false; }
+    while (whole.size() < ip) whole = "0" + whole;
+    frac.resize(fp, '0');
+
+    out.clear();
+    if (sign_mode == 1) out += negative ? '-' : '+';
+    else if (sign_mode == 2) out += negative ? '-' : ' ';
+
+    out += whole;
+    if (fp) { out += '.'; out += frac; }
+
+    if (exponential) {
+        char buf[16];
+        std::sprintf(buf, "E%c%02d", exponent < 0 ? '-' : '+',
+                     exponent < 0 ? -exponent : exponent);
+        out += buf;
+    }
+    return true;
+}
+
+bool Interp::do_convert(const Stmt & s)
+{
+    if (s.targets.size() != 1) return fail("CONVERT ждёт одну цель");
+
+    if (is_string_expr(s.targets[0])) {
+        // Число в символьное представление: нужен образ.
+        Number v;
+        if (!eval_num(s.e, v)) return false;
+
+        std::string text;
+        if (s.has_prompt) {
+            std::string error;
+            if (!format_by_image(v, s.prompt, text, error)) return fail(error);
+        } else {
+            // Образ не задан. Книга такой формы не описывает, но в корпусе
+            // она встречается (BAM*: CONVERT V0E TO STR(V0D¤,12,4)).
+            // Допущение: число прижимается вправо к длине приёмника.
+            StrLoc loc;
+            if (!str_loc(s.targets[0], loc)) return false;
+            text = v.to_display();
+            if (!v.is_negative() && !text.empty() && text[0] == ' ')
+                text = text.substr(1);
+            while (text.size() < loc.len) text = " " + text;
+        }
+        return assign_string(s.targets[0], text);
+    }
+
+    // Символьное представление в число: «преобразуемое значение должно
+    // представлять собой правильную запись числа» (разд. 13.6).
+    std::string text;
+    if (!eval_str(s.e, text)) return false;
+
+    Number n;
+    if (!Number::parse(text, n)) return fail("CONVERT: «" + text + "» не число");
+    Number * cell = 0;
+    if (!slot(s.targets[0], cell)) return false;
+    *cell = n;
+    return true;
+}
+
+// MAT REDIM меняет размерности уже существующего массива; содержимое
+// памяти при этом сохраняется.
+bool Interp::do_redim(const Stmt & s)
+{
+    for (unsigned i = 0; i < s.dims.size(); ++i) {
+        const DimEntry & d = s.dims[i];
+
+        unsigned dim[2] = { 0, 0 };
+        for (unsigned k = 0; k < d.sizes.size() && k < 2; ++k) {
+            Number n;
+            if (!eval_num(d.sizes[k], n)) return false;
+            long v = 0;
+            if (!Number::from_double(std::floor(n.to_double())).to_int(v) || v < 1)
+                return fail("MAT REDIM: размерность не положительное целое");
+            dim[k] = static_cast<unsigned>(v);
+        }
+        if (!dim[0]) return fail("MAT REDIM без размерности");
+
+        const bool is_string = d.var < prog_.vars.size() && prog_.vars[d.var].is_string;
+        if (is_string) {
+            unsigned len = d.str_len;
+            if (!len && d.var < prog_.vars.size()) len = prog_.vars[d.var].str_len;
+            if (!len) len = 16;
+            const std::size_t total = static_cast<std::size_t>(len) * dim[0] *
+                                      (dim[1] ? dim[1] : 1);
+            if (total > 64u * 1024u) return fail("MAT REDIM: слишком большой массив");
+            str_field(d.var).resize(total, ' ');
+            continue;
+        }
+
+        const unsigned long total = static_cast<unsigned long>(dim[0]) *
+                                    (dim[1] ? dim[1] : 1);
+        if (total > 1000000UL) return fail("MAT REDIM: слишком большой массив");
+
+        Array & a = arrays_[d.var];
+        a.dim1 = dim[0];
+        a.dim2 = dim[1];
+        a.cells.resize(static_cast<std::size_t>(total), Number());
+    }
+    return true;
+}
+
 bool Interp::do_dim(const Stmt & s)
 {
     for (unsigned i = 0; i < s.dims.size(); ++i) {
@@ -648,29 +814,47 @@ bool Interp::do_print(const Stmt & s)
     return true;
 }
 
-bool Interp::do_input(const Stmt & s)
+bool Interp::read_line(const std::string & prompt, bool has_prompt,
+                       std::string & out)
 {
-    if (s.has_prompt) emit(s.prompt);
+    if (has_prompt) emit(prompt);
     emit("?");
 
-    std::string line;
+    out.clear();
     for (;;) {
         uint8_t code = 0;
-        if (!host_.poll_key(code)) return fail("INPUT: нет данных на клавиатуре");
+        if (!host_.poll_key(code)) return fail("нет данных на клавиатуре");
         if (code == 0x0D || code == 0x0A) break;
         if (code == 0x08) {                       // ВШ — забой
-            if (!line.empty()) {
-                line.resize(line.size() - 1);
+            if (!out.empty()) {
+                out.resize(out.size() - 1);
                 host_.screen().put(CC_LEFT);
                 host_.screen().put(0x20);
                 host_.screen().put(CC_LEFT);
             }
             continue;
         }
-        line += static_cast<char>(code);
+        out += static_cast<char>(code);
         host_.screen().put(code);
     }
     emit_newline();
+    return true;
+}
+
+// LINPUT принимает строку целиком, без разбора на поля.
+bool Interp::do_linput(const Stmt & s)
+{
+    std::string line;
+    if (!read_line(s.prompt, s.has_prompt, line)) return false;
+    if (s.targets.size() != 1) return fail("LINPUT ждёт один приёмник");
+    if (!is_string_expr(s.targets[0])) return fail("LINPUT ждёт символьный приёмник");
+    return assign_string(s.targets[0], line);
+}
+
+bool Interp::do_input(const Stmt & s)
+{
+    std::string line;
+    if (!read_line(s.prompt, s.has_prompt, line)) return false;
 
     unsigned p = 0;
     for (unsigned i = 0; i < s.targets.size(); ++i) {
@@ -803,6 +987,15 @@ bool Interp::exec(const Stmt & s)
 
         case ST_DIM:
             return do_dim(s);
+
+        case ST_REDIM:
+            return do_redim(s);
+
+        case ST_LINPUT:
+            return do_linput(s);
+
+        case ST_CONVERT:
+            return do_convert(s);
 
         case ST_GOTO:
             return jump(s.line);

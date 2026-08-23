@@ -87,16 +87,24 @@ struct PrintItem {
 // берутся из таблиц ещё при разборе, поэтому оба представления дают
 // одинаковый оператор.
 struct DimEntry {
-    DimEntry() : var(0), dim1(0), dim2(0), str_len(0) {}
+    DimEntry() : var(0), dim1(0), dim2(0), str_len(0), computed(false) {}
     unsigned var;
     unsigned dim1;
     unsigned dim2;
     unsigned str_len;
+
+    // У MAT REDIM размерности задаются выражениями и вычисляются при
+    // исполнении, а не при разборе.
+    bool computed;
+    std::vector<Expr> sizes;
 };
 
 enum StmtKind {
     ST_PRINT,
     ST_DIM,
+    ST_REDIM,        // MAT REDIM — размерности вычисляются на ходу
+    ST_LINPUT,       // ввод строки целиком, без разбора на поля
+    ST_CONVERT,      // CONVERT: символьное представление числа и обратно
     ST_INPUT,
     ST_LET,
     ST_FOR,
@@ -127,7 +135,7 @@ struct Stmt {
     unsigned line;                   // GOTO, GOSUB, IF … THEN <строка>
     std::vector<unsigned> lines;     // ON … GOTO/GOSUB — список переходов
     bool is_gosub;                   // ON: переход с возвратом
-    std::string prompt;              // INPUT — подсказка в КОИ-8
+    std::string prompt;              // INPUT — подсказка; CONVERT — образ
     bool has_prompt;
     bool has_step;
     bool newline;                    // PRINT без хвостового разделителя

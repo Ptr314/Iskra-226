@@ -179,6 +179,7 @@ bool ByteSource::next(Tok & t, bool operand_expected)
         // здесь работает правило из разд. 7: смотрим, операнд ли дальше.
         if (vars_ && c < vars_->size()) {
             const VarInfo & v = (*vars_)[c];
+            t.table_array = v.is_array;
             t.indexed = v.is_string ? (i_ < n_ && looks_like_operand(p_[i_]))
                                     : v.is_array;
         }
@@ -315,7 +316,8 @@ public:
         : src_(ops, len, vars), ex_(src_), ops_(ops), len_(len), raw_(0),
           vars_(vars) {}
 
-    bool parse(uint8_t verb, Stmt & s, std::string & error);
+    // Глагол: один байт либо 0x06NN у двухбайтовых.
+    bool parse(unsigned verb, Stmt & s, std::string & error);
 
 private:
     bool print_items(Stmt & s);
@@ -366,7 +368,13 @@ bool StmtParser::print_items(Stmt & s)
     return true;
 }
 
-bool StmtParser::parse(uint8_t verb, Stmt & s, std::string & error)
+std::string verb_name(unsigned verb)
+{
+    if (verb < 0x100) return "глагол " + hex2(verb);
+    return "двухбайтовый глагол 06 " + hex2(verb & 0xFF);
+}
+
+bool StmtParser::parse(unsigned verb, Stmt & s, std::string & error)
 {
     error_.clear();
     bool ok = true;
@@ -534,6 +542,99 @@ bool StmtParser::parse(uint8_t verb, Stmt & s, std::string & error)
             break;
         }
 
+        case 0x47: {                                // CONVERT
+            // Скобки вокруг образа и запятая перед ним не кодируются
+            // (docs/format.md, разд. 7).
+            s.kind = ST_CONVERT;
+            if (!ex_.parse(s.e)) { ok = err(ex_.error()); break; }
+            Tok t;
+            if (!ex_.take(t, false) || t.t != Tok::KW_TO) { ok = err("CONVERT без TO"); break; }
+
+            Expr target;
+            if (!ex_.parse_lvalue(target)) { ok = err(ex_.error()); break; }
+            s.targets.push_back(target);
+
+            if (!ex_.peek(t, true)) { ok = err(ex_.error()); break; }
+            if (t.t == Tok::COMMA) { ex_.consume(); if (!ex_.peek(t, true)) { ok = err(ex_.error()); break; } }
+            if (t.t == Tok::STR) {
+                s.prompt = t.s;                     // образ
+                s.has_prompt = true;
+                ex_.consume();
+            }
+            ok = expect_end("CONVERT");
+            break;
+        }
+
+        case 0x0624: {                              // LINPUT
+            s.kind = ST_LINPUT;
+            if (raw_ < len_ && (ops_[raw_] == 0xE3 || ops_[raw_] == 0xE4)) {
+                ++raw_;
+                if (raw_ >= len_) { ok = err("LINPUT: подсказка оборвалась"); break; }
+                const unsigned n = ops_[raw_++];
+                if (raw_ + n > len_) { ok = err("LINPUT: подсказка оборвалась"); break; }
+                s.prompt.assign(reinterpret_cast<const char *>(ops_ + raw_), n);
+                s.has_prompt = true;
+                raw_ += n;
+            }
+            {
+                ByteSource rest(ops_ + raw_, len_ - raw_, vars_);
+                rest.set_list_context();
+                ExprParser p(rest);
+                Tok t;
+                if (!p.peek(t, true)) { ok = err(p.error()); break; }
+                // Запятая перед приёмником не кодируется, а минус перед ним
+                // назначения пока не имеет — просто пропускаем.
+                if (t.t == Tok::COMMA || t.t == Tok::MINUS) p.consume();
+
+                Expr target;
+                if (!p.parse_lvalue(target)) { ok = err(p.error()); break; }
+                s.targets.push_back(target);
+            }
+            break;
+        }
+
+        case 0x0602: {                              // MAT REDIM
+            s.kind = ST_REDIM;
+            for (;;) {
+                Tok t;
+                if (!ex_.peek(t, true)) { ok = err(ex_.error()); break; }
+                if (t.t == Tok::END) break;
+                if (t.t == Tok::COMMA) { ex_.consume(); continue; }
+                if (t.t != Tok::ARRAY && t.t != Tok::VAR) { ok = err("MAT REDIM: ожидался массив"); break; }
+                ex_.consume();
+
+                DimEntry d;
+                d.var = t.var;
+                d.computed = true;
+
+                // Размерности здесь в явных скобках, в отличие от DIM.
+                if (!ex_.take(t, true) || t.t != Tok::LPAR) { ok = err("MAT REDIM: нет размерностей"); break; }
+                for (;;) {
+                    Expr sz;
+                    if (!ex_.parse(sz)) { ok = err(ex_.error()); break; }
+                    d.sizes.push_back(sz);
+                    if (!ex_.peek(t, false)) { ok = err(ex_.error()); break; }
+                    if (t.t == Tok::COMMA) { ex_.consume(); continue; }
+                    if (t.t == Tok::RPAR) { ex_.consume(); break; }
+                    ok = err("MAT REDIM: список размерностей не закрыт");
+                    break;
+                }
+                if (!ok) break;
+
+                // У символьного массива за скобками может стоять длина элемента.
+                if (!ex_.peek(t, true)) { ok = err(ex_.error()); break; }
+                if (t.t == Tok::NUM) {
+                    long v = 0;
+                    t.num.to_int(v);
+                    d.str_len = static_cast<unsigned>(v);
+                    ex_.consume();
+                }
+                s.dims.push_back(d);
+            }
+            if (ok && s.dims.empty()) ok = err("MAT REDIM без массивов");
+            break;
+        }
+
         case 0x24: {                                // IF … THEN <строка>
             s.kind = ST_IF;
             if (!ex_.parse(s.e)) { ok = err(ex_.error()); break; }
@@ -547,7 +648,7 @@ bool StmtParser::parse(uint8_t verb, Stmt & s, std::string & error)
         }
 
         default:
-            ok = err("глагол " + hex2(verb) + " ещё не реализован");
+            ok = err(verb_name(verb) + " ещё не реализован");
             break;
     }
 
@@ -635,17 +736,26 @@ bool parse_body(const uint8_t * body, unsigned len, Line & line,
 {
     unsigned p = 0;
     while (p < len) {
-        const uint8_t verb = body[p];
+        // Матричные и графические операторы кодируются двумя байтами:
+        // 06 <подкод> <len> <операнды> (docs/format.md, разд. 3).
+        unsigned verb = body[p];
+        unsigned head = 2;
+        if (verb == 0x06) {
+            if (p + 2 >= len) { error = "двухбайтовый глагол оборвался"; return false; }
+            verb = 0x0600 | body[p + 1];
+            head = 3;
+        }
         if (p + 1 >= len) { error = "оператор оборвался"; return false; }
-        const unsigned oplen = body[p + 1];
-        if (p + 2 + oplen > len) { error = "длина операндов выходит за строку"; return false; }
+
+        const unsigned oplen = body[p + head - 1];
+        if (p + head + oplen > len) { error = "длина операндов выходит за строку"; return false; }
 
         Stmt s;
-        StmtParser sp(body + p + 2, oplen, vars);
+        StmtParser sp(body + p + head, oplen, vars);
         if (!sp.parse(verb, s, error)) return false;
         line.stmts.push_back(s);
 
-        p += 2 + oplen;
+        p += head + oplen;
     }
     return true;
 }

@@ -66,6 +66,10 @@ const Keyword KEYWORDS[] = {
     { "REM",    Tok::UNKNOWN,  false },
     { "DIM",    Tok::UNKNOWN,  false },
     { "COM",    Tok::UNKNOWN,  false },
+    { "CONVERT", Tok::UNKNOWN, false },
+    { "LINPUT", Tok::UNKNOWN,  false },
+    { "REDIM",  Tok::UNKNOWN,  false },
+    { "MAT",    Tok::UNKNOWN,  false },
     { "TAB",    Tok::FN_TAB,   true  },
     { "END",    Tok::UNKNOWN,  false },
     { "FOR",    Tok::UNKNOWN,  false },
@@ -96,6 +100,10 @@ public:
 
     // Ключевое слово в начале оператора; при совпадении съедается.
     bool take_word(const char * w);
+
+    // Образ CONVERT — не выражение, а набор знаков в скобках: (##.##),
+    // (-#.#^^^^). Забираем его сырым текстом.
+    bool take_image(std::string & out);
 
     const std::string & error() const { return error_; }
     bool fail(const std::string & m) { if (error_.empty()) error_ = m; return false; }
@@ -133,6 +141,22 @@ bool TextLexer::take_word(const char * w)
     if (p_ + n > end_) return false;
     if (s_.compare(p_, n, w) != 0) return false;
     p_ += n;
+    return true;
+}
+
+bool TextLexer::take_image(std::string & out)
+{
+    skip_spaces();
+    if (p_ >= end_ || s_[p_] != '(') return false;
+    ++p_;
+
+    out.clear();
+    while (p_ < end_ && s_[p_] != ')') {
+        if (s_[p_] != ' ') out += s_[p_];
+        ++p_;
+    }
+    if (p_ >= end_) return false;
+    ++p_;
     return true;
 }
 
@@ -229,7 +253,7 @@ bool TextLexer::next(Tok & t, bool /*operand_expected*/)
             const unsigned after = p_;
             skip_spaces();
             if (p_ < end_ && s_[p_] == ')') { ++p_; t.t = Tok::ARRAY; }
-            else { p_ = after; t.indexed = true; }
+            else { p_ = after; t.indexed = true; t.table_array = true; }
 
             // Обращение с индексом объявляет массив неявно; размерность по
             // умолчанию — десять элементов.
@@ -442,6 +466,89 @@ bool LineParser::parse_stmt(Stmt & s)
     if (lex_.take_word("PRINT")) {
         ExprParser ex(lex_);
         return print_items(s, ex);
+    }
+    if (lex_.take_word("CONVERT")) {
+        s.kind = ST_CONVERT;
+        ExprParser ex(lex_);
+        if (!ex.parse(s.e)) return err(ex.error());
+        Tok t;
+        if (!ex.take(t, false) || t.t != Tok::KW_TO) return err("CONVERT без TO");
+        Expr target;
+        if (!ex.parse_lvalue(target)) return err(ex.error());
+        s.targets.push_back(target);
+
+        if (!ex.peek(t, false)) return err(ex.error());
+        if (t.t == Tok::COMMA) {
+            ex.consume();
+            // Образ записан в скобках: CONVERT A TO A¤,(###)
+            if (!lex_.take_image(s.prompt)) return err("CONVERT: непонятный образ");
+            s.has_prompt = true;
+        }
+        return true;
+    }
+    if (lex_.take_word("MAT")) {
+        if (!lex_.take_word("REDIM")) return err("после MAT ожидался REDIM");
+        s.kind = ST_REDIM;
+        ExprParser ex(lex_);
+        for (;;) {
+            Tok t;
+            if (!ex.take(t, true)) return err(ex.error());
+            if (t.t != Tok::VAR && t.t != Tok::ARRAY)
+                return err("MAT REDIM: ожидался массив");
+
+            DimEntry d;
+            d.var = t.var;
+            d.computed = true;
+            const bool is_string = !t.s.empty() && t.s[t.s.size() - 1] == '$';
+
+            // Лексер уже съел открывающую скобку, если она была.
+            if (!t.indexed) return err("MAT REDIM: нет размерностей");
+            for (;;) {
+                Expr sz;
+                if (!ex.parse(sz)) return err(ex.error());
+                d.sizes.push_back(sz);
+                if (!ex.peek(t, false)) return err(ex.error());
+                if (t.t == Tok::COMMA) { ex.consume(); continue; }
+                if (t.t == Tok::RPAR) { ex.consume(); break; }
+                return err("MAT REDIM: список размерностей не закрыт");
+            }
+
+            if (is_string) {
+                if (!ex.peek(t, true)) return err(ex.error());
+                if (t.t == Tok::NUM) {
+                    long v = 0;
+                    t.num.to_int(v);
+                    d.str_len = static_cast<unsigned>(v);
+                    ex.consume();
+                }
+            }
+            s.dims.push_back(d);
+
+            if (!ex.peek(t, false)) return err(ex.error());
+            if (t.t != Tok::COMMA) break;
+            ex.consume();
+        }
+        return true;
+    }
+    if (lex_.take_word("LINPUT")) {
+        s.kind = ST_LINPUT;
+        ExprParser ex(lex_);
+        Tok t;
+        if (!ex.peek(t, true)) return err(ex.error());
+        if (t.t == Tok::STR) {
+            s.prompt = t.s;
+            s.has_prompt = true;
+            ex.consume();
+            if (!ex.peek(t, false)) return err(ex.error());
+            if (t.t == Tok::COMMA) ex.consume();
+        }
+        if (!ex.peek(t, true)) return err(ex.error());
+        if (t.t == Tok::MINUS) ex.consume();
+
+        Expr target;
+        if (!ex.parse_lvalue(target)) return err(ex.error());
+        s.targets.push_back(target);
+        return true;
     }
     if (lex_.take_word("INPUT")) {
         s.kind = ST_INPUT;

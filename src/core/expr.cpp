@@ -96,7 +96,7 @@ bool ExprParser::parse_substr(Expr & out)
         out.a.push_back(whole);
     } else if (t.t == Tok::VAR) {
         Expr v;
-        if (t.indexed) {
+        if (t.table_array) {
             if (!parse_indices(v, t)) return false;
         } else {
             v.kind = EX_VAR;
