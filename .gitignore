@@ -21,3 +21,6 @@ __pycache__/
 # служебное
 .DS_Store
 Thumbs.db
+
+# сборка
+/build/

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Part of the Iskra-226 project: https://github.com/Ptr314/Iskra-226
+
+# Тесты без сторонних библиотек: каждый — обычная программа, ненулевой код
+# возврата означает провал. Запуск: ctest --test-dir build --output-on-failure
+
+function(iskra_add_test name)
+    add_executable(${name} ${name}.cpp check.h)
+    target_link_libraries(${name} PRIVATE iskra_headless iskra_warnings)
+    target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME ${name} COMMAND ${name})
+endfunction()
+
+iskra_add_test(test_screen)

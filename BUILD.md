@@ -1,0 +1,68 @@
+# Сборка
+
+Нужны CMake 3.16+, Ninja и компилятор C++11. Сторонних библиотек нет:
+`dsk_tools` подключён подмодулем, всё остальное — стандартная библиотека.
+
+```
+git clone --recurse-submodules https://github.com/Ptr314/Iskra-226.git
+cd Iskra-226
+cmake -S . -B build/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/cmake
+ctest --test-dir build/cmake --output-on-failure
+```
+
+Если репозиторий выкачан без `--recurse-submodules`:
+
+```
+git submodule update --init --recursive
+```
+
+## Параметры
+
+| Параметр | По умолчанию | Что делает |
+|---|---|---|
+| `ISKRA_WITH_DSK_TOOLS` | `ON` | работа с образами дискет; без него собирается только ядро |
+| `ISKRA_HOST_SDL2` | `OFF` | хост с окном (ещё не написан) |
+| `ISKRA_BUILD_TESTS` | `ON` | автотесты |
+
+Под Emscripten `ISKRA_WITH_DSK_TOOLS` выключается автоматически: в браузер
+образ приходит массивом байт, а не файлом.
+
+## Windows XP
+
+Целевая цепочка — MinGW 4.9.2, 32 бита (в поставке Qt это
+`Tools/mingw492_32`). Именно ради неё в ядре запрещены средства новее C++11.
+
+```
+export PATH="/c/DEV/Qt/Tools/mingw492_32/bin:$PATH"
+cmake -S . -B build/cmake-xp -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/cmake-xp
+```
+
+Линковка статическая (`-static`), поэтому получается один `iskra.exe`
+без сопровождающих DLL — из внешних зависимостей только `kernel32`,
+`shell32` и `msvcrt`.
+
+Проверять сборку этой цепочкой стоит регулярно: GCC 4.9.2 ловит то, чего
+не заметит GCC 13. Так, например, обнаружился лишний `#include <charconv>`
+в `dsk_tools`.
+
+## Знакогенератор
+
+`src/font/font_data.cpp` порождается из `src/font/*.psf` и лежит в
+репозитории готовым — при обычной сборке генератор не запускается. После
+замены шрифтов:
+
+```
+py tools/psf2c.py
+```
+
+## Проверка руками
+
+```
+iskra --screen             экран, коды управления, знакогенератор
+iskra --chart 16           таблица кодов растром
+iskra --list ОБРАЗ         каталог дискеты
+iskra --cat ОБРАЗ STAT04   листинг программы с дискеты
+iskra --detok ФАЙЛ         листинг ранее извлечённого файла
+```

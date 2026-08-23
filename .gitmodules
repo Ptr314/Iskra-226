@@ -1,0 +1,4 @@
+[submodule "libs/dsk_tools"]
+	path = libs/dsk_tools
+	url = https://github.com/Ptr314/dsk_tools.git
+	branch = 79-iskra-226
