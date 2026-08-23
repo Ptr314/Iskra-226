@@ -76,6 +76,7 @@ private:
     bool do_linput(const Stmt & s);
     bool do_convert(const Stmt & s);
     bool do_bin(const Stmt & s);
+    bool do_init(const Stmt & s);
     bool do_redim(const Stmt & s);
     bool read_line(const std::string & prompt, bool has_prompt, std::string & out);
     bool do_for(const Stmt & s);

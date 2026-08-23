@@ -168,7 +168,7 @@ void test_bin()
     std::string screen, error;
     const char * src =
         "10 DIM A¤2\n"
-        "20 A¤=HEX(0000)\n"
+        "20 INIT(00)A¤\n"
         "30 BIN(A¤)=1:PRINT VAL(A¤,2)\n"
         "40 BIN(A¤)=32:PRINT VAL(A¤,2)\n"
         "50 BIN(A¤)=47:PRINT VAL(A¤,2)\n"
@@ -234,6 +234,50 @@ void test_bin_limits()
     error.clear();
     CHECK(!run_text("10 BIN(X)=1\n", screen, error));
     CHECK(error.find("символьную") != std::string::npos);
+}
+
+// Разд. 13.3: INIT заполняет одним значением все байты приёмников. Значение —
+// код из двух шестнадцатеричных цифр, символ в кавычках или символьная
+// переменная (берётся её первый байт).
+void test_init()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM A¤2,T¤5,C¤(3)4,M¤2\n"
+        "20 INIT(00)A¤\n"
+        "30 PRINT VAL(A¤,2)\n"
+        "40 INIT(2E)T¤\n"
+        "50 PRINT \"[\";T¤;\"]\"\n"
+        "60 INIT(\".\")C¤()\n"
+        "70 PRINT STR(C¤(),1,12)\n"
+        "80 INIT(20)STR(T¤,2,3)\n"
+        "90 PRINT \"[\";T¤;\"]\"\n"
+        "100 M¤=\"*\"\n"
+        "110 INIT(M¤)A¤\n"
+        "120 PRINT A¤\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+
+    CHECK_STR(line_of(screen, 1), " 0");
+    CHECK_STR(line_of(screen, 2), "[.....]");
+    // «Значение присваивается всем байтам символьного массива»: три элемента
+    // по четыре байта — одно непрерывное поле в двенадцать точек.
+    CHECK_STR(line_of(screen, 3), "............");
+    // Через STR( — только указанные байты, остальные не тронуты.
+    CHECK_STR(line_of(screen, 4), "[.   .]");
+    // «Используется первый байт символьной переменной».
+    CHECK_STR(line_of(screen, 5), "**");
+}
+
+void test_init_errors()
+{
+    std::string screen, error;
+
+    CHECK(!run_text("10 INIT(00)X\n", screen, error));
+    CHECK(error.find("символьные") != std::string::npos);
+
+    error.clear();
+    CHECK(!run_text("10 DIM A¤2\n20 X=300:INIT(X)A¤\n", screen, error));
+    CHECK(error.find("не байт") != std::string::npos);
 }
 
 // Разд. 15.1: POS ищет один байт по заданному отношению, 0 если не найден.
@@ -335,7 +379,12 @@ public:
         stream.push_back(L1 >> 8); stream.push_back(L1 & 0xFF);
         stream.push_back(L2 >> 8); stream.push_back(L2 & 0xFF);
         stream.push_back(0); stream.push_back(0);
-        stream.insert(stream.end(), t1_.begin(), t1_.end());
+        // Записи таблицы 1 идут в том же порядке убывания индекса переменной,
+        // что и записи таблиц 2/3, то есть первой — запись последней
+        // объявленной переменной. При одной переменной это незаметно, при
+        // нескольких — разъезжается.
+        for (std::size_t r = t1_.size(); r >= 8; r -= 8)
+            stream.insert(stream.end(), t1_.begin() + (r - 8), t1_.begin() + r);
         for (unsigned i = flags_.size(); i-- > 0; ) {
             stream.push_back(0); stream.push_back(0);
             stream.push_back(flags_[i]);
@@ -550,6 +599,67 @@ void test_tokenized_bin()
     CHECK(screen == text_screen);
 }
 
+// INIT(2E)A¤,B¤ : INIT(".")C¤()
+//
+// В потоке запятых между приёмниками нет вовсе, поэтому два скалярных
+// приёмника подряд — это снова случай, где заглядывание вперёд не работает.
+// Формы взяты из EDITOR: 64 03 DE 2E 0E = INIT(2E)H¤, 64 05 DE 00 E0 09 E0 0A
+// = INIT(00)T¤(),L¤().
+void test_tokenized_init()
+{
+    TokenBuilder b;
+    b.add_string_var(1, 2);                      // переменная 0: A¤ — скаляр
+    b.add_string_var(1, 2);                      // переменная 1: B¤ — скаляр
+    b.add_string_var(3, 2);                      // переменная 2: C¤(3)2 — массив
+
+    // 64 04 DE 2E 00 01        INIT(2E)A¤,B¤   — значение сырым байтом
+    static const int i1[] = { 0x64, 0x04, 0xDE, 0x2E, 0x00, 0x01 };
+    b.add_line(10, bytes(i1, 6));
+
+    // 4C 03 00 DD 01           PRINT A¤;B¤
+    static const int p1[] = { 0x4C, 0x03, 0x00, 0xDD, 0x01 };
+    b.add_line(20, bytes(p1, 5));
+
+    // 64 05 E3 01 2E E0 02     INIT(".")C¤()   — значение литералом
+    static const int i2[] = { 0x64, 0x05, 0xE3, 0x01, 0x2E, 0xE0, 0x02 };
+    b.add_line(30, bytes(i2, 7));
+
+    // 4C 09 E1 E0 02 E8 01 DE E8 06 D0   PRINT STR(C¤(),1,6)
+    static const int p2[] = { 0x4C, 0x09, 0xE1, 0xE0, 0x02, 0xE8, 0x01,
+                              0xDE, 0xE8, 0x06, 0xD0 };
+    b.add_line(40, bytes(p2, 11));
+
+    Program prog;
+    std::string error;
+    if (!parse_tokenized(b.file(), prog, error)) {
+        std::printf("  разбор: %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(prog.lines.size(), 4u);
+    CHECK_EQ(prog.lines[0].stmts[0].targets.size(), 2u);
+
+    std::string screen;
+    if (!run_program(prog, 0, screen, error)) {
+        std::printf("  исполнение: %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_STR(line_of(screen, 1), "....");
+    CHECK_STR(line_of(screen, 2), "......");
+
+    // Та же программа текстом должна дать тот же экран.
+    const char * src =
+        "10 DIM A¤2,B¤2,C¤(3)2\n"
+        "20 INIT(2E)A¤,B¤\n"
+        "30 PRINT A¤;B¤\n"
+        "40 INIT(\".\")C¤()\n"
+        "50 PRINT STR(C¤(),1,6)\n";
+    std::string text_screen;
+    if (!run_text(src, text_screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK(screen == text_screen);
+}
+
 } // namespace
 
 int main()
@@ -566,8 +676,11 @@ int main()
     test_input();
     test_bin();
     test_bin_limits();
+    test_init();
+    test_init_errors();
     test_tokenized_strings();
     test_tokenized_val();
     test_tokenized_bin();
+    test_tokenized_init();
     return test::summary("символьные переменные и STR(");
 }

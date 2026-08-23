@@ -975,6 +975,40 @@ bool Interp::do_bin(const Stmt & s)
     return true;
 }
 
+// «Для задания одинаковых значений во все байты символьных переменных или их
+// подстрок» (руководство, разд. 13.3). Значение — код из двух шестнадцатеричных
+// цифр, символ в кавычках либо символьная переменная: «в последнем случае для
+// задания значения используется первый байт».
+bool Interp::do_init(const Stmt & s)
+{
+    if (s.targets.empty()) return fail("INIT( без приёмников");
+
+    Value v;
+    if (!eval(s.e, v)) return false;
+
+    char fill;
+    if (v.is_str) {
+        if (v.str.empty()) return fail("INIT( от пустой строки");
+        fill = v.str[0];
+    } else {
+        long n = 0;
+        if (!v.num.floor_to_int(n) || n < 0 || n > 255)
+            return fail("INIT(: значение не байт");
+        fill = static_cast<char>(n & 0xFF);
+    }
+
+    for (unsigned i = 0; i < s.targets.size(); ++i) {
+        if (!is_string_expr(s.targets[i]))
+            return fail("INIT( заполняет символьные переменные");
+        StrLoc loc;
+        if (!str_loc(s.targets[i], loc)) return false;
+        // «Значение присваивается всем байтам»: у массива без STR( — всему
+        // полю целиком, оно одна непрерывная строка.
+        for (unsigned k = 0; k < loc.len; ++k) (*loc.data)[loc.off + k] = fill;
+    }
+    return true;
+}
+
 void Interp::build_labels()
 {
     labels_ready_ = true;
@@ -1108,6 +1142,9 @@ bool Interp::exec(const Stmt & s)
 
         case ST_BIN:
             return do_bin(s);
+
+        case ST_INIT:
+            return do_init(s);
 
         case ST_GOTO:
             return jump(s.line);

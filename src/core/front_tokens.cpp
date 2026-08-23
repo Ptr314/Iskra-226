@@ -433,6 +433,42 @@ bool StmtParser::parse(unsigned verb, Stmt & s, std::string & error)
             break;
         }
 
+        case 0x64: {                                // INIT( — заполнение байтом
+            // 64 <значение> <приёмники подряд, без разделителей>. Значение —
+            // сырой байт (DE xx) у формы с двумя шестнадцатеричными цифрами,
+            // литерал (E3) у формы с символом, ссылка на переменную у формы
+            // INIT(M¤). Запятые между приёмниками не кодируются.
+            s.kind = ST_INIT;
+
+            // Значение — ровно одна лексема. Разбирать его как выражение
+            // нельзя: за ним сразу идёт приёмник, и заглядывание в позиции
+            // операции упрётся в индекс переменной.
+            {
+                Tok t;
+                if (!ex_.peek(t, true)) { ok = err(ex_.error()); break; }
+                if (t.t == Tok::NUM || t.t == Tok::STR) {
+                    ex_.consume();
+                    s.e = Expr();
+                    s.e.kind = (t.t == Tok::NUM) ? EX_NUM : EX_STR;
+                    s.e.num = t.num;
+                    s.e.str = t.s;
+                } else if (!ex_.parse_lvalue(s.e, true)) {
+                    ok = err(ex_.error());       // форма INIT(M¤)
+                    break;
+                }
+            }
+
+            while (ok && !src_.at_end()) {
+                Expr target;
+                // «Скаляр или массив» — только по таблицам: у INIT(00)A¤,O¤
+                // за приёмником сразу идёт следующий приёмник.
+                if (!ex_.parse_lvalue(target, true)) { ok = err(ex_.error()); break; }
+                s.targets.push_back(target);
+            }
+            if (ok && s.targets.empty()) ok = err("INIT( без приёмников");
+            break;
+        }
+
         case 0x23: {                                // GOSUB' — вызов по метке
             // Метка — двоичный байт, не BCD (docs/format.md, разд. 5).
             // Открывающей скобки списка в потоке нет, как у PACK( и BIN(;

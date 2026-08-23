@@ -213,6 +213,14 @@ bool ExprParser::parse_lvalue(Expr & out, bool by_table)
     if (t.t == Tok::FN_STR) { consume(); return parse_substr(out); }
 
     if (!take(t, true)) return false;
+    if (t.t == Tok::ARRAY) {
+        // Массив целиком: A¤(). Приёмник INIT( бывает и таким —
+        // INIT(00)T¤(),L¤() = 64 05 DE 00 E0 09 E0 0A (EDITOR 7580).
+        out = Expr();
+        out.kind = EX_ARRAY;
+        out.var = t.var;
+        return true;
+    }
     if (t.t != Tok::VAR) {
         fail("слева от знака равенства ожидалась переменная, элемент массива "
              "или STR(");

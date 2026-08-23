@@ -104,6 +104,11 @@ public:
     // Целое без знака вне выражения — имя помеченной подпрограммы.
     bool take_uint(unsigned & out);
 
+    // Значение INIT( в виде кода: ровно две шестнадцатеричные цифры и
+    // закрывающая скобка. Лексером их не прочитать — «2E» распалось бы на
+    // число 2 и имя E, а «FF» стало бы именем переменной.
+    bool take_hex_byte(unsigned & out);
+
     // Образ CONVERT — не выражение, а набор знаков в скобках: (##.##),
     // (-#.#^^^^). Забираем его сырым текстом.
     bool take_image(std::string & out);
@@ -154,6 +159,29 @@ bool TextLexer::take_uint(unsigned & out)
     bool any = false;
     while (p_ < end_ && is_digit(s_[p_])) { v = v * 10 + (s_[p_++] - '0'); any = true; }
     if (!any) return false;
+    out = v;
+    return true;
+}
+
+bool TextLexer::take_hex_byte(unsigned & out)
+{
+    skip_spaces();
+    const unsigned save = p_;
+    unsigned v = 0;
+    for (unsigned k = 0; k < 2; ++k) {
+        if (p_ >= end_) { p_ = save; return false; }
+        const char c = s_[p_];
+        int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else { p_ = save; return false; }
+        v = v * 16 + static_cast<unsigned>(d);
+        ++p_;
+    }
+    // Ровно две цифры и сразу скобка: иначе это выражение — INIT(M¤),
+    // где «M¤» тоже начинается с шестнадцатеричной цифры.
+    skip_spaces();
+    if (p_ >= end_ || s_[p_] != ')') { p_ = save; return false; }
     out = v;
     return true;
 }
@@ -598,6 +626,37 @@ bool LineParser::parse_stmt(Stmt & s)
         return true;
     }
     if (lex_.take_word("RETURN")) { s.kind = ST_RETURN; return true; }
+    if (lex_.take_word("INIT")) {
+        // INIT(<значение>)<список приёмников> (руководство, разд. 13.3).
+        if (!lex_.take_word("(")) return err("INIT без открывающей скобки");
+        s.kind = ST_INIT;
+
+        unsigned code = 0;
+        if (lex_.take_hex_byte(code)) {
+            s.e = Expr();
+            s.e.kind = EX_NUM;
+            s.e.num = Number::from_int(static_cast<long>(code));
+            if (!lex_.take_word(")")) return err("INIT( без закрывающей скобки");
+        } else {
+            ExprParser ex(lex_);
+            if (!ex.parse(s.e)) return err(ex.error());
+            Tok t;
+            if (!ex.take(t, false) || t.t != Tok::RPAR)
+                return err("INIT( без закрывающей скобки");
+        }
+
+        ExprParser ex(lex_);
+        for (;;) {
+            Expr target;
+            if (!ex.parse_lvalue(target, true)) return err(ex.error());
+            s.targets.push_back(target);
+            Tok t;
+            if (!ex.peek(t, false)) return err(ex.error());
+            if (t.t != Tok::COMMA) break;
+            ex.consume();
+        }
+        return true;
+    }
     if (lex_.take_word("BIN")) {
         // BIN(<символьная переменная>[,2])=<а.в.> (руководство, разд. 14.2).
         if (!lex_.take_word("(")) return err("BIN без открывающей скобки");
