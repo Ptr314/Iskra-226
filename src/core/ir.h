@@ -147,6 +147,8 @@ enum StmtKind {
     ST_DSKIP,        // DSKIP и DBACKSPACE — сдвиг текущего сектора
     ST_LIMITS,       // LIMITS — адресные параметры файла в переменные
     ST_ONERR,        // ON ERROR — куда уходить при ошибке
+    ST_SCRATCH,      // SCRATCH — вычеркнуть файлы из каталога
+    ST_SCRATCH_DISK, // SCRATCH DISK — создать каталог на диске
     ST_DIM,
     ST_REDIM,        // MAT REDIM — размерности вычисляются на ходу
     ST_LINPUT,       // ввод строки целиком, без разбора на поля

@@ -319,6 +319,170 @@ void test_tokens_match_text()
     CHECK_STR(tokens, text);
 }
 
+// --- SCRATCH ---------------------------------------------------------------
+
+// «Пометка ненужных файлов в каталоге осуществляется оператором SCRATCH»
+// (руководство, разд. 5.4). Файл остаётся на диске, но становится
+// вычеркнутым: LIMITS сообщает код 4, открыть его уже нельзя.
+void test_scratch()
+{
+    const char * src =
+        "10 LIMITS T\"ANKETA\",X,Y,Z,C\n"
+        "20 PRINT C\n"
+        "30 SCRATCH T\"ANKETA\"\n"
+        "40 LIMITS T\"ANKETA\",X,Y,Z,C\n"
+        "50 PRINT C;X;Y\n";
+
+    std::string screen, error;
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), " 2");            // файл данных
+    CHECK_STR(line_of(screen, 2), " 4  5  24");     // вычеркнут, границы на месте
+}
+
+void test_scratch_blocks_open()
+{
+    std::string screen, error;
+    CHECK(!run_text("10 SCRATCH T\"NUMS\"\n20 DATA LOAD DC OPEN T\"NUMS\"\n",
+                    screen, error));
+}
+
+// «Если нужно сразу исключить несколько файлов, их имена могут перечисляться
+// через запятую» (разд. 5.4).
+void test_scratch_several()
+{
+    const char * src =
+        "10 SCRATCH T\"ANKETA\",\"NUMS\"\n"
+        "20 LIMITS T\"ANKETA\",X,Y,Z,C\n"
+        "30 PRINT C;\n"
+        "40 LIMITS T\"NUMS\",X,Y,Z,C\n"
+        "50 PRINT C\n";
+
+    std::string screen, error;
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), " 4  4");
+}
+
+// Вычёркивание несуществующего файла — ошибка машины с кодом 73.
+void test_scratch_missing()
+{
+    const char * src =
+        "10 DIM E$4,N$4\n"
+        "20 ON ERROR E$,N$GOTO 100\n"
+        "30 SCRATCH T\"NETU\"\n"
+        "40 STOP\n"
+        "100 PRINT E$\n";
+
+    std::string screen, error;
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "73");
+}
+
+// «Оператор SCRATCH DISK, в котором указываются число секторов в указателе
+// каталога и номер последнего сектора области каталога» (разд. 5.1).
+void test_scratch_disk()
+{
+    const char * src =
+        "10 SCRATCH DISK T LS=6,END=150\n"
+        "20 LIMITS T\"ANKETA\",X,Y,Z,C\n"
+        "30 PRINT C\n";
+
+    std::string screen, error;
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), " 0");            // каталог пуст, файла нет
+}
+
+// Каталог создан заново — файл, открытый до того, больше не открыт.
+void test_scratch_disk_unbinds()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM N$8\n"
+        "20 DATA LOAD DC OPEN T\"ANKETA\"\n"
+        "30 SCRATCH DISK T LS=6,END=150\n"
+        "40 DATA LOAD DC N$,A,B\n";
+    CHECK(!run_text(src, screen, error));
+}
+
+void test_scratch_tokens()
+{
+    TokenBuilder b;
+    b.add_numeric_var();                                   // 00: C
+    b.add_numeric_var();                                   // 01: X
+    b.add_numeric_var();                                   // 02: Y
+    b.add_numeric_var();                                   // 03: Z
+
+    // 81 09 | 02 E3 06 "ANKETA" — SCRATCH T"ANKETA"
+    static const int l10[] = { 0x81, 0x09, 0x02, 0xE3, 0x06,
+                               'A', 'N', 'K', 'E', 'T', 'A' };
+    b.add_line(10, l10, 11);
+    // 7B 0D | 02 E3 06 "ANKETA" 01 02 03 00 — LIMITS T"ANKETA",X,Y,Z,C
+    static const int l20[] = { 0x7B, 0x0D, 0x02, 0xE3, 0x06,
+                               'A', 'N', 'K', 'E', 'T', 'A',
+                               0x01, 0x02, 0x03, 0x00 };
+    b.add_line(20, l20, 15);
+    static const int l30[] = { 0x4C, 0x01, 0x00 };         // PRINT C
+    b.add_line(30, l30, 3);
+    static const int l40[] = { 0x42, 0x00 };
+    b.add_line(40, l40, 2);
+
+    Program prog;
+    std::string error;
+    if (!parse_tokenized(b.file(), prog, error)) {
+        std::printf("  разбор: %s\n", error.c_str()); CHECK(false); return;
+    }
+    HeadlessHost host;
+    if (!build_image(host)) { CHECK(false); return; }
+    Interp interp(prog, host);
+    if (!interp.run(error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    const std::string tokens = host.dump();
+
+    const char * src =
+        "10 SCRATCH T\"ANKETA\"\n"
+        "20 LIMITS T\"ANKETA\",X,Y,Z,C\n"
+        "30 PRINT C\n"
+        "40 STOP\n";
+    std::string text;
+    if (!run_text(src, text, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+
+    CHECK_STR(line_of(tokens, 1), " 4");
+    CHECK_STR(tokens, text);
+}
+
+// SCRATCH DISK RLS=5,END=1000 — байты из docs/format.md, разд. 4.
+void test_scratch_disk_tokens()
+{
+    TokenBuilder b;
+    b.add_numeric_var();                                   // 00: C
+    b.add_numeric_var();                                   // 01: X
+    b.add_numeric_var();                                   // 02: Y
+    b.add_numeric_var();                                   // 03: Z
+
+    // 82 0B | 00 06 D9 E8 06 DE D7 D9 E7 01 50
+    //         F, LS = 6, END = 150
+    static const int l10[] = { 0x82, 0x0B, 0x00, 0x06, 0xD9, 0xE8, 0x06,
+                               0xDE, 0xD7, 0xD9, 0xE7, 0x01, 0x50 };
+    b.add_line(10, l10, 13);
+    static const int l20[] = { 0x7B, 0x0D, 0x02, 0xE3, 0x06,
+                               'A', 'N', 'K', 'E', 'T', 'A',
+                               0x01, 0x02, 0x03, 0x00 };
+    b.add_line(20, l20, 15);
+    static const int l30[] = { 0x4C, 0x01, 0x00 };
+    b.add_line(30, l30, 3);
+    static const int l40[] = { 0x42, 0x00 };
+    b.add_line(40, l40, 2);
+
+    Program prog;
+    std::string error;
+    if (!parse_tokenized(b.file(), prog, error)) {
+        std::printf("  разбор: %s\n", error.c_str()); CHECK(false); return;
+    }
+    HeadlessHost host;
+    if (!build_image(host)) { CHECK(false); return; }
+    Interp interp(prog, host);
+    if (!interp.run(error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(host.dump(), 1), " 0");
+}
+
 // --- ON ERROR --------------------------------------------------------------
 
 // «В символьную переменную 1 заносится код ошибки, в символьную переменную 2 —
@@ -489,6 +653,14 @@ int main()
     test_limits();
     test_two_rows();
     test_tokens_match_text();
+    test_scratch();
+    test_scratch_blocks_open();
+    test_scratch_several();
+    test_scratch_missing();
+    test_scratch_disk();
+    test_scratch_disk_unbinds();
+    test_scratch_tokens();
+    test_scratch_disk_tokens();
     test_onerror_goto();
     test_onerror_off();
     test_onerror_last_wins();

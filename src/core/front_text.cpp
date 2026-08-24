@@ -901,7 +901,42 @@ bool LineParser::parse_stmt(Stmt & s)
         return true;
     }
     // Дисковые операторы. Длинные слова раньше коротких: «DATA LOAD DC OPEN»
-    // перед «DATA LOAD DC».
+    // перед «DATA LOAD DC», «SCRATCH DISK» перед «SCRATCH».
+    if (lex_.take_word("SCRATCH DISK")) {
+        s.kind = ST_SCRATCH_DISK;
+        if (!disk_prefix(s, true)) return false;
+        if (lex_.take_word("LS")) {
+            if (!lex_.take_char('=')) return err("SCRATCH DISK: LS без =");
+            ExprParser ex(lex_);
+            if (!ex.parse(s.e)) return err(ex.error());
+            s.has_prompt = true;
+            lex_.take_char(',');
+        }
+        if (!lex_.take_word("END")) return err("SCRATCH DISK без END");
+        if (!lex_.take_char('=')) return err("SCRATCH DISK: END без =");
+        ExprParser ex(lex_);
+        if (!ex.parse(s.limit)) return err(ex.error());
+        return true;
+    }
+    if (lex_.take_word("SCRATCH")) {
+        s.kind = ST_SCRATCH;
+        if (!disk_prefix(s, true)) return false;
+        // Один разборщик на весь список: после выражения он уже заглянул
+        // вперёд, и читать запятую прямо из лексера нельзя.
+        ExprParser ex(lex_);
+        for (;;) {
+            Expr name;
+            if (!ex.parse(name)) return err(ex.error());
+            s.targets.push_back(name);
+            Tok t;
+            if (!ex.peek(t, false)) return err(ex.error());
+            if (t.t != Tok::COMMA) break;
+            ex.consume();
+        }
+        if (s.targets.empty()) return err("SCRATCH без имени файла");
+        return true;
+    }
+
     if (lex_.take_word("DATA LOAD DC OPEN")) {
         s.kind = ST_OPEN;
         if (!disk_prefix(s, true)) return false;

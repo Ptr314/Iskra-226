@@ -61,6 +61,8 @@ private:
     bool do_dskip(const Stmt & s);
     bool do_limits(const Stmt & s);
     bool do_onerr(const Stmt & s);
+    bool do_scratch(const Stmt & s);
+    bool do_scratch_disk(const Stmt & s);
     // Ошибка машины, которую может перехватить ON ERROR. Простой fail() —
     // это ограничение эмулятора, и перехватывать его нельзя: иначе
     // нереализованный оператор молча превратится в «ошибку ввода-вывода».

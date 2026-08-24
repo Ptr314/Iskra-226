@@ -1003,6 +1003,71 @@ bool Interp::do_dskip(const Stmt & s)
     return true;
 }
 
+// «Пометка ненужных файлов в каталоге осуществляется с помощью оператора
+// SCRATCH путём указания в кавычках имени файла» (руководство, разд. 5.4).
+bool Interp::do_scratch(const Stmt & s)
+{
+    unsigned row = 0, drive = 0;
+    if (!resolve_disk(s.disk, row, drive)) return false;
+
+    Catalog cat(host_, drive);
+    for (std::size_t i = 0; i < s.targets.size(); ++i) {
+        std::string name;
+        if (!eval_str(s.targets[i], name)) return false;
+        uint8_t nm[NAME_LEN];
+        Catalog::make_name(name, nm);
+
+        std::string err;
+        if (!cat.scratch(nm, err)) return machine_error(err::NO_FILE, err);
+    }
+    return true;
+}
+
+// «Оператор SCRATCH DISK, в котором указываются число секторов в указателе
+// каталога и номер последнего сектора, входящего в область каталога»
+// (руководство, разд. 5.1).
+bool Interp::do_scratch_disk(const Stmt & s)
+{
+    unsigned row = 0, drive = 0;
+    if (!resolve_disk(s.disk, row, drive)) return false;
+
+    // «В случае, если число секторов в указателе каталога не задано, оно
+    // устанавливается равным 24.»
+    long ls = 24;
+    if (s.has_prompt) {
+        Number n;
+        if (!eval_num(s.e, n)) return false;
+        if (!n.floor_to_int(ls)) return fail("SCRATCH DISK: LS не целое число");
+    }
+    Number e;
+    if (!eval_num(s.limit, e)) return false;
+    long end = 0;
+    if (!e.floor_to_int(end)) return fail("SCRATCH DISK: END не целое число");
+    if (ls < 1 || ls > 255) return machine_error(err::UNKNOWN,
+                                                 "SCRATCH DISK: LS вне 1…255");
+    if (end < ls) return machine_error(err::UNKNOWN,
+                                       "SCRATCH DISK: END раньше указателя");
+
+    Catalog cat(host_, drive);
+    std::string msg;
+    if (!cat.format(static_cast<unsigned>(ls), static_cast<unsigned>(end), msg))
+        return machine_error(err::UNKNOWN, msg);
+
+    // Каталог создан заново — все строки таблицы устройств, смотревшие на
+    // этот диск, больше ни на что не указывают.
+    for (unsigned i = 0; i < DeviceTable::ROWS; ++i) {
+        DeviceRow & r = dev_.row(i);
+        unsigned d = 0;
+        if (r.bound && DeviceTable::drive_index(r.addr, r.removable, d)
+            && d == drive) {
+            // Устройство за строкой остаётся, а файла за ней больше нет.
+            r.bound = false;
+            r.first = r.current = r.last = 0;
+        }
+    }
+    return true;
+}
+
 bool Interp::do_limits(const Stmt & s)
 {
     unsigned row = 0, drive = 0;
@@ -1446,6 +1511,12 @@ bool Interp::exec(const Stmt & s)
 
         case ST_ONERR:
             return do_onerr(s);
+
+        case ST_SCRATCH:
+            return do_scratch(s);
+
+        case ST_SCRATCH_DISK:
+            return do_scratch_disk(s);
 
         case ST_INPUT:
             return do_input(s);

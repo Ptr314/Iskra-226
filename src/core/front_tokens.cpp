@@ -376,10 +376,15 @@ bool StmtParser::disk_ref(Stmt & s, unsigned & p, bool with_device)
     if (p < len_ && ops_[p] == 0xDB) {
         ++p;
         src_.set_pos(p);
+        ex_.reset();
         if (!ex_.parse(s.disk.row)) return err(ex_.error());
-        p = src_.pos();
         s.disk.has_row = true;
-        if (p < len_ && ops_[p] == 0xDE) ++p;
+        // Запятую забирает разборщик: после выражения он уже заглянул
+        // вперёд, и src_.pos() без этого показывал бы мимо.
+        Tok t;
+        if (!ex_.peek(t, false)) return err(ex_.error());
+        if (t.t == Tok::COMMA) ex_.consume();
+        p = src_.pos();
     }
     return true;
 }
@@ -548,11 +553,64 @@ bool StmtParser::parse(unsigned verb, Stmt & s, std::string & error)
             break;
         }
 
+        case 0x81: {                                // SCRATCH
+            s.kind = ST_SCRATCH;
+            unsigned p = 0;
+            if (!disk_ref(s, p, true)) { ok = false; break; }
+            // Имена файлов через запятую: «если нужно сразу исключить
+            // несколько файлов, их имена могут перечисляться» (разд. 5.4).
+            src_.set_pos(p);
+            ex_.reset();
+            for (;;) {
+                Expr name;
+                if (!ex_.parse(name)) { ok = err(ex_.error()); break; }
+                s.targets.push_back(name);
+                Tok t;
+                if (!ex_.peek(t, false)) { ok = err(ex_.error()); break; }
+                if (t.t != Tok::COMMA) break;
+                ex_.consume();
+            }
+            if (ok && s.targets.empty()) ok = err("SCRATCH без имени файла");
+            if (ok) ok = expect_end("SCRATCH");
+            break;
+        }
+
+        case 0x82: {                                // SCRATCH DISK
+            s.kind = ST_SCRATCH_DISK;
+            unsigned p = 0;
+            if (!disk_ref(s, p, true)) { ok = false; break; }
+            // `LS=<а.в.>` необязательно; `06` — ключевое слово LS, `D7` — END
+            // (docs/format.md, разд. 4).
+            if (p < len_ && ops_[p] == 0x06) {
+                ++p;
+                if (p >= len_ || ops_[p] != 0xD9) { ok = err("SCRATCH DISK: LS без ="); break; }
+                ++p;
+                src_.set_pos(p);
+                ex_.reset();
+                if (!ex_.parse(s.e)) { ok = err(ex_.error()); break; }
+                s.has_prompt = true;
+                Tok t;
+                if (!ex_.peek(t, false)) { ok = err(ex_.error()); break; }
+                if (t.t == Tok::COMMA) ex_.consume();
+                p = src_.pos();
+            }
+            if (p >= len_ || ops_[p] != 0xD7) { ok = err("SCRATCH DISK без END"); break; }
+            ++p;
+            if (p >= len_ || ops_[p] != 0xD9) { ok = err("SCRATCH DISK: END без ="); break; }
+            ++p;
+            src_.set_pos(p);
+            ex_.reset();
+            if (!ex_.parse(s.limit)) { ok = err(ex_.error()); break; }
+            ok = expect_end("SCRATCH DISK");
+            break;
+        }
+
         case 0x75: {                                // DATA LOAD DC OPEN
             s.kind = ST_OPEN;
             unsigned p = 0;
             if (!disk_ref(s, p, true)) { ok = false; break; }
             src_.set_pos(p);
+            ex_.reset();
             if (!ex_.parse(s.e)) { ok = err(ex_.error()); break; }
             ok = expect_end("DATA LOAD DC OPEN");
             break;
@@ -580,6 +638,7 @@ bool StmtParser::parse(unsigned verb, Stmt & s, std::string & error)
             else {
                 s.mode = SK_COUNT;
                 src_.set_pos(p);
+            ex_.reset();
                 if (!ex_.parse(s.e)) { ok = err(ex_.error()); break; }
                 p = src_.pos();
                 // Признак «в секторах» — байт 05 за разобранным выражением.
@@ -611,7 +670,20 @@ bool StmtParser::parse(unsigned verb, Stmt & s, std::string & error)
                      && t.var < vars_->size() && (*vars_)[t.var].is_string);
                 if (named) {
                     src_.set_pos(p);
-                    if (!ex_.parse(s.e)) { ok = err(ex_.error()); break; }
+                    ex_.reset();
+                    // Именно одна лексема или один приёмник: за именем сразу
+                    // идут приёмники без разделителя, и разбор выражения
+                    // заглянул бы на индекс переменной в позиции операции.
+                    if (t.t == Tok::STR) {
+                        Tok lit;
+                        if (!ex_.take(lit, true)) { ok = err(ex_.error()); break; }
+                        s.e = Expr();
+                        s.e.kind = EX_STR;
+                        s.e.str = lit.s;
+                    } else if (!ex_.parse_lvalue(s.e, true)) {
+                        ok = err(ex_.error());
+                        break;
+                    }
                     s.has_prompt = true;            // форма 1: имя задано
                     p = src_.pos();
                     if (p < len_ && ops_[p] == 0xDE) ++p;

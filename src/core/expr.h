@@ -93,6 +93,10 @@ public:
     bool take(Tok & t, bool operand_expected);
 
     const std::string & error() const { return error_; }
+    // Сбросить заглянутую лексему. Обязательно после TokenSource::set_pos():
+    // иначе разбор продолжится с лексемы, прочитанной со старого места.
+    void reset() { has_pending_ = false; }
+
     void fail(const std::string & msg);
     bool failed() const { return !error_.empty(); }
 
