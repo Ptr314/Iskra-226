@@ -9,6 +9,7 @@
 
 #include "check.h"
 #include "core/host.h"
+#include "host_common/disk_args.h"
 #include "host_common/disk_files.h"
 #include "host_common/fileio.h"
 
@@ -142,6 +143,105 @@ void test_utf8_path()
     CHECK_STR(disks.path(0), PATH_CYR);
 }
 
+// Заклеенная прорезь: читается, но не пишется, и в файле ничего не меняется.
+void test_protect()
+{
+    CHECK(make_image(PATH));
+
+    DiskFiles disks;
+    std::string err;
+    CHECK(disks.mount(0, PATH, err));
+    CHECK(disks.writable(0));
+    disks.protect(0);
+    CHECK(!disks.writable(0));
+
+    std::vector<uint8_t> want(Host::SECTOR_SIZE, 0x5A);
+    CHECK(!disks.write(0, 1, &want[0]));
+
+    // Ни в памяти, ни в файле сектор не тронут.
+    uint8_t buf[Host::SECTOR_SIZE];
+    CHECK(disks.read(0, 1, buf));
+    CHECK_EQ(buf[0], fill_of(1));
+
+    DiskFiles again;
+    CHECK(again.mount(1, PATH, err));
+    CHECK(again.read(1, 1, buf));
+    CHECK_EQ(buf[0], fill_of(1));
+}
+
+// Разбор ключей подключения: --dN берёт следующий аргумент, --rN стоит сам
+// по себе, и порядок между ними значения не имеет.
+void test_args()
+{
+    CHECK(make_image(PATH));
+
+    const char * argv[] = { "--r1", "--d0", PATH, "--d1", PATH };
+    std::vector<std::string> args(argv, argv + sizeof(argv) / sizeof(argv[0]));
+
+    DiskArgs mounts;
+    std::string err;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        bool handled = false;
+        CHECK(mounts.take(args, i, handled, err));
+        CHECK(handled);
+    }
+    CHECK(!mounts.empty());
+
+    DiskFiles disks;
+    CHECK(mounts.apply(disks, err));
+    CHECK_STR(err, "");
+    CHECK(disks.writable(0));
+    CHECK(disks.mounted(1));
+    CHECK(!disks.writable(1));      // --r1 сработал, хотя стоял первым
+    CHECK(!disks.mounted(2));
+
+    // Чужие ключи не наши: `--detok` и `--run` начинаются так же.
+    const char * other[] = { "--detok", "--run", "--scale" };
+    for (unsigned k = 0; k < 3; ++k) {
+        std::vector<std::string> one(1, other[k]);
+        std::size_t i = 0;
+        bool handled = true;
+        DiskArgs d;
+        CHECK(d.take(one, i, handled, err));
+        CHECK(!handled);
+    }
+
+    // Дисководов четыре, образ у --dN обязателен, --rN без --dN — описка.
+    {
+        std::vector<std::string> bad(1, "--d7");
+        std::size_t i = 0;
+        bool handled = false;
+        DiskArgs d;
+        CHECK(!d.take(bad, i, handled, err));
+        CHECK(handled);
+    }
+    {
+        std::vector<std::string> bad(1, "--d2");
+        std::size_t i = 0;
+        bool handled = false;
+        DiskArgs d;
+        CHECK(!d.take(bad, i, handled, err));
+    }
+    {
+        std::vector<std::string> one(1, "--r3");
+        std::size_t i = 0;
+        bool handled = false;
+        DiskArgs d;
+        DiskFiles disks2;
+        CHECK(d.take(one, i, handled, err));
+        CHECK(!d.apply(disks2, err));
+    }
+
+    // Позиционный образ идёт в нулевой дисковод, но не перебивает --d0.
+    {
+        DiskArgs d;
+        d.set_default(PATH);
+        DiskFiles disks2;
+        CHECK(d.apply(disks2, err));
+        CHECK(disks2.mounted(0));
+    }
+}
+
 } // namespace
 
 int main()
@@ -150,6 +250,8 @@ int main()
     test_write_through();
     test_size_check();
     test_utf8_path();
+    test_protect();
+    test_args();
     drop(PATH);
     drop(PATH_CYR);
     return test::summary("test_diskfiles");

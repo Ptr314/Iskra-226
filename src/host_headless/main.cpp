@@ -27,6 +27,7 @@
 #include "core/catalog.h"
 #include "core/console.h"
 #include "core/detokenize.h"
+#include "host_common/disk_args.h"
 
 namespace {
 
@@ -58,7 +59,9 @@ int usage()
         "  iskra --run ОБРАЗ ИМЯ [ВВОД…]  исполнить программу с образа\n"
         "  iskra --run-text ФАЙЛ [ВВОД…]  исполнить текстовый листинг\n"
         "  iskra --console [ОБРАЗ]   диалоговый режим в терминале\n"
-        );
+        "\nКлючи диалогового режима:\n");
+    out(iskra::DiskArgs::help());
+    out("\n\nЗапись на дискету в диалоговом режиме идёт прямо в файл образа.\n");
     return 1;
 }
 
@@ -412,6 +415,18 @@ public:
     TermHost() : shown_(iskra::SCREEN_ROWS), pos_(0), open_(NONE),
                  interactive_(stdin_is_terminal()), printed_(false) {}
 
+    // Диалог работает с настоящими файлами образов, а не с копией в памяти:
+    // иначе всё записанное за сеанс пропадало бы при выходе. У образа в
+    // памяти остаётся своё место — автотесты, где прогон должен быть
+    // воспроизводимым и ничего на диске не трогать.
+    iskra::DiskFiles & disks() { return disks_; }
+
+    unsigned disk_sectors(unsigned drive) const { return disks_.sectors(drive); }
+    bool disk_read(unsigned drive, unsigned sector, uint8_t * buf)
+    { return disks_.read(drive, sector, buf); }
+    bool disk_write(unsigned drive, unsigned sector, const uint8_t * buf)
+    { return disks_.write(drive, sector, buf); }
+
     bool wait_key(uint8_t & code)
     {
         while (pos_ >= pending_.size())
@@ -496,6 +511,7 @@ private:
 
     static const unsigned NONE = 0xFFFFFFFFu;
 
+    iskra::DiskFiles disks_;
     std::vector<std::string> shown_;
     std::string pending_;
     std::size_t pos_;
@@ -504,14 +520,17 @@ private:
     bool printed_;           // было ли что печатать до сих пор
 };
 
-int cmd_console(const char * path)
+int cmd_console(const iskra::DiskArgs & mounts)
 {
     TermHost host;
-    if (path && !mount_disk(host, path)) return 1;
+    std::string error;
+    if (!mounts.apply(host.disks(), error)) {
+        std::printf("%s\n", error.c_str());
+        return 1;
+    }
 
     iskra::ProgramImage img;
     iskra::Console con(img, host);
-    std::string error;
     if (!con.run(error)) {
         std::printf("%s\n", error.c_str());
         return 1;
@@ -541,7 +560,27 @@ int main(int argc, char ** argv)
     if (cmd == "--run" && argc > 3) return cmd_run(argv[2], argv[3], argv + 4, argc - 4);
     if (cmd == "--run-file" && argc > 2) return cmd_run_file(argv[2], argv + 3, argc - 3);
     if (cmd == "--run-text" && argc > 2) return cmd_run_text(argv[2], argv + 3, argc - 3);
-    if (cmd == "--console") return cmd_console(argc > 2 ? argv[2] : 0);
+    if (cmd == "--console") {
+        std::vector<std::string> args;
+        for (int i = 2; i < argc; ++i) args.push_back(argv[i]);
+
+        iskra::DiskArgs mounts;
+        for (std::size_t i = 0; i < args.size(); ++i) {
+            bool handled = false;
+            std::string error;
+            if (!mounts.take(args, i, handled, error)) {
+                std::printf("%s\n", error.c_str());
+                return 1;
+            }
+            if (handled) continue;
+            if (!args[i].empty() && args[i][0] == '-') {
+                std::printf("неизвестный ключ: %s\n", args[i].c_str());
+                return 1;
+            }
+            mounts.set_default(args[i]);
+        }
+        return cmd_console(mounts);
+    }
 
     return usage();
 }

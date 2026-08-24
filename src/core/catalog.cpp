@@ -56,7 +56,7 @@ unsigned limits_code(const CatalogEntry & e)
 
 Catalog::Catalog(Host & host, unsigned drive)
     : host_(host), drive_(drive), ls_(0), current_end_(0), area_end_(0),
-      open_(false)
+      open_(false), io_error_(false)
 {
 }
 
@@ -82,6 +82,7 @@ bool Catalog::read_params(std::string & err)
     uint8_t sec[SEC];
     if (!host_.disk_read(drive_, 0, sec)) {
         err = "дисковод не читается";
+        io_error_ = true;
         return false;
     }
     ls_ = be16(sec);
@@ -99,12 +100,12 @@ bool Catalog::read_params(std::string & err)
 bool Catalog::write_params(std::string & err)
 {
     uint8_t sec[SEC];
-    if (!host_.disk_read(drive_, 0, sec)) { err = "дисковод не читается"; return false; }
+    if (!host_.disk_read(drive_, 0, sec)) { err = "дисковод не читается"; io_error_ = true; return false; }
     put_be16(sec, ls_);
     put_be16(sec + 2, current_end_);
     put_be16(sec + 4, area_end_);
     for (unsigned i = 6; i < PARAMS; ++i) sec[i] = 0;
-    if (!host_.disk_write(drive_, 0, sec)) { err = "диск не пишется"; return false; }
+    if (!host_.disk_write(drive_, 0, sec)) { err = "диск не пишется"; io_error_ = true; return false; }
     return true;
 }
 
@@ -120,6 +121,7 @@ bool Catalog::read_sector_entries(unsigned s, std::vector<CatalogEntry> & out,
     uint8_t sec[SEC];
     if (!host_.disk_read(drive_, s, sec)) {
         err = "не читается сектор указателя " + num_str(s);
+        io_error_ = true;
         return false;
     }
     const unsigned n = slots_in(s), f = first_slot(s);
@@ -216,6 +218,7 @@ bool Catalog::write_entry(const CatalogEntry & e, std::string & err)
     uint8_t sec[SEC];
     if (!host_.disk_read(drive_, e.sector, sec)) {
         err = "не читается сектор указателя " + num_str(e.sector);
+        io_error_ = true;
         return false;
     }
     uint8_t * r = sec + e.slot * ENTRY;
@@ -227,6 +230,7 @@ bool Catalog::write_entry(const CatalogEntry & e, std::string & err)
     std::memcpy(r + 8, e.name, NAME_LEN);
     if (!host_.disk_write(drive_, e.sector, sec)) {
         err = "не пишется сектор указателя " + num_str(e.sector);
+        io_error_ = true;
         return false;
     }
     return true;
@@ -310,6 +314,7 @@ bool Catalog::format(unsigned ls, unsigned end, std::string & err)
         std::memset(sec, 0, SEC);
         if (!host_.disk_write(drive_, s, sec)) {
             err = "не пишется сектор указателя " + num_str(s);
+            io_error_ = true;
             return false;
         }
     }

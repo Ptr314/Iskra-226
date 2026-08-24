@@ -100,6 +100,12 @@ public:
     // MOVE END: подвинуть конец области каталога.
     bool move_end(unsigned end, std::string & err);
 
+    // Последний отказ был отказом самого диска, а не нехваткой места. Нужно
+    // вызывающему, чтобы не выдать «файл слишком велик» там, где дискета
+    // просто не пишется: код ошибки у этих двух бед разный, а у отказа
+    // записи он нам неизвестен вовсе (core/errors.h).
+    bool io_error() const { return io_error_; }
+
 private:
     bool read_params(std::string & err);
     bool write_params(std::string & err);
@@ -114,6 +120,7 @@ private:
     unsigned current_end_;
     unsigned area_end_;
     bool open_;
+    bool io_error_;
 };
 
 } // namespace iskra

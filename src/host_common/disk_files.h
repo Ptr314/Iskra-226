@@ -33,6 +33,10 @@ public:
     bool mount(unsigned drive, const char * path, std::string & error);
     void unmount(unsigned drive);
 
+    // Заклеить прорезь: чтение остаётся, запись запрещена. Обратно не
+    // снимается — дискету для этого вынимают и вставляют заново.
+    void protect(unsigned drive);
+
     bool mounted(unsigned drive) const;
     bool writable(unsigned drive) const;
     const std::string & path(unsigned drive) const;

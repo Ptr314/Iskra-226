@@ -60,6 +60,11 @@ bool DiskFiles::mount(unsigned drive, const char * path, std::string & error)
     return true;
 }
 
+void DiskFiles::protect(unsigned drive)
+{
+    if (drive < DRIVES) drives_[drive].writable = false;
+}
+
 bool DiskFiles::mounted(unsigned drive) const
 {
     return drive < DRIVES && !drives_[drive].data.empty();

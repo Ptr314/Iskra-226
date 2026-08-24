@@ -71,6 +71,7 @@ add_library(iskra_host_common STATIC
     src/host_common/renderer.h    src/host_common/renderer.cpp
     src/host_common/fileio.h      src/host_common/fileio.cpp
     src/host_common/disk_files.h  src/host_common/disk_files.cpp
+    src/host_common/disk_args.h   src/host_common/disk_args.cpp
 )
 target_link_libraries(iskra_host_common PUBLIC iskra_core)
 target_link_libraries(iskra_host_common PRIVATE iskra_warnings)
@@ -87,7 +88,10 @@ target_link_libraries(iskra_headless PUBLIC iskra_core)
 target_link_libraries(iskra_headless PRIVATE iskra_warnings)
 
 add_executable(iskra src/host_headless/main.cpp)
-target_link_libraries(iskra PRIVATE iskra_headless iskra_warnings)
+# Диалоговый режим работает с настоящими файлами образов — тем же кодом, что
+# и окно. Самому хосту без окна (и автотестам на нём) это не нужно.
+target_link_libraries(iskra PRIVATE iskra_headless iskra_host_common
+                                    iskra_warnings)
 
 # MinGW: увести рантайм GCC внутрь exe, чтобы не таскать DLL. Отдельного
 # -static-libwinpthread в 4.9.2 нет, поэтому статичим всё разом: зависимостей,

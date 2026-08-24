@@ -684,6 +684,85 @@ bool Interp::do_scratch_disk(Stream & st)
     return true;
 }
 
+// Номер сектора в выдаче LIST DC — всегда пять цифр с нулями слева
+// («INDEX SECTORS=00006», руководство, разд. 5.1).
+static std::string sector_no(unsigned v)
+{
+    char b[16];
+    std::sprintf(b, "%05u", v > 99999 ? 99999 : v);
+    return b;
+}
+
+// Столбцы выдачи восстановлены, а не прочитаны: в скане книги три примера
+// LIST DC, и в каждом разбивка пробелами своя — распознавание их потеряло.
+// Взято так, чтобы заголовки стояли над своими полями (CLAUDE.md,
+// «Допущения»). Ширины полей из данных сомнений не вызывают: имя — восемь
+// байт, номер сектора — пять цифр.
+static std::string catalog_row(const std::string & name, const char * type,
+                               unsigned first, unsigned last, unsigned used)
+{
+    std::string s = name;
+    s.resize(NAME_LEN, ' ');
+    s += ' ';
+    std::string t = type;
+    t.resize(4, ' ');
+    s += t;
+    s += ' ';
+    s += sector_no(first);
+    s += ' ';
+    s += sector_no(last);
+    s += ' ';
+    s += sector_no(used);
+    return s;
+}
+
+// LIST DC — выдача указателя каталога (руководство, разд. 5.1). Операнд
+// один и тот же, что у прочих дисковых глаголов, только короче: буква
+// устройства и ничего больше.
+bool Interp::do_list_dc(Stream & st)
+{
+    Disk d;
+    if (!disk_prefix(st, true, d)) return false;
+
+    Catalog cat(host_, d.drive);
+    std::string err;
+    if (!cat.open(err)) return machine_error(err::UNKNOWN, err);
+
+    // Вычеркнутые файлы в выдаче остаются — их-то и помечают SP и SD.
+    std::vector<CatalogEntry> files;
+    if (!cat.list(files, true, err)) return machine_error(err::UNKNOWN, err);
+
+    if (host_.screen().col() != 1) emit_newline();
+    emit(dev_.row(d.row).removable ? "REMOVABLE CATALOG" : "FIXED CATALOG");
+    emit_newline();
+    emit("INDEX SECTORS=" + sector_no(cat.index_sectors()));
+    emit_newline();
+    emit("END CAT.AREA=" + sector_no(cat.area_end()));
+    emit_newline();
+    emit("CURRENT END=" + sector_no(cat.current_end()));
+    emit_newline();
+    emit("NAME     TYPE START END   USED");
+    emit_newline();
+
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        const CatalogEntry & e = files[i];
+        const char * type = e.is_program()
+            ? (e.scratched() ? "SP" : "P")
+            : (e.scratched() ? "SD" : "D");
+
+        // «Число использованных секторов, т. е. секторов, реально занятых в
+        // файле». Оно живёт не в указателе, а в самом файле — концевой
+        // записью; у сырых блоков от DATA SAVE BA её нет вовсе.
+        unsigned sector = 0, used = 0;
+        if (!find_end_record(host_, d.drive, e.first, e.last, sector, used))
+            used = 0;
+
+        emit(catalog_row(e.name_str(), type, e.first, e.last, used));
+        emit_newline();
+    }
+    return true;
+}
+
 bool Interp::do_limits(Stream & st)
 {
     Disk d;
@@ -1454,8 +1533,12 @@ bool Interp::do_save_dc(Stream & st)
                 return fail("SAVE DC: запас не целое неотрицательное число");
             reserve = static_cast<unsigned>(v);
         }
+        // Не всякий отказ create() — нехватка места: дискета может просто не
+        // писаться. Код у этих бед разный, и выдавать «файл слишком велик»
+        // там, где виноват диск, значит сбивать с толку обработчик ON ERROR.
         if (!cat.create(nm, true, need + reserve, e, err))
-            return machine_error(err::FILE_BIG, err);
+            return machine_error(cat.io_error() ? err::UNKNOWN : err::FILE_BIG,
+                                 err);
     }
 
     for (unsigned i = 0; i < need; ++i)
@@ -1573,6 +1656,7 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x79: return do_dskip(st, true);
         case 0x7A: return do_dskip(st, false);
         case 0x7B: return do_limits(st);
+        case 0x7C: return do_list_dc(st);
         case 0x81: return do_scratch(st);
         case 0x82: return do_scratch_disk(st);
 

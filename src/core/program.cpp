@@ -415,6 +415,17 @@ void ProgramImage::save_file(const std::string & name,
         for (unsigned i = 0; i < SECTOR_DATA; ++i)
             file.push_back(p + i < code.size() ? code[p + i] : 0);
     }
+
+    // Концевая запись `1C <позиция сектора от начала файла, 2 байта BE>`.
+    // Она есть у всех программных файлов корпуса: у `LСОЗСК` на klerk.dsk
+    // файл занимает секторы 140…147, и сектор 147 начинается с `1C 00 08`.
+    // Без неё LIST DC и LIMITS показывают «использовано 0» — по ней они и
+    // считают. Загрузчик на `1C` останавливается, так что круг сходится.
+    const unsigned pos = static_cast<unsigned>(file.size() / SECTOR) + 1;
+    file.push_back(0x1C);
+    file.push_back(static_cast<uint8_t>(pos >> 8));
+    file.push_back(static_cast<uint8_t>(pos & 0xFF));
+    file.resize(file.size() + SECTOR - 3, 0);
 }
 
 } // namespace iskra

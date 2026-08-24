@@ -212,6 +212,41 @@ void test_disk()
               ":\n");
 }
 
+// LIST DC — выдача указателя каталога (руководство, разд. 5.1). Вычеркнутый
+// программный файл индицируется как SP, а «использовано» берётся из концевой
+// записи, которую пишет SAVE DC.
+void test_list_dc()
+{
+    HeadlessHost host;
+    if (!format_disk(host)) { CHECK(false); return; }
+
+    const char * lines[] = {
+        "SELECT DISK 18F",
+        "10 PRINT \"РАЗ\"",
+        "SAVE DC F \"ПРОГ1\"",
+        "SCRATCH F \"ПРОГ1\"",
+        "SAVE DC F \"ПРОГ2\"",
+        "LIST DC F"
+    };
+    CHECK_STR(session_on(host, lines, sizeof(lines) / sizeof(lines[0])),
+              "READY BASIC 02 05.10.84\n"
+              ":SELECT DISK 18F\n"
+              ":10 PRINT \"РАЗ\"\n"
+              ":SAVE DC F \"ПРОГ1\"\n"
+              ":SCRATCH F \"ПРОГ1\"\n"
+              ":SAVE DC F \"ПРОГ2\"\n"
+              ":LIST DC F\n"
+              "FIXED CATALOG\n"
+              "INDEX SECTORS=00005\n"
+              "END CAT.AREA=00199\n"
+              "CURRENT END=00011\n"
+              "NAME     TYPE START END   USED\n"
+              // Три сектора: заголовок, тело и концевая запись.
+              "ПРОГ1    SP   00005 00007 00003\n"
+              "ПРОГ2    P    00008 00010 00003\n"
+              ":\n");
+}
+
 } // namespace
 
 int main()
@@ -222,5 +257,6 @@ int main()
     test_clear();
     test_bad_line();
     test_disk();
+    test_list_dc();
     return test::summary("test_console");
 }

@@ -124,6 +124,7 @@ private:
     bool do_gosubq(Stream & st);
     bool do_save_dc(Stream & st);
     bool do_load_dc(Stream & st);
+    bool do_list_dc(Stream & st);
     bool do_deffn(Stream & st, unsigned len);
 
     // Приставка `<устройство>[¤][/адрес][#строка]` — в номер строки таблицы
