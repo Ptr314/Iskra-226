@@ -506,6 +506,43 @@ bool StmtParser::parse(unsigned verb, Stmt & s, std::string & error)
             break;
         }
 
+        case 0x34: {                                // ON ERROR
+            s.kind = ST_ONERR;
+            // Без операндов — отмена обработки (руководство, разд. 11.6).
+            if (len_ == 0) { s.mode = EM_OFF; break; }
+
+            unsigned p = 0;
+            // Приёмники кода и номера строки — либо оба, либо ни одного, и
+            // разделителя между ними нет. Различаются по месту, а не по
+            // значению байта: индекс переменной вполне может совпасть с
+            // кодом CC, CD или D3.
+            if (ops_[0] != 0xCC && ops_[0] != 0xCD && ops_[0] != 0xD3) {
+                if (len_ < 2) { ok = err("ON ERROR: приёмников должно быть два"); break; }
+                for (unsigned k = 0; k < 2; ++k) {
+                    Expr v;
+                    v.kind = EX_VAR;
+                    v.var = ops_[k];
+                    s.targets.push_back(v);
+                }
+                p = 2;
+            }
+            if (p >= len_) { ok = err("ON ERROR без перехода"); break; }
+            if (ops_[p] == 0xCD) s.mode = EM_GOTO;
+            else if (ops_[p] == 0xD3) s.mode = EM_THEN;
+            else if (ops_[p] == 0xCC) s.mode = EM_GOSUB;
+            else { ok = err("ON ERROR без GOTO, THEN или GOSUB"); break; }
+            ++p;
+            if (p + 2 > len_ || !bcd_ok(ops_[p]) || !bcd_ok(ops_[p + 1])) {
+                ok = err("ON ERROR: нет номера строки");
+                break;
+            }
+            s.line = bcd2(ops_[p]) * 100 + bcd2(ops_[p + 1]);
+            p += 2;
+            if (p != len_) ok = err("лишние байты в операторе ON ERROR");
+            src_.set_pos(len_);
+            break;
+        }
+
         case 0x75: {                                // DATA LOAD DC OPEN
             s.kind = ST_OPEN;
             unsigned p = 0;

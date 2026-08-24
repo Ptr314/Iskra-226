@@ -761,6 +761,49 @@ bool Interp::eval(const Expr & e, Value & v)
     return true;
 }
 
+// --- обработка ошибок ------------------------------------------------------
+
+bool Interp::machine_error(const char * code, const std::string & m)
+{
+    err_code_ = code;
+    return fail(m);
+}
+
+bool Interp::do_onerr(const Stmt & s)
+{
+    trap_.mode = s.mode;
+    trap_.line = s.line;
+    trap_.targets = s.targets;
+    return true;
+}
+
+bool Interp::handle_error()
+{
+    if (trap_.mode == EM_OFF || err_code_.empty()) return false;
+
+    const std::string code = err_code_;
+    err_code_.clear();
+    error_.clear();
+
+    if (trap_.targets.size() == 2) {
+        // «В переменную 1 заносится код ошибки, в переменную 2 —
+        // четырёхзначный номер программной строки» (руководство, разд. 11.6).
+        char buf[16];
+        std::sprintf(buf, "%04u", li_ < prog_.lines.size()
+                                      ? prog_.lines[li_].number : 0u);
+        if (!assign_string(trap_.targets[0], code)) return false;
+        if (!assign_string(trap_.targets[1], buf)) return false;
+    }
+
+    // THEN возвращает на оператор ПОСЛЕ ошибочного, GOSUB — на него самого.
+    if (trap_.mode == EM_THEN)
+        calls_.push_back(std::make_pair(li_, si_ + 1));
+    else if (trap_.mode == EM_GOSUB)
+        calls_.push_back(std::make_pair(li_, si_));
+
+    return jump(trap_.line);
+}
+
 // --- дисковые операторы ----------------------------------------------------
 
 bool Interp::resolve_disk(const DiskRef & ref, unsigned & row, unsigned & drive)
@@ -809,7 +852,8 @@ bool Interp::do_open(const Stmt & s)
     CatalogEntry e;
     std::string err;
     if (!cat.find(nm, e, err)) return fail(err);
-    if (!e.exists() || e.scratched()) return fail("файла нет в каталоге");
+    if (!e.exists() || e.scratched())
+        return machine_error(err::NO_FILE, "файла нет в каталоге");
 
     DeviceRow & r = dev_.row(row);
     r.bound = true;
@@ -874,7 +918,8 @@ bool Interp::do_dload(const Stmt & s)
     std::vector<Value> vals;
     unsigned next = 0;
     std::string err;
-    if (!read_record(host_, drive, r.current, vals, next, err)) return fail(err);
+    if (!read_record(host_, drive, r.current, vals, next, err))
+        return machine_error(err::UNKNOWN, err);
 
     std::size_t used = 0;
     for (std::size_t i = 0; i < s.targets.size(); ++i)
@@ -898,7 +943,7 @@ bool Interp::do_dskip(const Stmt & s)
     if (s.mode == SK_END) {
         unsigned sector = 0, used = 0;
         if (!find_end_record(host_, drive, r.first, r.last, sector, used))
-            return fail("в файле нет концевой записи");
+            return machine_error(err::UNKNOWN, "в файле нет концевой записи");
         r.current = sector;
         return true;
     }
@@ -1384,6 +1429,9 @@ bool Interp::exec(const Stmt & s)
         case ST_LIMITS:
             return do_limits(s);
 
+        case ST_ONERR:
+            return do_onerr(s);
+
         case ST_INPUT:
             return do_input(s);
 
@@ -1515,7 +1563,12 @@ bool Interp::run(std::string & error)
         }
 
         jumped_ = false;
-        if (!exec(prog_.lines[li_].stmts[si_])) { error = error_; return false; }
+        if (!exec(prog_.lines[li_].stmts[si_])) {
+            // Ошибку машины перехватывает ON ERROR; ограничение эмулятора —
+            // нет, оно всегда останавливает программу.
+            if (!handle_error()) { error = error_; return false; }
+            continue;
+        }
         if (!jumped_) ++si_;
     }
 

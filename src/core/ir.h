@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "core/errors.h"
 #include "core/number.h"
 
 namespace iskra {
@@ -141,6 +142,7 @@ enum StmtKind {
     ST_DLOAD,        // DATA LOAD DC — прочитать одну запись
     ST_DSKIP,        // DSKIP и DBACKSPACE — сдвиг текущего сектора
     ST_LIMITS,       // LIMITS — адресные параметры файла в переменные
+    ST_ONERR,        // ON ERROR — куда уходить при ошибке
     ST_DIM,
     ST_REDIM,        // MAT REDIM — размерности вычисляются на ходу
     ST_LINPUT,       // ввод строки целиком, без разбора на поля

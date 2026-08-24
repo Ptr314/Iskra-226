@@ -60,6 +60,13 @@ private:
     bool do_dload(const Stmt & s);
     bool do_dskip(const Stmt & s);
     bool do_limits(const Stmt & s);
+    bool do_onerr(const Stmt & s);
+    // Ошибка машины, которую может перехватить ON ERROR. Простой fail() —
+    // это ограничение эмулятора, и перехватывать его нельзя: иначе
+    // нереализованный оператор молча превратится в «ошибку ввода-вывода».
+    bool machine_error(const char * code, const std::string & m);
+    // Передать управление обработчику. false — перехватывать некому.
+    bool handle_error();
     // Присвоить приёмнику очередное значение записи; used — сколько значений
     // из vals уже разобрано.
     bool store_value(const Expr & target, const std::vector<Value> & vals,
@@ -120,6 +127,17 @@ private:
     DeviceTable dev_;
     std::vector<Frame> loops_;
     std::vector<std::pair<unsigned, unsigned> > calls_;   // GOSUB: куда вернуться
+
+    // Обработка ошибок: «обработка возникшей ошибки всегда проводится с
+    // учётом параметров последнего выполненного оператора» (разд. 11.6).
+    struct ErrorTrap {
+        ErrorTrap() : mode(EM_OFF), line(0) {}
+        unsigned mode;
+        unsigned line;
+        std::vector<Expr> targets;    // приёмники кода и номера строки
+    };
+    ErrorTrap trap_;
+    std::string err_code_;            // код текущей ошибки, если она машинная
 
     // Имя помеченной подпрограммы → её DEFFN': строка и оператор в строке.
     std::map<unsigned, std::pair<unsigned, unsigned> > labels_;

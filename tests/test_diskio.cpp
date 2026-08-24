@@ -319,6 +319,151 @@ void test_tokens_match_text()
     CHECK_STR(tokens, text);
 }
 
+// --- ON ERROR --------------------------------------------------------------
+
+// «В символьную переменную 1 заносится код ошибки, в символьную переменную 2 —
+// четырёхзначный номер программной строки» (руководство, разд. 11.6).
+void test_onerror_goto()
+{
+    const char * src =
+        "10 DIM E$4,N$4\n"
+        "20 ON ERROR E$,N$GOTO 100\n"
+        "30 DATA LOAD DC OPEN T\"NETU\"\n"
+        "40 PRINT \"NE DOLZHNO BYT\"\n"
+        "50 STOP\n"
+        "100 PRINT E$;\"/\";N$\n";
+
+    std::string screen, error;
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "73  /0030");     // «такого файла нет», строка 30
+}
+
+// «Выполнение оператора ON ERROR-GOTO без параметров отменяет программную
+// обработку ошибок» (разд. 11.6).
+void test_onerror_off()
+{
+    std::string screen, error;
+    const char * src =
+        "10 ON ERROR E$,N$GOTO 100\n"
+        "20 ON ERROR\n"
+        "30 DATA LOAD DC OPEN T\"NETU\"\n"
+        "100 PRINT \"OBRABOTANO\"\n";
+    CHECK(!run_text(src, screen, error));
+}
+
+// «Обработка ошибки проводится с учётом параметров последнего выполненного
+// оператора обработки ошибок» (разд. 11.6).
+void test_onerror_last_wins()
+{
+    const char * src =
+        "10 ON ERROR GOTO 100\n"
+        "20 ON ERROR GOTO 200\n"
+        "30 DATA LOAD DC OPEN T\"NETU\"\n"
+        "100 PRINT \"PERVYJ\"\n"
+        "110 STOP\n"
+        "200 PRINT \"VTOROJ\"\n";
+
+    std::string screen, error;
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "VTOROJ");
+}
+
+// «При использовании ON ERROR-THEN при возврате происходит переход к
+// оператору, следующему за тем, в котором произошла ошибка» (разд. 11.6).
+void test_onerror_then()
+{
+    const char * src =
+        "10 DIM E$4,N$4\n"
+        "20 ON ERROR E$,N$THEN 100\n"
+        "30 DATA LOAD DC OPEN T\"NETU\":PRINT \"POSLE\"\n"
+        "40 STOP\n"
+        "100 PRINT \"OBRABOTKA \";E$\n"
+        "110 RETURN\n";
+
+    std::string screen, error;
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "OBRABOTKA 73");
+    CHECK_STR(line_of(screen, 2), "POSLE");         // ошибочный оператор пропущен
+}
+
+// «При использовании ON ERROR-GOSUB происходит переход к оператору, при
+// выполнении которого произошла ошибка» — то есть он повторяется.
+void test_onerror_gosub_retries()
+{
+    const char * src =
+        "10 DIM E$4,N$4,F$8\n"
+        "20 F$=\"NETU\"\n"
+        "30 ON ERROR E$,N$GOSUB 100\n"
+        "40 DATA LOAD DC OPEN T F$\n"
+        "50 PRINT \"OTKRYT\"\n"
+        "60 STOP\n"
+        "100 PRINT \"POVTOR \";E$\n"
+        "110 F$=\"NUMS\"\n"
+        "120 RETURN\n";
+
+    std::string screen, error;
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "POVTOR 73");
+    CHECK_STR(line_of(screen, 2), "OTKRYT");        // со второй попытки удалось
+}
+
+// Ограничение эмулятора — не ошибка машины, и ON ERROR его не ловит: иначе
+// нереализованное молча превратилось бы в «сбой ввода-вывода».
+void test_onerror_does_not_hide_limits()
+{
+    std::string screen, error;
+    const char * src =
+        "10 ON ERROR GOTO 100\n"
+        "20 DATA LOAD DC OPEN T\"ANKETA\"\n"
+        "30 DATA LOAD DC A,B\n"          // первое значение записи символьное
+        "100 PRINT \"POJMANO\"\n";
+    CHECK(!run_text(src, screen, error));
+}
+
+// Та же программа в обеих формах.
+void test_onerror_tokens()
+{
+    TokenBuilder b;
+    b.add_numeric_var();                                   // 00: A
+    b.add_numeric_var();                                   // 01: B
+
+    // 34 05 | 2F 30 CD 01 00 — ON ERROR <v2F>,<v30> GOTO 100. Приёмники тут
+    // числовые, поэтому их нет: форма без переменных короче.
+    // 34 03 | CD 01 00 — ON ERROR GOTO 100
+    static const int l10[] = { 0x34, 0x03, 0xCD, 0x01, 0x00 };
+    b.add_line(10, l10, 5);
+    // 75 07 | 02 E3 04 "NETU"
+    static const int l20[] = { 0x75, 0x07, 0x02, 0xE3, 0x04, 'N', 'E', 'T', 'U' };
+    b.add_line(20, l20, 9);
+    static const int l30[] = { 0x42, 0x00 };               // STOP
+    b.add_line(30, l30, 2);
+    // 4C 07 | E3 05 "POJMA"
+    static const int l100[] = { 0x4C, 0x07, 0xE3, 0x05, 'P', 'O', 'J', 'M', 'A' };
+    b.add_line(100, l100, 9);
+
+    Program prog;
+    std::string error;
+    if (!parse_tokenized(b.file(), prog, error)) {
+        std::printf("  разбор: %s\n", error.c_str()); CHECK(false); return;
+    }
+    HeadlessHost host;
+    if (!build_image(host)) { CHECK(false); return; }
+    Interp interp(prog, host);
+    if (!interp.run(error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    const std::string tokens = host.dump();
+
+    const char * src =
+        "10 ON ERROR GOTO 100\n"
+        "20 DATA LOAD DC OPEN T\"NETU\"\n"
+        "30 STOP\n"
+        "100 PRINT \"POJMA\"\n";
+    std::string text;
+    if (!run_text(src, text, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+
+    CHECK_STR(line_of(tokens, 1), "POJMA");
+    CHECK_STR(tokens, text);
+}
+
 void test_errors()
 {
     std::string screen, error;
@@ -344,6 +489,13 @@ int main()
     test_limits();
     test_two_rows();
     test_tokens_match_text();
+    test_onerror_goto();
+    test_onerror_off();
+    test_onerror_last_wins();
+    test_onerror_then();
+    test_onerror_gosub_retries();
+    test_onerror_does_not_hide_limits();
+    test_onerror_tokens();
     test_errors();
     return test::summary("чтение файлов данных");
 }

@@ -679,6 +679,45 @@ bool LineParser::parse_stmt(Stmt & s)
         }
         return var_list(s.targets, ex);
     }
+    // Раньше вычисляемого ON: «ON ERROR» — совсем другой оператор.
+    if (lex_.take_word("ON ERROR")) {
+        s.kind = ST_ONERR;
+        if (lex_.at_end() || lex_.at_colon()) { s.mode = EM_OFF; return true; }
+
+        // Весь оператор читается одним разборщиком: заглядывание сдвигает
+        // лексер, и мешать его с чтением слов напрямую нельзя.
+        ExprParser ex(lex_);
+        Tok t;
+        if (!ex.peek(t, true)) return err(ex.error());
+        if (t.t == Tok::VAR) {
+            Expr a, b;
+            if (!ex.parse_lvalue(a)) return err(ex.error());
+            if (!ex.take(t, false) || t.t != Tok::COMMA)
+                return err("ON ERROR: между приёмниками нужна запятая");
+            if (!ex.parse_lvalue(b)) return err(ex.error());
+            s.targets.push_back(a);
+            s.targets.push_back(b);
+        }
+        if (!ex.take(t, false)) return err(ex.error());
+        long v = 0;
+        if (t.t == Tok::KW_THEN) {
+            // Номер строки лексер забирает внутрь самой лексемы THEN — так
+            // же, как в `IF … THEN <строка>`.
+            s.mode = EM_THEN;
+            if (!t.num.to_int(v)) return err("ON ERROR: неверный номер строки");
+        } else if (t.t == Tok::KW_GOTO || t.t == Tok::KW_GOSUB) {
+            s.mode = (t.t == Tok::KW_GOTO) ? EM_GOTO : EM_GOSUB;
+            if (!ex.take(t, true) || t.t != Tok::NUM)
+                return err("ON ERROR: нет номера строки");
+            if (!t.num.to_int(v)) return err("ON ERROR: неверный номер строки");
+        } else {
+            return err("ON ERROR без GOTO, THEN или GOSUB");
+        }
+        if (v < 0) return err("ON ERROR: неверный номер строки");
+        s.line = static_cast<unsigned>(v);
+        return true;
+    }
+
     if (lex_.take_word("ON")) {
         s.kind = ST_ON;
         ExprParser ex(lex_);
