@@ -42,6 +42,19 @@ uint32_t koi8_to_unicode(uint8_t code)
     return UPPER[code - 0x80];
 }
 
+bool unicode_to_koi8(uint32_t cp, uint8_t & code)
+{
+    if (cp < 0x80) { code = static_cast<uint8_t>(cp); return true; }
+    if (cp == 0x00A4) { code = 0x24; return true; }              // ¤
+    for (unsigned k = 0; k < 128; ++k)
+        if (UPPER[k] == cp) {
+            code = static_cast<uint8_t>(0x80 + k);
+            return true;
+        }
+    code = '?';
+    return false;
+}
+
 void koi8_to_utf8(const uint8_t * data, unsigned len, std::string & out)
 {
     for (unsigned i = 0; i < len; ++i) {
@@ -82,15 +95,9 @@ bool utf8_to_koi8(const std::string & in, std::string & out)
             ++i;
         }
 
-        if (u < 0x80) { out += static_cast<char>(u); continue; }
-        if (u == 0x00A4) { out += static_cast<char>(0x24); continue; }   // ¤
-
-        unsigned code = 0;
-        for (unsigned k = 0; k < 128; ++k)
-            if (UPPER[k] == u) { code = 0x80 + k; break; }
-
-        if (code) out += static_cast<char>(code);
-        else { out += '?'; ok = false; }
+        uint8_t code = 0;
+        if (!unicode_to_koi8(u, code)) ok = false;
+        out += static_cast<char>(code);
     }
     return ok;
 }

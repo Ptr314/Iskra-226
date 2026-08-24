@@ -14,6 +14,11 @@ namespace iskra {
 // нужна только на границе: дампы экрана, имена файлов, заголовок окна.
 uint32_t koi8_to_unicode(uint8_t code);
 
+// Обратное для одного знака: нужно оконным хостам, которым система отдаёт
+// нажатие сразу кодовой точкой Юникода. Непредставимый знак даёт false и
+// вопросительный знак в code.
+bool unicode_to_koi8(uint32_t cp, uint8_t & code);
+
 void koi8_to_utf8(const uint8_t * data, unsigned len, std::string & out);
 std::string koi8_to_utf8(const uint8_t * data, unsigned len);
 

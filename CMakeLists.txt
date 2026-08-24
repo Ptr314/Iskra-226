@@ -21,13 +21,8 @@ endif()
 # Параметры сборки
 # ---------------------------------------------------------------------------
 
-option(ISKRA_HOST_SDL2      "Хост с окном на SDL2"                     OFF)
+option(ISKRA_HOST_WINDOW    "Хост с окном средствами самой системы"    ON)
 option(ISKRA_BUILD_TESTS    "Сборка автотестов"                        ON)
-
-# В браузере хост всегда графический.
-if(EMSCRIPTEN)
-    set(ISKRA_HOST_SDL2 ON CACHE BOOL "" FORCE)
-endif()
 
 add_library(iskra_warnings INTERFACE)
 if(MSVC)
@@ -68,6 +63,19 @@ target_include_directories(iskra_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(iskra_core PRIVATE iskra_warnings)
 
 # ---------------------------------------------------------------------------
+# Общая часть оконных хостов: знакоместа экрана — в точки. Про систему не
+# знает ничего, поэтому проверяется автотестом без всякого окна.
+# ---------------------------------------------------------------------------
+
+add_library(iskra_host_common STATIC
+    src/host_common/renderer.h    src/host_common/renderer.cpp
+    src/host_common/fileio.h      src/host_common/fileio.cpp
+    src/host_common/disk_files.h  src/host_common/disk_files.cpp
+)
+target_link_libraries(iskra_host_common PUBLIC iskra_core)
+target_link_libraries(iskra_host_common PRIVATE iskra_warnings)
+
+# ---------------------------------------------------------------------------
 # Хост без окна: автотесты и работа из командной строки
 # ---------------------------------------------------------------------------
 
@@ -89,11 +97,31 @@ if(MINGW)
 endif()
 
 # ---------------------------------------------------------------------------
-# Хост с окном (появится вместе с интерпретатором)
+# Хост с окном — средствами самой системы, без сторонних библиотек.
+# Обоснование выбора и раскладка по системам — docs/DECISIONS.md, разд. 14.
 # ---------------------------------------------------------------------------
 
-if(ISKRA_HOST_SDL2)
-    message(FATAL_ERROR "Хост на SDL2 ещё не написан; собирайте с -DISKRA_HOST_SDL2=OFF")
+set(ISKRA_WINDOW_HOST "нет")
+
+if(ISKRA_HOST_WINDOW)
+    if(WIN32)
+        add_executable(iskra-win WIN32
+            src/host_win32/win32_host.h  src/host_win32/win32_host.cpp
+            src/host_win32/main.cpp
+        )
+        target_link_libraries(iskra-win PRIVATE iskra_host_common iskra_warnings)
+        # user32 и gdi32 есть на любой Windows, shell32 — ради разбора
+        # командной строки в широких знаках.
+        target_link_libraries(iskra-win PRIVATE user32 gdi32 shell32)
+        if(MINGW)
+            target_link_options(iskra-win PRIVATE -static)
+        endif()
+        set(ISKRA_WINDOW_HOST "Win32")
+    else()
+        # X11, Cocoa и канва браузера — следующие; ядру от них нужен всё тот
+        # же host.h, поэтому сборка без окна остаётся рабочей.
+        message(STATUS "Хост с окном для этой системы ещё не написан")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -108,5 +136,5 @@ endif()
 # ---------------------------------------------------------------------------
 
 message(STATUS "Искра-226 ${ISKRA_VERSION}")
-message(STATUS "  хост SDL2: ${ISKRA_HOST_SDL2}")
-message(STATUS "  тесты:     ${ISKRA_BUILD_TESTS}")
+message(STATUS "  хост с окном: ${ISKRA_WINDOW_HOST}")
+message(STATUS "  тесты:        ${ISKRA_BUILD_TESTS}")

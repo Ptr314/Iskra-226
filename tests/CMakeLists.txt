@@ -6,7 +6,8 @@
 
 function(iskra_add_test name)
     add_executable(${name} ${name}.cpp check.h)
-    target_link_libraries(${name} PRIVATE iskra_headless iskra_warnings)
+    target_link_libraries(${name} PRIVATE iskra_headless iskra_host_common
+                                          iskra_warnings)
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     # Часть тестов работает на корпусе — он лежит в самом репозитории.
     target_compile_definitions(${name} PRIVATE
@@ -15,6 +16,8 @@ function(iskra_add_test name)
 endfunction()
 
 iskra_add_test(test_screen)
+iskra_add_test(test_render)
+iskra_add_test(test_diskfiles)
 iskra_add_test(test_number)
 iskra_add_test(test_stat04)
 iskra_add_test(test_arrays)

@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Mikhail Revzin <p3.141592653589793238462643@gmail.com>
+// Part of the Iskra-226 project: https://github.com/Ptr314/Iskra-226
+// Description: знакоместа экрана — в точки; общее для всех оконных хостов
+
+#include "host_common/renderer.h"
+
+#include <cstring>
+
+namespace iskra {
+
+Renderer::Renderer()
+    : font_(&Font::standard()),
+      scale_(1),
+      // Цвет люминофора «Искры» не установлен: в руководстве его нет, а по
+      // чёрно-белым снимкам не разобрать. Взят нейтральный белый — он ничего
+      // не утверждает; хост цвета меняет.
+      fg_(pack_rgb(0xD0, 0xD0, 0xD0)),
+      bg_(pack_rgb(0x00, 0x00, 0x00)),
+      cursor_(false)
+{
+}
+
+void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch) const
+{
+    const unsigned cw = font_->width();
+    const unsigned ch = font_->height();
+    const unsigned sc = scale_;
+    const unsigned cur_row = s.row();
+    const unsigned cur_col = s.col();
+
+    for (unsigned r = 1; r <= SCREEN_ROWS; ++r) {
+        for (unsigned c = 1; c <= SCREEN_COLS; ++c) {
+            const Cell & cell = s.cell(r, c);
+
+            // Негатив знакоместа и курсор складываются: курсор на негативном
+            // знакоместе гасит негатив, а не пропадает.
+            bool inv = cell.attr == ATTR_NEGATIVE;
+            if (cursor_ && r == cur_row && c == cur_col) inv = !inv;
+
+            const unsigned char * glyph = font_->glyph(cell.ch);
+            uint32_t * cell_out = out + (r - 1) * ch * sc * pitch
+                                      + (c - 1) * cw * sc;
+
+            for (unsigned y = 0; y < ch; ++y) {
+                uint32_t * line = cell_out + y * sc * pitch;
+                const unsigned bits = glyph[y];
+                for (unsigned x = 0; x < cw; ++x) {
+                    // Старший бит — левая точка.
+                    const bool on = ((bits >> (cw - 1 - x)) & 1) != 0;
+                    const uint32_t color = (on != inv) ? fg_ : bg_;
+                    for (unsigned k = 0; k < sc; ++k) line[x * sc + k] = color;
+                }
+                // При увеличении строка развёртки повторяется как есть.
+                for (unsigned k = 1; k < sc; ++k)
+                    std::memcpy(line + k * pitch, line,
+                                cw * sc * sizeof(uint32_t));
+            }
+        }
+    }
+}
+
+} // namespace iskra
