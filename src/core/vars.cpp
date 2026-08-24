@@ -103,6 +103,25 @@ bool VarStore::array_alloc(unsigned var, unsigned dim1, unsigned dim2,
     return true;
 }
 
+void VarStore::clear_non_common()
+{
+    for (std::map<unsigned, Number>::iterator it = nums_.begin();
+         it != nums_.end(); ) {
+        if (it->first < vars_.size() && vars_[it->first].is_common) ++it;
+        else nums_.erase(it++);
+    }
+    for (std::map<unsigned, Array>::iterator it = arrays_.begin();
+         it != arrays_.end(); ) {
+        if (it->first < vars_.size() && vars_[it->first].is_common) ++it;
+        else arrays_.erase(it++);
+    }
+    for (std::map<unsigned, std::string>::iterator it = strs_.begin();
+         it != strs_.end(); ) {
+        if (it->first < vars_.size() && vars_[it->first].is_common) ++it;
+        else strs_.erase(it++);
+    }
+}
+
 bool VarStore::array_grow(unsigned var, unsigned dim1, unsigned dim2,
                           std::string & error)
 {

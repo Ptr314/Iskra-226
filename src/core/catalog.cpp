@@ -172,6 +172,45 @@ bool Catalog::list(std::vector<CatalogEntry> & out, bool with_scratched,
     return true;
 }
 
+bool Catalog::rename_over(const CatalogEntry & victim,
+                          const uint8_t name[NAME_LEN], bool program,
+                          CatalogEntry & e, std::string & err)
+{
+    if (!open_ && !open(err)) return false;
+
+    const unsigned s = hash(name, ls_);
+    std::vector<CatalogEntry> ents;
+    if (!read_sector_entries(s, ents, err)) return false;
+    std::size_t k = 0;
+    while (k < ents.size() && ents[k].exists()) ++k;
+    if (k == ents.size()) {
+        err = "переполнение сектора указателя " + num_str(s);
+        return false;
+    }
+
+    e = ents[k];
+    e.status = 0x10;
+    e.type = program ? 0x80 : 0x00;
+    e.first = victim.first;
+    e.last = victim.last;
+    std::memcpy(e.name, name, NAME_LEN);
+    if (!write_entry(e, err)) return false;
+
+    // Старая запись освобождается: файл переехал целиком.
+    CatalogEntry gone = victim;
+    gone.status = 0;
+    gone.type = 0;
+    gone.first = gone.last = 0;
+    for (unsigned i = 0; i < NAME_LEN; ++i) gone.name[i] = ' ';
+    return write_entry(gone, err);
+}
+
+bool Catalog::update(const CatalogEntry & e, std::string & err)
+{
+    if (!open_ && !open(err)) return false;
+    return write_entry(e, err);
+}
+
 bool Catalog::write_entry(const CatalogEntry & e, std::string & err)
 {
     uint8_t sec[SEC];

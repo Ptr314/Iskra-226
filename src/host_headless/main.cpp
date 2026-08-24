@@ -194,7 +194,7 @@ bool read_file_bytes(const char * path, std::string & out)
 
 // Исполнение программы на хосте без окна. Строки ввода подаются аргументами
 // командной строки — прогон получается воспроизводимым.
-int run_program(const iskra::ProgramImage & img, char ** input, int inputs)
+int run_program(iskra::ProgramImage & img, char ** input, int inputs)
 {
     iskra::HeadlessHost host;
     for (int i = 0; i < inputs; ++i) {

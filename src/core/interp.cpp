@@ -126,7 +126,7 @@ bool stmt_head(const std::vector<uint8_t> & body, unsigned at,
     return ops_at + len <= body.size();
 }
 
-Interp::Interp(const ProgramImage & img, Host & host)
+Interp::Interp(ProgramImage & img, Host & host)
     : img_(img), host_(host), store_(img.vars()), labels_ready_(false),
       li_(0), off_(0), next_off_(0), jumped_(false), stopped_(false),
       max_steps_(0)
@@ -1367,6 +1367,156 @@ bool Interp::do_gosubq(Stream & st)
     return true;
 }
 
+// «Для записи в каталог программы, находящейся в данный момент в
+// оперативной памяти» (руководство, разд. 5.2). Операнды: буква устройства,
+// `¤` — контрольное считывание, `T` — оттранслированная форма, дальше
+// необязательная скобка и имя.
+//
+// Скобка двузначна и различается по типу значения (разд. 5.3):
+// `("<старое имя>")` — писать на место вычеркнутого файла,
+// `(<а.в.>)` — сколько секторов добавить в запас.
+bool Interp::do_save_dc(Stream & st)
+{
+    uint8_t b = 0;
+    bool has_device = false;
+    unsigned device = 2;
+    if (st.src.peek_raw_byte(b) && b <= 2) {
+        st.src.skip(1);
+        has_device = true;
+        device = b;
+    }
+    if (st.src.peek_raw_byte(b) && b == 0xD6) st.src.skip(1);   // ¤ — контроль
+    // `T` (оттранслированная форма) — единственная, которую умеет эмулятор:
+    // текстовой записи программы на диск ещё нет.
+    if (st.src.peek_raw_byte(b) && b == 0xD2) st.src.skip(1);
+
+    Value extra;
+    bool has_extra = false;
+    Tok t;
+    if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+    if (t.t == Tok::LPAR) {
+        st.ev.parser().consume();
+        if (!st.ev.expr(extra)) return fail(st.ev.error());
+        if (!st.ev.parser().take(t, false) || t.t != Tok::RPAR)
+            return fail("SAVE DC: скобка не закрыта");
+        has_extra = true;
+    } else {
+        st.ev.parser().unpeek();
+    }
+
+    std::string name;
+    if (!st.ev.text(name)) return fail(st.ev.error());
+
+    // Диск выбирается той же приставкой, что и у прочих дисковых операторов,
+    // только строки таблицы у SAVE DC нет — работает строка #0.
+    DeviceRow & r0 = dev_.row(0);
+    unsigned addr = r0.addr;
+    bool removable = r0.removable;
+    if (has_device && device < 2) removable = (device == 1);
+    unsigned drive = 0;
+    if (!DeviceTable::drive_index(static_cast<uint8_t>(addr), removable, drive))
+        return fail("неизвестный адрес дискового устройства");
+    if (!host_.disk_sectors(drive)) return fail("дисковода нет");
+
+    std::vector<uint8_t> file;
+    img_.save_file(name, file);
+    const unsigned need = static_cast<unsigned>(file.size() / Host::SECTOR_SIZE);
+
+    Catalog cat(host_, drive);
+    uint8_t nm[NAME_LEN];
+    Catalog::make_name(name, nm);
+
+    CatalogEntry e;
+    std::string err;
+    if (!cat.find(nm, e, err)) return fail(err);
+    // «Предполагается, что ранее в каталоге файла с таким именем не было,
+    // иначе записи не произойдет» (разд. 5.2).
+    if (e.alive()) return machine_error(err::FILE_EXISTS, "файл с таким именем уже есть");
+
+    if (has_extra && extra.is_str) {
+        // Запись на место вычеркнутого файла: имя старого файла в скобках.
+        uint8_t old[NAME_LEN];
+        Catalog::make_name(extra.str, old);
+        CatalogEntry victim;
+        if (!cat.find(old, victim, err)) return fail(err);
+        if (!victim.exists() || !victim.scratched())
+            return machine_error(err::NO_FILE, "вычеркнутого файла с таким именем нет");
+        // «Если программа не помещается на нем полностью, выдается
+        // соответствующее сообщение об ошибке» (разд. 5.3).
+        if (victim.sectors() < need)
+            return machine_error(err::FILE_SMALL, "программа не помещается в старый файл");
+        if (!cat.rename_over(victim, nm, true, e, err)) return fail(err);
+    } else {
+        unsigned reserve = 0;
+        if (has_extra) {
+            long v = 0;
+            if (!extra.num.floor_to_int(v) || v < 0)
+                return fail("SAVE DC: запас не целое неотрицательное число");
+            reserve = static_cast<unsigned>(v);
+        }
+        if (!cat.create(nm, true, need + reserve, e, err))
+            return machine_error(err::FILE_BIG, err);
+    }
+
+    for (unsigned i = 0; i < need; ++i)
+        if (!host_.disk_write(drive, e.first + i, &file[i * Host::SECTOR_SIZE]))
+            return machine_error(err::UNKNOWN, "сбой записи на диск");
+
+    return true;
+}
+
+// «Оператор LOAD DC используется в программе для загрузки нового
+// программного сегмента» (руководство, разд. 19.1). Последовательность
+// оттуда же: остановить исполнение, стереть строки (CLEAR P), стереть
+// необщие переменные (CLEAR N), загрузить сегмент, начать со строки 3,
+// иначе со строки 1, иначе с наименьшей.
+bool Interp::do_load_dc(Stream & st)
+{
+    Disk d;
+    if (!disk_prefix(st, true, d)) return false;
+
+    std::string name;
+    if (!st.ev.text(name)) return fail(st.ev.error());
+    st.ev.parser().unpeek();
+    if (!st.src.at_end())
+        return fail("LOAD DC с номерами строк ещё не исполняется");
+
+    uint8_t nm[NAME_LEN];
+    Catalog::make_name(name, nm);
+
+    Catalog cat(host_, d.drive);
+    CatalogEntry e;
+    std::string err;
+    if (!cat.find(nm, e, err)) return fail(err);
+    if (!e.alive())
+        return machine_error(err::NO_FILE, "программы нет в каталоге");
+    if (!e.is_program())
+        return machine_error(err::NO_FILE, "это не программный файл");
+
+    std::vector<uint8_t> file(static_cast<std::size_t>(e.sectors()) * Host::SECTOR_SIZE, 0);
+    for (unsigned i = 0; i < e.sectors(); ++i)
+        if (!host_.disk_read(d.drive, e.first + i, &file[i * Host::SECTOR_SIZE]))
+            return machine_error(err::UNKNOWN, "сбой чтения с диска");
+
+    ProgramImage next;
+    if (!next.load_file(file, err)) return machine_error(err::UNKNOWN, err);
+
+    // Номеров строк в операторе нет, поэтому стирается вся программа
+    // целиком, а с ней — циклы и адреса возвратов.
+    img_ = next;
+    store_.clear_non_common();
+    loops_.clear();
+    calls_.clear();
+    labels_.clear();
+    labels_ready_ = false;
+
+    if (!img_.line_count()) return fail("загруженный сегмент пуст");
+    li_ = 0;
+    off_ = 0;
+    jumped_ = true;
+    return true;
+}
+
 bool Interp::jump(unsigned line_number)
 {
     unsigned idx = 0;
@@ -1404,6 +1554,8 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x54: return do_select(st);
         case 0x27: case 0x3A: return do_deffn(st, len);
         case 0x23: return do_gosubq(st);
+        case 0x80: return do_save_dc(st);
+        case 0x7D: return do_load_dc(st);
 
         case 0x75: return do_open(st, true);
         case 0x74: return do_dload(st);

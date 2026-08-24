@@ -45,6 +45,13 @@ public:
     // Подставить образ дискеты: содержимое целиком, сектора по 256 байт.
     void mount(unsigned drive, const std::vector<uint8_t> & data);
 
+    // Образ обратно — чтобы проверить, что записалось, и перенести его на
+    // другой хост.
+    const std::vector<uint8_t> & image(unsigned drive) const
+    {
+        return disks_[drive < 2 ? drive : 0];
+    }
+
 private:
     Screen screen_;
     std::vector<uint8_t> keys_;

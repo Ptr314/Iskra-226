@@ -88,6 +88,15 @@ public:
     // каталога до сектора end включительно.
     bool format(unsigned ls, unsigned end, std::string & err);
 
+    // Переписать уже найденную запись указателя.
+    bool update(const CatalogEntry & e, std::string & err);
+
+    // Занять место вычеркнутого файла под новым именем: границы секторов
+    // остаются его, а запись переезжает в сектор указателя, который даёт хеш
+    // нового имени, — иначе файл не найти по имени (docs/format.md, разд. 2).
+    bool rename_over(const CatalogEntry & victim, const uint8_t name[NAME_LEN],
+                     bool program, CatalogEntry & e, std::string & err);
+
     // MOVE END: подвинуть конец области каталога.
     bool move_end(unsigned end, std::string & err);
 

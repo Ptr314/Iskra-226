@@ -1002,18 +1002,19 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         else if (lex_.take_word("R")) out.push_back(0x01);
         else if (lex_.take_word("T")) out.push_back(0x02);
         if (lex_.take_char('$')) out.push_back(0xD6);
-        if (lex_.take_word("T")) {
-            out.push_back(0xD2);
-            if (lex_.take_char('(')) {
-                out.push_back(0xEB);
-                for (;;) {
-                    if (!enc.expr()) return err(enc.error());
-                    if (!take_sep(enc, Tok::COMMA)) break;
-                    out.push_back(0xDE);
-                }
-                if (!take_sep(enc, Tok::RPAR)) return err("SAVE DC: скобка не закрыта");
-                out.push_back(0xD0);
+        if (lex_.take_word("T")) out.push_back(0xD2);
+        // Скобка от T не зависит: в ней либо имя вычеркнутого файла, на
+        // место которого пишем, либо число запасных секторов — руководство,
+        // разд. 5.3.
+        if (lex_.take_char('(')) {
+            out.push_back(0xEB);
+            for (;;) {
+                if (!enc.expr()) return err(enc.error());
+                if (!take_sep(enc, Tok::COMMA)) break;
+                out.push_back(0xDE);
             }
+            if (!take_sep(enc, Tok::RPAR)) return err("SAVE DC: скобка не закрыта");
+            out.push_back(0xD0);
         }
         if (lex_.at_end() || lex_.at_colon()) return true;
         return enc.expr() ? true : err(enc.error());
@@ -1922,6 +1923,10 @@ bool tokenize(const std::string & koi8, ProgramImage & out, NameTable & names,
     // из таблицы имён. Сами байты таблиц пока не выписываются, они нужны
     // только для SAVE DC.
     out.vars() = names.vars();
+    // Таблицы переменных собираются из описаний: без них образ нельзя
+    // записать на диск оператором SAVE DC — размеры массивов и длины строк
+    // хранятся только там (docs/format.md, разд. 6).
+    out.rebuild_tables();
     return true;
 }
 

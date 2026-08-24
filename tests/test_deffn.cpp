@@ -18,7 +18,7 @@ using namespace iskra;
 
 namespace {
 
-bool run_program(const ProgramImage & img, std::string & screen, std::string & error)
+bool run_program(ProgramImage & img, std::string & screen, std::string & error)
 {
     HeadlessHost host;
     Interp interp(img, host);

@@ -28,7 +28,10 @@ namespace iskra {
 class Interp
 {
 public:
-    Interp(const ProgramImage & img, Host & host);
+    // Образ изменяемый: LOAD DC заменяет часть программы прямо во время
+    // исполнения — «загружается программный сегмент с указанным именем»
+    // (руководство, разд. 19.1).
+    Interp(ProgramImage & img, Host & host);
 
     // Ограничение на число выполненных операторов: страховка от зацикливания
     // в автотестах. Ноль снимает ограничение.
@@ -93,6 +96,8 @@ private:
     bool do_if(Stream & st);
     bool do_on(Stream & st);
     bool do_gosubq(Stream & st);
+    bool do_save_dc(Stream & st);
+    bool do_load_dc(Stream & st);
     bool do_deffn(Stream & st, unsigned len);
 
     // Приставка `<устройство>[¤][/адрес][#строка]` — в номер строки таблицы
@@ -125,7 +130,7 @@ private:
     bool jump(unsigned line_number);
     bool fail(const std::string & m);
 
-    const ProgramImage & img_;
+    ProgramImage & img_;
     Host & host_;
     VarStore store_;
     DeviceTable dev_;

@@ -36,6 +36,9 @@ void build_vars(const std::vector<uint8_t> & code, unsigned L1, unsigned L2,
         v.known = true;
         v.is_string = (flag & 0x20) != 0;
         v.is_integer = (flag & 0x30) == 0;
+        // Таблица 3 — хвост того же массива, и приходится он на самые
+        // младшие индексы: это и есть область COM (разд. 6).
+        v.is_common = (N - 1 - pos) < L3 / 4;
     }
 
     // Порядковое соответствие «запись таблицы 1 → переменная с битом 0».
@@ -164,6 +167,83 @@ bool is_record_start(const std::vector<uint8_t> & code, unsigned p)
 unsigned be16(const uint8_t * p) { return (static_cast<unsigned>(p[0]) << 8) | p[1]; }
 
 } // namespace
+
+// Обратное к build_vars(): собрать таблицы переменных из их описаний.
+// Раскладка — docs/format.md, разд. 6. Адреса машина назначает при
+// исполнении, но записывать их приходится: по разностям соседних адресов
+// читатель отличает строку-скаляр от массива строк, и без них описание
+// становится неоднозначным.
+void ProgramImage::rebuild_tables()
+{
+    tables_.clear();
+    t1_ = t2_ = t3_ = 0;
+
+    const unsigned n = static_cast<unsigned>(vars_.size());
+    if (!n) return;
+
+    // Область COM занимает самые младшие индексы и лежит в таблице 3.
+    unsigned common = 0;
+    while (common < n && vars_[common].is_common) ++common;
+
+    // Дескриптор размера получают массивы и символьные переменные с явной
+    // длиной; числовые скаляры и строки длины по умолчанию — нет.
+    std::vector<uint8_t> t1;
+    std::vector<uint8_t> t23;
+    unsigned addr = 0x0100;
+
+    // Записи идут в порядке убывания индекса; у таблицы 1 адреса при этом
+    // растут, поэтому обе строятся одним проходом.
+    for (unsigned pos = 0; pos < n; ++pos) {
+        const unsigned i = n - 1 - pos;
+        const VarInfo & v = vars_[i];
+
+        const bool explicit_len = v.is_string && v.str_len && v.str_len != 16;
+        const bool descr = v.is_array || explicit_len;
+
+        uint8_t flag = v.is_string ? 0x20 : (v.is_integer ? 0x00 : 0x10);
+        if (descr) flag |= 0x01;
+
+        if (descr) {
+            const unsigned d1 = v.dim1 ? v.dim1 : (v.is_array ? 10 : 1);
+            const unsigned d2 = v.dim2;
+            const unsigned elem = v.is_string ? (v.str_len ? v.str_len : 16)
+                                              : (v.is_integer ? 2 : 8);
+            // Размерный код = удвоенный размер элемента, младший бит —
+            // «длина задана явно».
+            unsigned sizecode = elem * 2;
+            if (v.is_string && explicit_len) sizecode |= 1;
+
+            const unsigned field = d2 ? d2 : (v.is_string ? 0x0800 : 0x082D);
+
+            t1.push_back(static_cast<uint8_t>(addr & 0xFF));
+            t1.push_back(static_cast<uint8_t>(addr >> 8));
+            t1.push_back(static_cast<uint8_t>(field & 0xFF));
+            t1.push_back(static_cast<uint8_t>(field >> 8));
+            t1.push_back(static_cast<uint8_t>(d1 & 0xFF));
+            t1.push_back(static_cast<uint8_t>(d1 >> 8));
+            t1.push_back(static_cast<uint8_t>(sizecode & 0xFF));
+            t1.push_back(static_cast<uint8_t>(sizecode >> 8));
+
+            // Размер выделяемой памяти: у скалярной строки — длина, округлённая
+            // вверх до чётной; у массива — элементы плюс шесть байт дескриптора.
+            addr += v.is_array
+                        ? d1 * (d2 ? d2 : 1) * elem + 6
+                        : elem + (elem & 1);
+        }
+
+        t23.push_back(0);                    // адрес назначает исполнение
+        t23.push_back(0);
+        t23.push_back(flag);
+        t23.push_back(0);
+    }
+
+    t1_ = static_cast<unsigned>(t1.size());
+    t3_ = common * 4;
+    t2_ = static_cast<unsigned>(t23.size()) - t3_;
+
+    tables_.insert(tables_.end(), t1.begin(), t1.end());
+    tables_.insert(tables_.end(), t23.begin(), t23.end());
+}
 
 void ProgramImage::clear()
 {

@@ -106,7 +106,7 @@ bool load_text(ProgramImage & img, NameTable & names)
 }
 
 // Прогон с заданным вводом; возвращает содержимое экрана.
-bool run(const ProgramImage & img, const char * df, const char * p, std::string & screen)
+bool run(ProgramImage & img, const char * df, const char * p, std::string & screen)
 {
     HeadlessHost host;
     for (int i = 0; i < 2; ++i) {
@@ -166,7 +166,7 @@ void test_variable_indices(const NameTable & names)
 
 // Главное требование к эмулятору: оба представления одной программы
 // исполняются одинаково.
-void test_same_screen(const ProgramImage & tok, const ProgramImage & txt)
+void test_same_screen(ProgramImage & tok, ProgramImage & txt)
 {
     static const char * const INPUTS[][2] = {
         { "1",  ".05" },
@@ -196,7 +196,7 @@ void test_same_screen(const ProgramImage & tok, const ProgramImage & txt)
 // интегрирует от -6, а хвост там ещё тяжёлый. Это свойство самой программы,
 // а не эмулятора, поэтому здесь только фиксируется, что обе формы врут
 // одинаково.
-void test_known_values(const ProgramImage & tok)
+void test_known_values(ProgramImage & tok)
 {
     struct Case { const char * df; const char * want; };
     static const Case CASES[] = {
@@ -229,7 +229,7 @@ void test_known_values(const ProgramImage & tok)
 
 // Печать чисел: «с учетом знака перед числом и пробела после числа»
 // (руководство, разд. 4.4). Проверяется прямо на экране программы.
-void test_number_format(const ProgramImage & tok)
+void test_number_format(ProgramImage & tok)
 {
     std::string screen;
     if (!run(tok, "10", ".05", screen)) { CHECK(false); return; }
