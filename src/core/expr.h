@@ -21,6 +21,7 @@ struct Tok {
         LPAR, RPAR, COMMA, SEMI,
         PLUS, MINUS, STAR, SLASH, CARET,
         EQ, NE, LT, LE, GT, GE,
+        AND, OR, XOR,   // логические связки условий
         FN_ABS, FN_INT, FN_SGN, FN_SQR, FN_LOG, FN_EXP,
         FN_HEX,         // строка байт уже разобрана в s
         FN_AT, FN_TAB,
@@ -96,6 +97,7 @@ public:
     bool failed() const { return !error_.empty(); }
 
 private:
+    bool parse_logic(Expr & out);
     bool parse_compare(Expr & out);
     bool parse_sum(Expr & out);
     bool parse_product(Expr & out);

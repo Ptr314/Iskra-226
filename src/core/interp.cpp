@@ -665,6 +665,21 @@ bool Interp::eval(const Expr & e, Value & v)
     }
 
     switch (e.kind) {
+        // Связки условий. Отношение даёт 1 или 0, связка — тоже.
+        case EX_AND:
+        case EX_OR:
+        case EX_XOR: {
+            Number a, b;
+            if (!eval_num(e.a[0], a)) return false;
+            if (!eval_num(e.a[1], b)) return false;
+            const bool x = !a.is_zero(), y = !b.is_zero();
+            const bool r = (e.kind == EX_AND) ? (x && y)
+                         : (e.kind == EX_OR)  ? (x || y)
+                                              : (x != y);
+            v.num = Number::from_int(r ? 1 : 0);
+            return true;
+        }
+
         case EX_NUM: v.num = e.num; return true;
         case EX_PI:  v.num = Number::pi(); return true;
 

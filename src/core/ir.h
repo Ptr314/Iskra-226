@@ -29,6 +29,10 @@ enum ExprKind {
 
     EX_EQ, EX_NE, EX_LT, EX_LE, EX_GT, EX_GE,
 
+    // Связки условий. Равноправны и вычисляются слева направо
+    // (руководство, разд. 4.5).
+    EX_AND, EX_OR, EX_XOR,
+
     EX_ABS, EX_INT, EX_SGN, EX_SQR, EX_LOG, EX_EXP,
 
     EX_HEX,          // HEX(...) — байты лежат в str

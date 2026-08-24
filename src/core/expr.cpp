@@ -52,7 +52,40 @@ bool ExprParser::take(Tok & t, bool operand_expected)
 
 bool ExprParser::parse(Expr & out)
 {
-    return parse_compare(out);
+    return parse_logic(out);
+}
+
+// Связки AND, OR и XOR соединяют отношения. Все три равноправны и
+// вычисляются слева направо: «сначала проверяется крайняя слева пара
+// отношений», затем её результат с соседним справа (руководство, разд. 4.5).
+// Привычного старшинства тут нет: `A OR B AND C` значит `(A OR B) AND C`.
+bool ExprParser::parse_logic(Expr & out)
+{
+    Expr left;
+    if (!parse_compare(left)) return false;
+
+    for (;;) {
+        Tok t;
+        if (!peek(t, false)) return false;
+
+        ExprKind k;
+        if (t.t == Tok::AND) k = EX_AND;
+        else if (t.t == Tok::OR) k = EX_OR;
+        else if (t.t == Tok::XOR) k = EX_XOR;
+        else break;
+        consume();
+
+        Expr right;
+        if (!parse_compare(right)) return false;
+
+        Expr node;
+        node.kind = k;
+        node.a.push_back(left);
+        node.a.push_back(right);
+        left = node;
+    }
+    out = left;
+    return true;
 }
 
 // Список индексов массива. Открывающей скобки в токенизированной форме нет,

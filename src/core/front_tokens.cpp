@@ -238,6 +238,11 @@ bool ByteSource::next(Tok & t, bool operand_expected)
             case 0xD6: t.t = Tok::LE; return true;
             case 0xD7: t.t = Tok::LT; return true;
             case 0xD8: t.t = Tok::GE; return true;
+            // Связки условий. Оба байта двузначны: в позиции
+            // операнда это числовые константы. Сверено на паре
+            // «текст + токены» (EDITOR 360, 1360).
+            case 0xE6: t.t = Tok::OR; return true;
+            case 0xE7: t.t = Tok::AND; return true;
             case 0xDE: t.t = Tok::COMMA; return true;
             case 0xE9: t.t = Tok::MINUS; return true;   // бинарный минус
             case 0xE0: t.t = Tok::CARET; return true;

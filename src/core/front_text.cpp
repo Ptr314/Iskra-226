@@ -43,6 +43,9 @@ struct Keyword { const char * text; Tok::Type type; bool function; };
 const Keyword KEYWORDS[] = {
     // Функции: за именем следует открывающая скобка, она входит в лексему.
     { "ARCTAN", Tok::UNKNOWN,  true  },
+    { "XOR",    Tok::XOR,      false },   // связки условий
+    { "AND",    Tok::AND,      false },
+    { "OR",     Tok::OR,       false },
     { "PRINT",  Tok::UNKNOWN,  false },   // разбирается на уровне оператора
     { "INPUT",  Tok::UNKNOWN,  false },
     { "STEP",   Tok::KW_STEP,  false },
