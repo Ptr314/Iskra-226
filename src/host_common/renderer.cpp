@@ -11,7 +11,8 @@ namespace iskra {
 
 Renderer::Renderer()
     : font_(&Font::standard()),
-      scale_(1),
+      scale_x_(1),
+      scale_y_(1),
       // Цвет люминофора «Искры» не установлен: в руководстве его нет, а по
       // чёрно-белым снимкам не разобрать. Взят нейтральный белый — он ничего
       // не утверждает; хост цвета меняет.
@@ -29,7 +30,8 @@ void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch) const
     const unsigned gh = font_->height();
     const unsigned ox = font_->offset_x();
     const unsigned oy = font_->offset_y();
-    const unsigned sc = scale_;
+    const unsigned sx = scale_x_;
+    const unsigned sy = scale_y_;
     const unsigned cur_row = s.row();
     const unsigned cur_col = s.col();
 
@@ -44,11 +46,11 @@ void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch) const
             const bool inv = cell.attr == ATTR_POSITIVE;
             const bool cursor_here = cursor_ && r == cur_row && c == cur_col;
 
-            uint32_t * cell_out = out + (r - 1) * ch * sc * pitch
-                                      + (c - 1) * cw * sc;
+            uint32_t * cell_out = out + (r - 1) * ch * sy * pitch
+                                      + (c - 1) * cw * sx;
 
             for (unsigned y = 0; y < ch; ++y) {
-                uint32_t * line = cell_out + y * sc * pitch;
+                uint32_t * line = cell_out + y * sy * pitch;
                 // Подстрочная черта закрашивает нижнюю строку знакоместа
                 // целиком — и на выделенном знакоместе тоже, где она выходит
                 // тёмной на светлом. Пропасть она не может ни там, ни там.
@@ -60,12 +62,12 @@ void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch) const
                     if (!on && in_glyph && x >= ox && x - ox < gw)
                         on = font_->dot(cell.ch, x - ox, y - oy);
                     const uint32_t color = (on != inv) ? fg_ : bg_;
-                    for (unsigned k = 0; k < sc; ++k) line[x * sc + k] = color;
+                    for (unsigned k = 0; k < sx; ++k) line[x * sx + k] = color;
                 }
                 // При увеличении строка развёртки повторяется как есть.
-                for (unsigned k = 1; k < sc; ++k)
+                for (unsigned k = 1; k < sy; ++k)
                     std::memcpy(line + k * pitch, line,
-                                cw * sc * sizeof(uint32_t));
+                                cw * sx * sizeof(uint32_t));
             }
         }
     }

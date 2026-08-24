@@ -37,7 +37,9 @@ std::string usage()
     "Названный без ключа, он идёт в дисковод 0 — тот же, что --d0.\n"
     "\n";
     s += iskra::DiskArgs::help();
-    s += "\n  --scale N                целое увеличение окна, по умолчанию 2\n"
+    s += "\n  --scale N                увеличение по горизонтали; по вертикали\n"
+         "                           вдвое больше, и окно выходит 4:3. Без\n"
+         "                           ключа берётся наибольшее, влезающее в экран\n"
          "\nЗапись на дискету идёт прямо в файл образа.";
     return s;
 }
@@ -52,7 +54,7 @@ int run(int argc, wchar_t ** argv, std::string & error)
     }
 
     iskra::DiskArgs mounts;
-    unsigned scale = 2;
+    unsigned scale = 0;      // 0 — подобрать под экран
 
     for (std::size_t i = 0; i < args.size(); ++i) {
         bool handled = false;

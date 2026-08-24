@@ -36,13 +36,15 @@ struct Frame
     }
 };
 
-Renderer make(unsigned scale)
+Renderer make(unsigned sx, unsigned sy)
 {
     Renderer r;
-    r.set_scale(scale);
+    r.set_scale(sx, sy);
     r.set_colors(FG, BG);
     return r;
 }
+
+Renderer make(unsigned scale) { return make(scale, scale); }
 
 // Сверка знакоместа с знакогенератором: точка в точку, включая поля.
 // Возвращает число расхождений. inv — знакоместо выделено позитивом.
@@ -63,25 +65,31 @@ unsigned check_cell(const Frame & f, const Font & font, unsigned col,
     return bad;
 }
 
-// Достоверный знакогенератор — глиф 7x8 в знакоместе 9x10, значит 80x24
-// знакомест дают 720x240 точки. Целое увеличение умножает обе стороны.
+// Достоверный знакогенератор — глиф 7x8 в знакоместе 8x10, значит 80x24
+// знакомест дают 640x240 точки. А раз точка вдвое выше своей ширины, на
+// экране это 640k x 480k — **ровно 4:3 при любом целом k**, без дробного
+// растяжения.
 void test_size()
 {
     Renderer r = make(1);
     CHECK_EQ(r.font().width(), 7u);
     CHECK_EQ(r.font().height(), 8u);
-    CHECK_EQ(r.font().cell_width(), 9u);
+    CHECK_EQ(r.font().cell_width(), 8u);
     CHECK_EQ(r.font().cell_height(), 10u);
-    CHECK_EQ(r.font().offset_x(), 1u);
+    CHECK_EQ(r.font().offset_x(), 0u);
     CHECK_EQ(r.font().offset_y(), 0u);
 
-    CHECK_EQ(r.width(), 720u);
+    CHECK_EQ(r.width(), 640u);
     CHECK_EQ(r.height(), 240u);
-    CHECK_EQ(r.pixels(), 720u * 240u);
+    CHECK_EQ(r.pixels(), 640u * 240u);
 
-    r.set_scale(3);
-    CHECK_EQ(r.width(), 2160u);
-    CHECK_EQ(r.height(), 720u);
+    // Увеличение по осям порознь; с DOT_TALL по вертикали выходит 4:3.
+    for (unsigned k = 1; k <= 4; ++k) {
+        r.set_scale(k, k * DOT_TALL);
+        CHECK_EQ(r.width(), 640u * k);
+        CHECK_EQ(r.height(), 480u * k);
+        CHECK_EQ(r.width() * 3u, r.height() * 4u);
+    }
 }
 
 // Чистый экран — это 80x24 пробела, и ни одной светлой точки на кадре.
@@ -121,9 +129,11 @@ void test_glyph()
     CHECK(lit > 0);                    // глиф «A» не может быть пустым
 }
 
-// Поля знакоместа — не часть глифа: столбцы слева и справа и две нижние
+// Поля знакоместа — не часть глифа: столбец справа от глифа и две нижние
 // строки развёртки остаются фоном, что бы в знакоместе ни стояло. Из этого
-// и получается межбуквенный просвет.
+// и получается просвет между буквами и между строками. Глиф 7 точек в
+// знакоместе 8 — значит между соседними знаками ровно один тёмный столбец,
+// и даже подряд идущие `Ш` не сливаются.
 void test_cell_margins()
 {
     Screen s;
@@ -135,18 +145,27 @@ void test_cell_margins()
     const Font & font = r.font();
     const unsigned cw = font.cell_width(), chh = font.cell_height();
 
+    // Столбцы поля — те, что вне глифа.
     unsigned lit = 0;
     for (unsigned c = 0; c < 3; ++c)
-        for (unsigned y = 0; y < chh; ++y) {
-            if (f.at(c * cw, y) != BG) ++lit;                    // столбец слева
-            if (f.at(c * cw + cw - 1, y) != BG) ++lit;           // и справа
-        }
+        for (unsigned y = 0; y < chh; ++y)
+            for (unsigned x = 0; x < cw; ++x) {
+                if (x >= font.offset_x() && x - font.offset_x() < font.width())
+                    continue;
+                if (f.at(c * cw + x, y) != BG) ++lit;
+            }
     CHECK_EQ(lit, 0u);
+    CHECK_EQ(cw - font.width(), 1u);   // ровно один столбец просвета
 
     for (unsigned x = 0; x < 3 * cw; ++x) {
         CHECK_EQ(f.at(x, font.height()), BG);          // межстрочный интервал
         CHECK_EQ(f.at(x, chh - 1), BG);                // строка курсора
     }
+
+    // Крайние столбцы самого `Ш` горят — значит просвет держится полем, а
+    // не пустотой внутри глифа.
+    CHECK(font.dot(0xFB, 0, 0));
+    CHECK(font.dot(0xFB, font.width() - 1, 0));
 }
 
 // Кириллица — половина всего, что «Искра» показывает. Ъ в исходном ПЗУ не
@@ -260,17 +279,18 @@ void test_scale()
     Screen s;
     s.put(0x41);
 
-    const unsigned SC = 3;
-    const Renderer r1 = make(1), r3 = make(SC);
+    // Нарочно разные множители по осям: точка не квадратная.
+    const unsigned SX = 3, SY = 3 * DOT_TALL;
+    const Renderer r1 = make(1), r3 = make(SX, SY);
     const Frame f1(r1, s), f3(r3, s);
 
     unsigned mismatch = 0;
     for (unsigned y = 0; y < r1.font().cell_height(); ++y)
         for (unsigned x = 0; x < r1.font().cell_width(); ++x) {
             const uint32_t want = f1.at(x, y);
-            for (unsigned dy = 0; dy < SC; ++dy)
-                for (unsigned dx = 0; dx < SC; ++dx)
-                    if (f3.at(x * SC + dx, y * SC + dy) != want) ++mismatch;
+            for (unsigned dy = 0; dy < SY; ++dy)
+                for (unsigned dx = 0; dx < SX; ++dx)
+                    if (f3.at(x * SX + dx, y * SY + dy) != want) ++mismatch;
         }
     CHECK_EQ(mismatch, 0u);
 }

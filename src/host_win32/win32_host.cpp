@@ -35,6 +35,35 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 // На мониторе с высокой плотностью система растянула бы окно сама и с
 // размытием. Вызов появился в Vista, поэтому берём его по имени: на XP его
 // просто нет, и там растягивать нечего.
+// Клиентская область при данном увеличении: по горизонтали в scale раз,
+// по вертикали в DOT_TALL раз чаще, отчего окно и выходит 4:3.
+void client_rect(unsigned w, unsigned h, unsigned scale, RECT & rc)
+{
+    rc.left = 0;
+    rc.top = 0;
+    rc.right = static_cast<LONG>(w * scale);
+    rc.bottom = static_cast<LONG>(h * scale * DOT_TALL);
+}
+
+// Наибольшее увеличение, при котором окно ещё влезает в рабочую область
+// экрана. Без этого окно с умолчанием открывалось бы за краем у всякого,
+// чей монитор меньше, чем был у выбиравшего умолчание.
+unsigned fitting_scale(unsigned w, unsigned h)
+{
+    RECT work;
+    if (!SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0)) return 1;
+
+    for (unsigned k = 8; k > 1; --k) {
+        RECT rc;
+        client_rect(w, h, k, rc);
+        AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+        if (rc.right - rc.left <= work.right - work.left &&
+            rc.bottom - rc.top <= work.bottom - work.top)
+            return k;
+    }
+    return 1;
+}
+
 void ask_for_real_pixels()
 {
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
@@ -87,14 +116,12 @@ bool Win32Host::open(const std::string & title_utf8, unsigned scale,
         return false;
     }
 
-    if (!scale) scale = 1;
     resize_frame();
+    const unsigned fw = render_.width(), fh = render_.height();
+    if (!scale) scale = fitting_scale(fw, fh);
 
     RECT rc;
-    rc.left = 0;
-    rc.top = 0;
-    rc.right = static_cast<LONG>(render_.width() * scale);
-    rc.bottom = static_cast<LONG>(render_.height() * scale);
+    client_rect(fw, fh, scale, rc);
     AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
 
     std::vector<wchar_t> title;
@@ -144,13 +171,17 @@ void Win32Host::paint(void * hdc_raw)
     GetClientRect(static_cast<HWND>(hwnd_), &rc);
 
     // Увеличение только целое: экран знакоместный, дробное растяжение съело
-    // бы ровность знаков. Что не поместилось — поля, они закрашиваются.
+    // бы ровность знаков — однопиксельные штрихи вышли бы разной толщины.
+    // По вертикали берём в DOT_TALL раз больше: точка «Искры» выше своей
+    // ширины, и кадр 640x240 показывается как 640k x 480k, то есть 4:3.
+    // Что не поместилось — поля, они закрашиваются.
+    const int tall = static_cast<int>(DOT_TALL);
     int k = rc.right / w;
-    const int kv = rc.bottom / h;
+    const int kv = rc.bottom / (h * tall);
     if (kv < k) k = kv;
     if (k < 1) k = 1;
 
-    const int dw = w * k, dh = h * k;
+    const int dw = w * k, dh = h * k * tall;
     const int dx = (rc.right - dw) / 2, dy = (rc.bottom - dh) / 2;
 
     BITMAPINFO bi;

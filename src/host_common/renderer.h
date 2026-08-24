@@ -27,17 +27,33 @@ inline uint32_t pack_rgb(uint8_t r, uint8_t g, uint8_t b)
 // систему не знает ничего — оконному хосту остаётся завести окно, разобрать
 // события и вывалить готовый кадр.
 //
+// Точка экрана «Искры» выше своей ширины ровно вдвое. Отсюда и знакоместо
+// 8x10: кадр выходит 640x240, а на экране — 640k x 480k, то есть **4:3 при
+// любом целом k**. Отношение сторон трубки книгой не описано; двойка выбрана
+// так, чтобы 4:3 получалось без дробного растяжения (CLAUDE.md, «Допущения»).
+const unsigned DOT_TALL = 2;
+
 // Увеличение только целое: экран знакоместный, и сглаживание ему во вред.
+// Дробное растяжение однопиксельному шрифту противопоказано — штрихи выходят
+// разной толщины.
+//
 // Хосты, у которых система умеет растягивать сама и без сглаживания (Win32
-// с COLORONCOLOR, канва с image-rendering: pixelated), держат scale = 1 и
-// растягивают окном; тем, у кого такого нет (X11), растягивает растеризатор.
+// с COLORONCOLOR, канва с image-rendering: pixelated), держат увеличение 1x1
+// и растягивают окном; тем, у кого такого нет (X11), растягивает
+// растеризатор — и тогда по вертикали надо брать в DOT_TALL раз больше.
 class Renderer
 {
 public:
     Renderer();
 
     void set_font(const Font & f) { font_ = &f; }
-    void set_scale(unsigned n) { scale_ = n ? n : 1; }
+
+    // Увеличение по осям порознь: точка не квадратная.
+    void set_scale(unsigned x, unsigned y)
+    {
+        scale_x_ = x ? x : 1;
+        scale_y_ = y ? y : 1;
+    }
     void set_colors(uint32_t fg, uint32_t bg) { fg_ = fg; bg_ = bg; }
 
     // Курсор — подстрочная черта: «место, на котором высветится очередной
@@ -48,12 +64,13 @@ public:
     void set_cursor(bool on) { cursor_ = on; }
 
     const Font & font() const { return *font_; }
-    unsigned scale() const { return scale_; }
+    unsigned scale_x() const { return scale_x_; }
+    unsigned scale_y() const { return scale_y_; }
 
     // Кадр меряется знакоместами, а не глифами: у достоверного шрифта поле
     // шире и выше глифа, и межбуквенный просвет живёт именно там.
-    unsigned width() const  { return SCREEN_COLS * font_->cell_width()  * scale_; }
-    unsigned height() const { return SCREEN_ROWS * font_->cell_height() * scale_; }
+    unsigned width() const  { return SCREEN_COLS * font_->cell_width()  * scale_x_; }
+    unsigned height() const { return SCREEN_ROWS * font_->cell_height() * scale_y_; }
     unsigned pixels() const { return width() * height(); }
 
     // Нарисовать кадр целиком. pitch — длина строки буфера в точках, а не
@@ -62,7 +79,8 @@ public:
 
 private:
     const Font * font_;
-    unsigned scale_;
+    unsigned scale_x_;
+    unsigned scale_y_;
     uint32_t fg_;
     uint32_t bg_;
     bool cursor_;

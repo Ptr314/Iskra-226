@@ -182,11 +182,11 @@ void test_font()
         CHECK(expected == (f != 0));
     }
 
-    // Достоверный знакогенератор — глиф 7x8 в знакоместе 9x10.
+    // Достоверный знакогенератор — глиф 7x8 в знакоместе 8x10.
     const Font & f = Font::standard();
     CHECK_EQ(f.width(), 7u);
     CHECK_EQ(f.height(), 8u);
-    CHECK_EQ(f.cell_width(), 9u);
+    CHECK_EQ(f.cell_width(), 8u);
     CHECK_EQ(f.cell_height(), 10u);
 
     // Пробел пуст, буквы — нет.
