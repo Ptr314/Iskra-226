@@ -10,8 +10,8 @@
 #include "check.h"
 #include "core/catalog.h"
 #include "core/disk_record.h"
-#include "core/front_text.h"
-#include "core/front_tokens.h"
+#include "core/names.h"
+#include "core/tokenize.h"
 #include "core/interp.h"
 #include "core/koi8.h"
 #include "host_headless/headless_host.h"
@@ -86,14 +86,16 @@ bool run_text(const char * utf8, std::string & screen, std::string & error)
     std::string koi8;
     utf8_to_koi8(utf8, koi8);
 
-    Program prog;
     NameTable names;
-    if (!parse_text(koi8, prog, names, error)) return false;
+    // Текст исполняется не сам по себе: он сначала транслируется в токены,
+    // как и в машине (docs/DECISIONS.md, разд. 12).
+    ProgramImage img;
+    if (!tokenize(koi8, img, names, error)) return false;
 
     HeadlessHost host;
     if (!build_image(host)) { error = "не собрался образ"; return false; }
 
-    Interp interp(prog, host);
+    Interp interp(img, host);
     if (!interp.run(error)) return false;
     screen = host.dump();
     return true;
@@ -290,15 +292,15 @@ void test_tokens_match_text()
     static const int l80[] = { 0x42, 0x00 };               // STOP
     b.add_line(80, l80, 2);
 
-    Program prog;
+    ProgramImage img;
     std::string error;
-    if (!parse_tokenized(b.file(), prog, error)) {
+    if (!img.load_file(b.file(), error)) {
         std::printf("  разбор: %s\n", error.c_str()); CHECK(false); return;
     }
 
     HeadlessHost host;
     if (!build_image(host)) { CHECK(false); return; }
-    Interp interp(prog, host);
+    Interp interp(img, host);
     if (!interp.run(error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
     const std::string tokens = host.dump();
 
@@ -425,14 +427,14 @@ void test_scratch_tokens()
     static const int l40[] = { 0x42, 0x00 };
     b.add_line(40, l40, 2);
 
-    Program prog;
+    ProgramImage img;
     std::string error;
-    if (!parse_tokenized(b.file(), prog, error)) {
+    if (!img.load_file(b.file(), error)) {
         std::printf("  разбор: %s\n", error.c_str()); CHECK(false); return;
     }
     HeadlessHost host;
     if (!build_image(host)) { CHECK(false); return; }
-    Interp interp(prog, host);
+    Interp interp(img, host);
     if (!interp.run(error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
     const std::string tokens = host.dump();
 
@@ -471,14 +473,14 @@ void test_scratch_disk_tokens()
     static const int l40[] = { 0x42, 0x00 };
     b.add_line(40, l40, 2);
 
-    Program prog;
+    ProgramImage img;
     std::string error;
-    if (!parse_tokenized(b.file(), prog, error)) {
+    if (!img.load_file(b.file(), error)) {
         std::printf("  разбор: %s\n", error.c_str()); CHECK(false); return;
     }
     HeadlessHost host;
     if (!build_image(host)) { CHECK(false); return; }
-    Interp interp(prog, host);
+    Interp interp(img, host);
     if (!interp.run(error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
     CHECK_STR(line_of(host.dump(), 1), " 0");
 }
@@ -605,14 +607,14 @@ void test_onerror_tokens()
     static const int l100[] = { 0x4C, 0x07, 0xE3, 0x05, 'P', 'O', 'J', 'M', 'A' };
     b.add_line(100, l100, 9);
 
-    Program prog;
+    ProgramImage img;
     std::string error;
-    if (!parse_tokenized(b.file(), prog, error)) {
+    if (!img.load_file(b.file(), error)) {
         std::printf("  разбор: %s\n", error.c_str()); CHECK(false); return;
     }
     HeadlessHost host;
     if (!build_image(host)) { CHECK(false); return; }
-    Interp interp(prog, host);
+    Interp interp(img, host);
     if (!interp.run(error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
     const std::string tokens = host.dump();
 

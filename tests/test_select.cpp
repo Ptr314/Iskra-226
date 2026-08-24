@@ -9,8 +9,8 @@
 
 #include "check.h"
 #include "core/devtable.h"
-#include "core/front_text.h"
-#include "core/front_tokens.h"
+#include "core/names.h"
+#include "core/tokenize.h"
 #include "core/interp.h"
 #include "core/koi8.h"
 #include "host_headless/headless_host.h"
@@ -25,12 +25,14 @@ bool run_text(const char * utf8, DeviceTable & out, std::string & error)
     std::string koi8;
     utf8_to_koi8(utf8, koi8);
 
-    Program prog;
     NameTable names;
-    if (!parse_text(koi8, prog, names, error)) return false;
+    // Текст исполняется не сам по себе: он сначала транслируется в токены,
+    // как и в машине (docs/DECISIONS.md, разд. 12).
+    ProgramImage img;
+    if (!tokenize(koi8, img, names, error)) return false;
 
     HeadlessHost host;
-    Interp interp(prog, host);
+    Interp interp(img, host);
     if (!interp.run(error)) return false;
     out = interp.devices();
     return true;
@@ -74,11 +76,11 @@ private:
 
 bool run_tokens(const TokenBuilder & b, DeviceTable & out, std::string & error)
 {
-    Program prog;
-    if (!parse_tokenized(b.file(), prog, error)) return false;
+    ProgramImage img;
+    if (!img.load_file(b.file(), error)) return false;
 
     HeadlessHost host;
-    Interp interp(prog, host);
+    Interp interp(img, host);
     if (!interp.run(error)) return false;
     out = interp.devices();
     return true;
@@ -157,14 +159,23 @@ void test_text_forms()
     CHECK(run_text("10 SELECT P1\n20 SELECT P\n", d, err));
     CHECK_EQ(d.pause(), 0u);
 
-    // Единицы измерения углов (разд. 4.6). Тригонометрии пока нет, но
-    // режим уже хранится.
-    CHECK(run_text("10 SELECT D\n", d, err));
-    CHECK_EQ(static_cast<unsigned>(d.angle()), static_cast<unsigned>(ANG_DEG));
-    CHECK(run_text("10 SELECT G\n", d, err));
-    CHECK_EQ(static_cast<unsigned>(d.angle()), static_cast<unsigned>(ANG_GRAD));
-    CHECK(run_text("10 SELECT D\n20 SELECT R\n", d, err));
-    CHECK_EQ(static_cast<unsigned>(d.angle()), static_cast<unsigned>(ANG_RAD));
+    // Единицы измерения углов (разд. 4.6). В тексте они читаются однозначно,
+    // но какой у них код в потоке токенов — неизвестно, а программа теперь
+    // исполняется токенами. Поэтому транслятор обязан отказать прямо, а не
+    // выдумать байт (docs/format.md, разд. 4; SC_TRIG в core/devtable.h).
+    CHECK(!run_text("10 SELECT D\n", d, err));
+    CHECK(err.find("единиц углов") != std::string::npos);
+    CHECK(!run_text("10 SELECT G\n", d, err));
+
+    // Само хранение режима от кодировки не зависит и проверяется напрямую.
+    {
+        DeviceTable t;
+        CHECK_EQ(static_cast<unsigned>(t.angle()), static_cast<unsigned>(ANG_RAD));
+        t.set_angle(ANG_DEG);
+        CHECK_EQ(static_cast<unsigned>(t.angle()), static_cast<unsigned>(ANG_DEG));
+        t.set_angle(ANG_GRAD);
+        CHECK_EQ(static_cast<unsigned>(t.angle()), static_cast<unsigned>(ANG_GRAD));
+    }
 
     // Книга пишет со пробелами: SELECT DISK 1CF, PRINT 0C.
     CHECK(run_text("10 SELECT DISK 1CF, PRINT 0C\n", d, err));
@@ -258,16 +269,13 @@ void test_unknown_group()
     static const int l10[] = { 0x54, 0x01, 0x01 };                 // SELECT <?>
     b.add_line(10, l10, 3);
 
-    Program prog;
+    ProgramImage img;
     std::string err;
-    CHECK(parse_tokenized(b.file(), prog, err));                   // разбор проходит
-    CHECK_EQ(prog.lines.size(), 1u);
-    CHECK_EQ(prog.lines[0].stmts.size(), 1u);
-    CHECK_EQ(static_cast<unsigned>(prog.lines[0].stmts[0].kind),
-             static_cast<unsigned>(ST_SELECT));
+    CHECK(img.load_file(b.file(), err));                   // образ читается
+    CHECK_EQ(img.line_count(), 1u);
 
     HeadlessHost host;
-    Interp interp(prog, host);
+    Interp interp(img, host);
     CHECK(!interp.run(err));                                       // а исполнение — нет
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Mikhail Revzin <p3.141592653589793238462643@gmail.com>
 // Part of the Iskra-226 project: https://github.com/Ptr314/Iskra-226
-// Description: исполнение промежуточного представления
+// Description: исполнение оттранслированной программы прямо из потока токенов
 
 #pragma once
 
@@ -9,19 +9,26 @@
 #include <string>
 #include <vector>
 
+#include "core/byte_source.h"
 #include "core/devtable.h"
+#include "core/errors.h"
+#include "core/eval.h"
 #include "core/host.h"
-#include "core/ir.h"
+#include "core/program.h"
 #include "core/value.h"
+#include "core/vars.h"
 
 namespace iskra {
 
-// Исполнитель. Одинаково работает с представлением, построенным из текста,
-// и с построенным из токенов, — в этом весь смысл общего IR.
+// Исполнитель работает с тем же образом программы, что лежит в памяти
+// машины: поток строк и таблицы переменных. Промежуточного представления
+// нет — «интерпретатор осуществляет пошаговый перевод операторов»
+// (руководство, разд. 1.2), и операнды читаются из байтов при каждом
+// исполнении (docs/DECISIONS.md, разд. 12).
 class Interp
 {
 public:
-    Interp(const Program & prog, Host & host);
+    Interp(const ProgramImage & img, Host & host);
 
     // Ограничение на число выполненных операторов: страховка от зацикливания
     // в автотестах. Ноль снимает ограничение.
@@ -37,32 +44,61 @@ public:
     const DeviceTable & devices() const { return dev_; }
 
 private:
+    // Один оператор: источник байт и вычислитель над ним. Живёт ровно на
+    // время исполнения оператора.
+    struct Stream {
+        Stream(const uint8_t * p, unsigned n, const std::vector<VarInfo> * vars,
+               VarStore & store)
+            : src(p, n, vars), ev(src, store) {}
+        ByteSource src;
+        Evaluator ev;
+    };
+
     struct Frame {
         unsigned var;
         Number limit;
         Number step;
         unsigned line;      // куда возвращает NEXT
-        unsigned stmt;
+        unsigned off;       // смещение оператора в теле строки
     };
 
-    bool exec(const Stmt & s);
-    bool eval(const Expr & e, Value & v);
-    bool eval_num(const Expr & e, Number & n);
-    bool eval_str(const Expr & e, std::string & out);
+    // Приставка дисковых операторов, уже разрешённая в номера.
+    struct Disk {
+        Disk() : row(0), drive(0) {}
+        unsigned row;
+        unsigned drive;
+    };
 
-    bool do_print(const Stmt & s);
-    bool do_select(const Stmt & s);
+    bool exec(unsigned verb, const uint8_t * ops, unsigned len);
 
-    // Дисковые операторы. Приставка `<устройство>[/адрес][#строка]`
-    // разрешается в номер строки таблицы устройств и номер дисковода хоста.
-    bool resolve_disk(const DiskRef & ref, unsigned & row, unsigned & drive);
-    bool do_open(const Stmt & s);
-    bool do_dload(const Stmt & s);
-    bool do_dskip(const Stmt & s);
-    bool do_limits(const Stmt & s);
-    bool do_onerr(const Stmt & s);
-    bool do_scratch(const Stmt & s);
-    bool do_scratch_disk(const Stmt & s);
+    bool do_print(Stream & st);
+    bool do_select(Stream & st);
+    bool do_open(Stream & st, bool with_device);
+    bool do_dload(Stream & st);
+    bool do_dskip(Stream & st, bool backwards);
+    bool do_limits(Stream & st);
+    bool do_onerr(Stream & st);
+    bool do_scratch(Stream & st);
+    bool do_scratch_disk(Stream & st);
+    bool do_dim(Stream & st, unsigned len, const uint8_t * ops, bool common);
+    bool do_redim(Stream & st);
+    bool do_input(Stream & st);
+    bool do_linput(Stream & st);
+    bool do_convert(Stream & st);
+    bool do_bin(Stream & st);
+    bool do_init(Stream & st);
+    bool do_let(Stream & st);
+    bool do_for(Stream & st);
+    bool do_next(Stream & st);
+    bool do_if(Stream & st);
+    bool do_on(Stream & st);
+    bool do_gosubq(Stream & st);
+    bool do_deffn(Stream & st, unsigned len);
+
+    // Приставка `<устройство>[¤][/адрес][#строка]` — в номер строки таблицы
+    // устройств и номер дисковода хоста.
+    bool disk_prefix(Stream & st, bool with_device, Disk & d,
+                     bool allow_verify = true);
     // Ошибка машины, которую может перехватить ON ERROR. Простой fail() —
     // это ограничение эмулятора, и перехватывать его нельзя: иначе
     // нереализованный оператор молча превратится в «ошибку ввода-вывода».
@@ -71,41 +107,16 @@ private:
     bool handle_error();
     // Присвоить приёмнику очередное значение записи; used — сколько значений
     // из vals уже разобрано.
-    bool store_value(const Expr & target, const std::vector<Value> & vals,
-                     std::size_t & used);
-    bool do_dim(const Stmt & s);
-    // Ячейка переменной или элемента массива — и для чтения, и для записи.
-    bool slot(const Expr & e, Number *& out);
-    bool array_alloc(unsigned var, unsigned dim1, unsigned dim2);
-
-    // Символьная переменная — поле байт постоянной длины, заполненное
-    // пробелами. Массив строк — одно непрерывное поле: «символьный массив
-    // рассматривается как одна непрерывная строка» (руководство, разд. 13.2).
-    struct StrLoc {
-        StrLoc() : data(0), off(0), len(0) {}
-        std::string * data;
-        unsigned off;
-        unsigned len;
-    };
-    std::string & str_field(unsigned var);
-    bool str_loc(const Expr & e, StrLoc & loc);
-    bool is_string_expr(const Expr & e) const;
-    bool assign_string(const Expr & target, const std::string & value);
-    bool do_input(const Stmt & s);
-    bool do_linput(const Stmt & s);
-    bool do_convert(const Stmt & s);
-    bool do_bin(const Stmt & s);
-    bool do_init(const Stmt & s);
-    bool do_redim(const Stmt & s);
+    bool store_value(const Evaluator::Target & target, Stream & st,
+                     const std::vector<Value> & vals, std::size_t & used);
+    bool assign_string(Stream & st, const Evaluator::Target & target,
+                       const std::string & value);
     bool read_line(const std::string & prompt, bool has_prompt, std::string & out);
-    bool do_for(const Stmt & s);
-    bool do_next(const Stmt & s);
 
     // Помеченные подпрограммы. Машина ищет DEFFN' просмотром текста
     // программы (руководство, разд. 10.4); здесь тот же просмотр сделан
     // один раз при первом вызове.
     void build_labels();
-    bool do_gosubq(const Stmt & s);
 
     void emit(const std::string & koi8);
     void emit_newline();
@@ -114,18 +125,9 @@ private:
     bool jump(unsigned line_number);
     bool fail(const std::string & m);
 
-    const Program & prog_;
+    const ProgramImage & img_;
     Host & host_;
-    struct Array {
-        Array() : dim1(0), dim2(0) {}
-        unsigned dim1;
-        unsigned dim2;              // 0 у одномерного
-        std::vector<Number> cells;
-    };
-
-    std::map<unsigned, Number> vars_;
-    std::map<unsigned, Array> arrays_;
-    std::map<unsigned, std::string> strs_;
+    VarStore store_;
     DeviceTable dev_;
     std::vector<Frame> loops_;
     std::vector<std::pair<unsigned, unsigned> > calls_;   // GOSUB: куда вернуться
@@ -133,20 +135,24 @@ private:
     // Обработка ошибок: «обработка возникшей ошибки всегда проводится с
     // учётом параметров последнего выполненного оператора» (разд. 11.6).
     struct ErrorTrap {
-        ErrorTrap() : mode(EM_OFF), line(0) {}
+        ErrorTrap() : mode(EM_OFF), line(0), has_targets(false),
+                      target_a(0), target_b(0) {}
         unsigned mode;
         unsigned line;
-        std::vector<Expr> targets;    // приёмники кода и номера строки
+        bool has_targets;
+        unsigned target_a;            // приёмник кода
+        unsigned target_b;            // приёмник номера строки
     };
     ErrorTrap trap_;
     std::string err_code_;            // код текущей ошибки, если она машинная
 
-    // Имя помеченной подпрограммы → её DEFFN': строка и оператор в строке.
+    // Метка помеченной подпрограммы → её DEFFN': строка и смещение в теле.
     std::map<unsigned, std::pair<unsigned, unsigned> > labels_;
     bool labels_ready_;
 
     unsigned li_;           // индекс текущей строки
-    unsigned si_;           // индекс текущего оператора
+    unsigned off_;          // смещение текущего оператора в теле строки
+    unsigned next_off_;     // смещение следующего оператора
     bool jumped_;
     bool stopped_;
     unsigned long max_steps_;

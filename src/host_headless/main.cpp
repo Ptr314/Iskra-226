@@ -9,8 +9,8 @@
 #include <string>
 #include <vector>
 
-#include "core/front_text.h"
-#include "core/front_tokens.h"
+#include "core/names.h"
+#include "core/tokenize.h"
 #include "core/interp.h"
 #include "core/koi8.h"
 #include "font/font.h"
@@ -194,7 +194,7 @@ bool read_file_bytes(const char * path, std::string & out)
 
 // Исполнение программы на хосте без окна. Строки ввода подаются аргументами
 // командной строки — прогон получается воспроизводимым.
-int run_program(const iskra::Program & prog, char ** input, int inputs)
+int run_program(const iskra::ProgramImage & img, char ** input, int inputs)
 {
     iskra::HeadlessHost host;
     for (int i = 0; i < inputs; ++i) {
@@ -205,7 +205,7 @@ int run_program(const iskra::Program & prog, char ** input, int inputs)
                        static_cast<unsigned>(koi8.size()));
     }
 
-    iskra::Interp interp(prog, host);
+    iskra::Interp interp(img, host);
     std::string error;
     const bool ok = interp.run(error);
 
@@ -227,35 +227,35 @@ int cmd_run_file(const char * path, char ** input, int inputs)
     }
     const std::vector<uint8_t> data(raw.begin(), raw.end());
 
-    iskra::Program prog;
+    iskra::ProgramImage img;
     std::string error;
-    if (!iskra::parse_tokenized(data, prog, error)) {
+    if (!img.load_file(data, error)) {
         std::printf("разбор: %s\n", error.c_str());
         return 1;
     }
-    return run_program(prog, input, inputs);
+    return run_program(img, input, inputs);
 }
 
 int cmd_run(const char * path, const char * name, char ** input, int inputs)
 {
-    iskra::DiskImage img;
-    if (!img.open(path)) {
-        std::printf("%s\n", img.error().c_str());
+    iskra::DiskImage disk;
+    if (!disk.open(path)) {
+        std::printf("%s\n", disk.error().c_str());
         return 1;
     }
     std::vector<uint8_t> data;
-    if (!img.read_file(name, data)) {
-        std::printf("%s\n", img.error().c_str());
+    if (!disk.read_file(name, data)) {
+        std::printf("%s\n", disk.error().c_str());
         return 1;
     }
 
-    iskra::Program prog;
+    iskra::ProgramImage img;
     std::string error;
-    if (!iskra::parse_tokenized(data, prog, error)) {
+    if (!img.load_file(data, error)) {
         std::printf("разбор: %s\n", error.c_str());
         return 1;
     }
-    return run_program(prog, input, inputs);
+    return run_program(img, input, inputs);
 }
 
 // Тот же прогон, но из текстового листинга. Файлы корпуса лежат в UTF-8,
@@ -270,14 +270,15 @@ int cmd_run_text(const char * path, char ** input, int inputs)
     std::string koi8;
     iskra::utf8_to_koi8(utf8, koi8);
 
-    iskra::Program prog;
+    // Текстовый файл машина транслирует при загрузке; исполняется образ.
+    iskra::ProgramImage img;
     iskra::NameTable names;
     std::string error;
-    if (!iskra::parse_text(koi8, prog, names, error)) {
-        std::printf("разбор: %s\n", error.c_str());
+    if (!iskra::tokenize(koi8, img, names, error)) {
+        std::printf("трансляция: %s\n", error.c_str());
         return 1;
     }
-    return run_program(prog, input, inputs);
+    return run_program(img, input, inputs);
 }
 
 int cmd_cat(const char * path, const char * name)

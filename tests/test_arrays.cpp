@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "check.h"
-#include "core/front_text.h"
-#include "core/front_tokens.h"
+#include "core/names.h"
+#include "core/tokenize.h"
 #include "core/interp.h"
 #include "core/koi8.h"
 #include "host_headless/headless_host.h"
@@ -68,9 +68,11 @@ bool run_text(const char * utf8_source, std::string & screen, std::string & erro
     std::string koi8;
     utf8_to_koi8(utf8_source, koi8);
 
-    Program prog;
     NameTable names;
-    if (!parse_text(koi8, prog, names, error)) return false;
+    // Текст исполняется не сам по себе: он сначала транслируется в токены,
+    // как и в машине (docs/DECISIONS.md, разд. 12).
+    ProgramImage img;
+    if (!tokenize(koi8, img, names, error)) return false;
 
     HeadlessHost host;
     if (input) {
@@ -80,7 +82,7 @@ bool run_text(const char * utf8_source, std::string & screen, std::string & erro
                        static_cast<unsigned>(keys.size()));
     }
 
-    Interp interp(prog, host);
+    Interp interp(img, host);
     if (!interp.run(error)) return false;
     screen = host.dump();
     return true;
@@ -108,9 +110,10 @@ void test_var_tables()
             std::printf("  не прочитался STAT02_bin.txt\n");
             CHECK(false);
         } else {
-            std::vector<VarInfo> vars;
+            ProgramImage img;
             std::string error;
-            CHECK(parse_tokenized_vars(file, vars, error));
+            CHECK(img.load_file(file, error));
+            const std::vector<VarInfo> & vars = img.vars();
 
             static const Expect E[] = { {0, 6, 0}, {1, 6, 0}, {2, 12, 0} };
             for (unsigned i = 0; i < 3; ++i) {
@@ -140,9 +143,10 @@ void test_var_tables()
             std::printf("  не прочитался STAT03_bin.txt\n");
             CHECK(false);
         } else {
-            std::vector<VarInfo> vars;
+            ProgramImage img;
             std::string error;
-            CHECK(parse_tokenized_vars(file, vars, error));
+            CHECK(img.load_file(file, error));
+            const std::vector<VarInfo> & vars = img.vars();
 
             static const Expect E[] = {
                 { 0x00, 100, 0 },      // X(100)   — исходный дескриптор

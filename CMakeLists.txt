@@ -50,13 +50,18 @@ add_library(iskra_core STATIC
     src/core/koi8.h             src/core/koi8.cpp
     src/core/number.h           src/core/number.cpp
     src/core/value.h
+    src/core/program.h          src/core/program.cpp
     src/core/disk_record.h      src/core/disk_record.cpp
     src/core/catalog.h          src/core/catalog.cpp
     src/core/devtable.h         src/core/devtable.cpp
-    src/core/ir.h
     src/core/expr.h             src/core/expr.cpp
-    src/core/front_text.h       src/core/front_text.cpp
-    src/core/front_tokens.h     src/core/front_tokens.cpp
+    src/core/text_lexer.h       src/core/text_lexer.cpp
+    src/core/tokenize.h         src/core/tokenize.cpp
+    src/core/names.h            src/core/names.cpp
+    src/core/byte_source.h      src/core/byte_source.cpp
+    src/core/vars.h             src/core/vars.cpp
+    src/core/eval.h             src/core/eval.cpp
+    src/core/detokenize.h       src/core/detokenize.cpp
     src/core/interp.h           src/core/interp.cpp
     src/core/screen.h           src/core/screen.cpp
 

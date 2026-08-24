@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "check.h"
-#include "core/front_text.h"
-#include "core/front_tokens.h"
+#include "core/names.h"
+#include "core/tokenize.h"
 #include "core/interp.h"
 #include "core/koi8.h"
 #include "host_headless/headless_host.h"
@@ -70,7 +70,7 @@ bool load_hex_dump(const std::string & path, std::vector<uint8_t> & out)
     return !out.empty();
 }
 
-bool load_tokenized(Program & prog)
+bool load_tokenized(ProgramImage & img)
 {
     std::vector<uint8_t> file;
     if (!load_hex_dump(corpus("STAT04_bin.txt"), file)) {
@@ -78,14 +78,14 @@ bool load_tokenized(Program & prog)
         return false;
     }
     std::string error;
-    if (!parse_tokenized(file, prog, error)) {
+    if (!img.load_file(file, error)) {
         std::printf("  токены: %s\n", error.c_str());
         return false;
     }
     return true;
 }
 
-bool load_text(Program & prog, NameTable & names)
+bool load_text(ProgramImage & img, NameTable & names)
 {
     std::string utf8;
     if (!read_bytes(corpus("STAT04_text.txt"), utf8)) {
@@ -96,15 +96,17 @@ bool load_text(Program & prog, NameTable & names)
     utf8_to_koi8(utf8, koi8);
 
     std::string error;
-    if (!parse_text(koi8, prog, names, error)) {
-        std::printf("  текст: %s\n", error.c_str());
+    // Текст исполняется не сам по себе: он сначала транслируется в токены,
+    // как и в машине (docs/DECISIONS.md, разд. 12).
+    if (!tokenize(koi8, img, names, error)) {
+        std::printf("  трансляция: %s\n", error.c_str());
         return false;
     }
     return true;
 }
 
 // Прогон с заданным вводом; возвращает содержимое экрана.
-bool run(const Program & prog, const char * df, const char * p, std::string & screen)
+bool run(const ProgramImage & img, const char * df, const char * p, std::string & screen)
 {
     HeadlessHost host;
     for (int i = 0; i < 2; ++i) {
@@ -115,7 +117,7 @@ bool run(const Program & prog, const char * df, const char * p, std::string & sc
                        static_cast<unsigned>(koi8.size()));
     }
 
-    Interp interp(prog, host);
+    Interp interp(img, host);
     std::string error;
     if (!interp.run(error)) {
         std::printf("  исполнение: %s\n", error.c_str());
@@ -127,18 +129,20 @@ bool run(const Program & prog, const char * df, const char * p, std::string & sc
 
 // --- Разбор ----------------------------------------------------------------
 
-void test_structure(const Program & tok, const Program & txt)
+// Теперь, когда промежуточного представления нет, сравнивать можно прямо
+// байты: трансляция текста обязана дать тот же поток, что лежит в файле.
+void test_structure(const ProgramImage & tok, const ProgramImage & txt)
 {
-    CHECK_EQ(tok.lines.size(), txt.lines.size());
-    CHECK_EQ(tok.lines.size(), 17u);
-    if (tok.lines.size() != txt.lines.size()) return;
+    CHECK_EQ(tok.line_count(), txt.line_count());
+    CHECK_EQ(tok.line_count(), 17u);
+    if (tok.line_count() != txt.line_count()) return;
 
-    for (unsigned i = 0; i < tok.lines.size(); ++i) {
-        CHECK_EQ(tok.lines[i].number, txt.lines[i].number);
-        CHECK_EQ(tok.lines[i].stmts.size(), txt.lines[i].stmts.size());
-        if (tok.lines[i].stmts.size() != txt.lines[i].stmts.size()) continue;
-        for (unsigned j = 0; j < tok.lines[i].stmts.size(); ++j)
-            CHECK_EQ(tok.lines[i].stmts[j].kind, txt.lines[i].stmts[j].kind);
+    for (unsigned i = 0; i < tok.line_count(); ++i) {
+        CHECK_EQ(tok.line(i).number, txt.line(i).number);
+        if (tok.line(i).body != txt.line(i).body) {
+            std::printf("  строка %u: байты разошлись\n", tok.line(i).number);
+            CHECK(false);
+        }
     }
 }
 
@@ -162,7 +166,7 @@ void test_variable_indices(const NameTable & names)
 
 // Главное требование к эмулятору: оба представления одной программы
 // исполняются одинаково.
-void test_same_screen(const Program & tok, const Program & txt)
+void test_same_screen(const ProgramImage & tok, const ProgramImage & txt)
 {
     static const char * const INPUTS[][2] = {
         { "1",  ".05" },
@@ -192,7 +196,7 @@ void test_same_screen(const Program & tok, const Program & txt)
 // интегрирует от -6, а хвост там ещё тяжёлый. Это свойство самой программы,
 // а не эмулятора, поэтому здесь только фиксируется, что обе формы врут
 // одинаково.
-void test_known_values(const Program & tok)
+void test_known_values(const ProgramImage & tok)
 {
     struct Case { const char * df; const char * want; };
     static const Case CASES[] = {
@@ -225,7 +229,7 @@ void test_known_values(const Program & tok)
 
 // Печать чисел: «с учетом знака перед числом и пробела после числа»
 // (руководство, разд. 4.4). Проверяется прямо на экране программы.
-void test_number_format(const Program & tok)
+void test_number_format(const ProgramImage & tok)
 {
     std::string screen;
     if (!run(tok, "10", ".05", screen)) { CHECK(false); return; }
@@ -245,7 +249,7 @@ void test_number_format(const Program & tok)
 
 int main()
 {
-    Program tok, txt;
+    ProgramImage tok, txt;
     NameTable names;
 
     if (!load_tokenized(tok) || !load_text(txt, names)) {

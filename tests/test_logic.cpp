@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "check.h"
-#include "core/front_text.h"
-#include "core/front_tokens.h"
+#include "core/names.h"
+#include "core/tokenize.h"
 #include "core/interp.h"
 #include "core/koi8.h"
 #include "host_headless/headless_host.h"
@@ -23,12 +23,14 @@ bool run_text(const char * utf8, std::string & screen, std::string & error)
     std::string koi8;
     utf8_to_koi8(utf8, koi8);
 
-    Program prog;
     NameTable names;
-    if (!parse_text(koi8, prog, names, error)) return false;
+    // Текст исполняется не сам по себе: он сначала транслируется в токены,
+    // как и в машине (docs/DECISIONS.md, разд. 12).
+    ProgramImage img;
+    if (!tokenize(koi8, img, names, error)) return false;
 
     HeadlessHost host;
-    Interp interp(prog, host);
+    Interp interp(img, host);
     if (!interp.run(error)) return false;
     screen = host.dump();
     return true;
@@ -76,10 +78,14 @@ void test_truth_tables()
     CHECK_STR(cond("1=2 OR 1=1 "), "1");
     CHECK_STR(cond("1=2 OR 1=2 "), "0");
 
-    CHECK_STR(cond("1=1 XOR 1=1 "), "0");
-    CHECK_STR(cond("1=1 XOR 1=2 "), "1");
-    CHECK_STR(cond("1=2 XOR 1=1 "), "1");
-    CHECK_STR(cond("1=2 XOR 1=2 "), "0");
+    // XOR связкой в корпусе не встречается ни разу, и байт для него
+    // неизвестен (docs/format.md, разд. 4). Раз программа исполняется
+    // токенами, выразить его нечем — и транслятор обязан сказать это прямо,
+    // а не молча выдумать байт: выдуманный уехал бы на дискету через SAVE DC.
+    // Как только байт найдётся, эти четыре строки станут проверкой таблицы
+    // истинности.
+    CHECK_STR(cond("1=1 XOR 1=1 "), "ОШИБКА");
+    CHECK_STR(cond("1=1 XOR 1=2 "), "ОШИБКА");
 }
 
 // Главное отличие от привычных языков: связки равноправны и вычисляются
@@ -171,11 +177,11 @@ private:
 
 bool run_tokens(const TokenBuilder & b, std::string & screen, std::string & error)
 {
-    Program prog;
-    if (!parse_tokenized(b.file(), prog, error)) return false;
+    ProgramImage img;
+    if (!img.load_file(b.file(), error)) return false;
 
     HeadlessHost host;
-    Interp interp(prog, host);
+    Interp interp(img, host);
     if (!interp.run(error)) return false;
     screen = host.dump();
     return true;

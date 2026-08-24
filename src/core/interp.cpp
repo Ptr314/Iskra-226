@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Mikhail Revzin <p3.141592653589793238462643@gmail.com>
 // Part of the Iskra-226 project: https://github.com/Ptr314/Iskra-226
-// Description: исполнение промежуточного представления
+// Description: исполнение оттранслированной программы прямо из потока токенов
 
 #include "core/interp.h"
 
@@ -22,281 +22,6 @@ namespace {
         std::sprintf(b, "%u", v);
         return b;
     }
-}
-
-bool Program::find(unsigned number, unsigned & index) const
-{
-    for (unsigned i = 0; i < lines.size(); ++i)
-        if (lines[i].number == number) { index = i; return true; }
-    return false;
-}
-
-Interp::Interp(const Program & prog, Host & host)
-    : prog_(prog), host_(host), labels_ready_(false), li_(0), si_(0),
-      jumped_(false), stopped_(false), max_steps_(2000000)
-{
-}
-
-bool Interp::fail(const std::string & m)
-{
-    if (error_.empty()) {
-        error_ = m;
-        if (li_ < prog_.lines.size())
-            error_ = "строка " + num_str(prog_.lines[li_].number) + ": " + m;
-    }
-    return false;
-}
-
-bool Interp::variable(unsigned index, Number & out) const
-{
-    std::map<unsigned, Number>::const_iterator it = vars_.find(index);
-    if (it == vars_.end()) return false;
-    out = it->second;
-    return true;
-}
-
-void Interp::emit(const std::string & koi8)
-{
-    if (koi8.empty()) return;
-    host_.screen().write(reinterpret_cast<const uint8_t *>(koi8.data()),
-                         static_cast<unsigned>(koi8.size()));
-}
-
-void Interp::emit_newline()
-{
-    Screen & s = host_.screen();
-    s.put(CC_CR);
-    s.put(CC_DOWN);
-}
-
-void Interp::emit_zone()
-{
-    Screen & s = host_.screen();
-    const unsigned col = s.col();
-    unsigned next = ((col - 1) / ZONE + 1) * ZONE + 1;
-    if (next > SCREEN_COLS) {
-        // «если предыдущее значение печаталось в последней зоне, следующее
-        // будет печататься в первой зоне следующей строки»
-        emit_newline();
-        return;
-    }
-    s.at(s.row(), next);
-}
-
-// Массивы «Искры» индексируются с единицы: «А(5) означает 5-й элемент
-// массива А()», а DIM A(120) отводит 120 элементов (руководство, разд. 7.1).
-bool Interp::array_alloc(unsigned var, unsigned dim1, unsigned dim2)
-{
-    if (dim1 == 0) dim1 = 10;                  // размерность по умолчанию
-    const unsigned long total = static_cast<unsigned long>(dim1) *
-                                (dim2 ? dim2 : 1);
-    if (total > 1000000UL) return fail("слишком большой массив");
-
-    Array & a = arrays_[var];
-    a.dim1 = dim1;
-    a.dim2 = dim2;
-    a.cells.assign(static_cast<std::size_t>(total), Number());
-    return true;
-}
-
-bool Interp::slot(const Expr & e, Number *& out)
-{
-    if (e.kind == EX_VAR) {
-        out = &vars_[e.var];
-        return true;
-    }
-    if (e.kind != EX_ELEM) return fail("сюда нельзя присвоить значение");
-
-    std::map<unsigned, Array>::iterator it = arrays_.find(e.var);
-    if (it == arrays_.end()) {
-        // Массив, к которому обратились без DIM: размеры берём из таблиц
-        // переменных, если они есть, иначе десять элементов.
-        unsigned d1 = 0, d2 = 0;
-        if (e.var < prog_.vars.size()) {
-            d1 = prog_.vars[e.var].dim1;
-            d2 = prog_.vars[e.var].dim2;
-        }
-        if (!array_alloc(e.var, d1, d2)) return false;
-        it = arrays_.find(e.var);
-    }
-    Array & a = it->second;
-
-    // «Если арифметические выражения состоят из целой и дробной частей,
-    // используется только их целая часть» (разд. 7.1).
-    unsigned idx[2] = { 0, 0 };
-    for (unsigned k = 0; k < e.a.size(); ++k) {
-        Number n;
-        if (!eval_num(e.a[k], n)) return false;
-        long v = 0;
-        if (!n.floor_to_int(v))
-            return fail("индекс массива не целое число");
-        if (v < 1) return fail("индекс массива меньше единицы");
-        idx[k] = static_cast<unsigned>(v);
-    }
-
-    std::size_t off;
-    if (a.dim2) {
-        if (e.a.size() != 2) return fail("двумерному массиву нужны два индекса");
-        if (idx[0] > a.dim1 || idx[1] > a.dim2) return fail("индекс за границей массива");
-        off = static_cast<std::size_t>(idx[0] - 1) * a.dim2 + (idx[1] - 1);
-    } else {
-        if (e.a.size() != 1) return fail("одномерному массиву нужен один индекс");
-        if (idx[0] > a.dim1) return fail("индекс за границей массива");
-        off = idx[0] - 1;
-    }
-
-    out = &a.cells[off];
-    return true;
-}
-
-// --- Символьные данные ------------------------------------------------------
-
-// Поле переменной: длина элемента на число элементов. Заводится при первом
-// обращении и заполняется пробелами — «начальное значение символьных
-// переменных — пробел» (руководство, разд. 4.3).
-std::string & Interp::str_field(unsigned var)
-{
-    std::map<unsigned, std::string>::iterator it = strs_.find(var);
-    if (it != strs_.end()) return it->second;
-
-    unsigned len = 16;                      // длина по умолчанию
-    unsigned count = 1;
-    if (var < prog_.vars.size()) {
-        const VarInfo & v = prog_.vars[var];
-        if (v.str_len) len = v.str_len;
-        if (v.is_array) count = (v.dim1 ? v.dim1 : 10) * (v.dim2 ? v.dim2 : 1);
-    }
-    if (len < 1) len = 1;
-    if (len > 253) len = 253;               // предел из разд. 4.2
-
-    strs_[var] = std::string(static_cast<std::size_t>(len) * count, ' ');
-    return strs_[var];
-}
-
-bool Interp::is_string_expr(const Expr & e) const
-{
-    switch (e.kind) {
-        case EX_STR:
-        case EX_HEX:
-        case EX_SUBSTR:
-        case EX_ARRAY:
-            return true;
-        case EX_VAR:
-        case EX_ELEM:
-            return e.var < prog_.vars.size() && prog_.vars[e.var].is_string;
-        default:
-            return false;
-    }
-}
-
-// Место в поле символьной переменной: сама переменная, элемент массива,
-// массив целиком или подстрока STR( от любого из них.
-bool Interp::str_loc(const Expr & e, StrLoc & loc)
-{
-    switch (e.kind) {
-        case EX_VAR:
-        case EX_ARRAY: {
-            loc.data = &str_field(e.var);
-            loc.off = 0;
-            loc.len = static_cast<unsigned>(loc.data->size());
-            return true;
-        }
-
-        case EX_ELEM: {
-            std::string & f = str_field(e.var);
-            unsigned len = 16, d1 = 10, d2 = 0;
-            if (e.var < prog_.vars.size()) {
-                const VarInfo & v = prog_.vars[e.var];
-                if (v.str_len) len = v.str_len;
-                if (v.dim1) d1 = v.dim1;
-                d2 = v.dim2;
-            }
-
-            unsigned idx[2] = { 0, 0 };
-            for (unsigned k = 0; k < e.a.size() && k < 2; ++k) {
-                Number n;
-                if (!eval_num(e.a[k], n)) return false;
-                long v = 0;
-                if (!n.floor_to_int(v))
-                    return fail("индекс массива не целое число");
-                if (v < 1) return fail("индекс массива меньше единицы");
-                idx[k] = static_cast<unsigned>(v);
-            }
-
-            unsigned n;
-            if (d2) {
-                if (e.a.size() != 2) return fail("двумерному массиву нужны два индекса");
-                if (idx[0] > d1 || idx[1] > d2) return fail("индекс за границей массива");
-                n = (idx[0] - 1) * d2 + (idx[1] - 1);
-            } else {
-                if (e.a.size() != 1) return fail("одномерному массиву нужен один индекс");
-                if (idx[0] > d1) return fail("индекс за границей массива");
-                n = idx[0] - 1;
-            }
-
-            // Поле при необходимости растёт. По таблицам «строка-скаляр или
-            // массив строк» не различается (разд. 6), так что описание может
-            // занижать число элементов; обрывать из-за этого разбор нечестно.
-            const std::size_t off = static_cast<std::size_t>(n) * len;
-            if (off + len > f.size()) {
-                if (off + len > 64u * 1024u) return fail("слишком большой символьный массив");
-                f.resize(off + len, ' ');
-            }
-            loc.data = &f;
-            loc.off = static_cast<unsigned>(off);
-            loc.len = len;
-            return true;
-        }
-
-        case EX_SUBSTR: {
-            StrLoc base;
-            if (!str_loc(e.a[0], base)) return false;
-
-            Number n;
-            if (!eval_num(e.a[1], n)) return false;
-            long start = 0;
-            if (!n.floor_to_int(start))
-                return fail("STR(: начало не целое число");
-            if (start < 1) return fail("STR(: начало меньше единицы");
-            if (static_cast<unsigned long>(start) > base.len)
-                return fail("STR(: начало за границей строки");
-
-            unsigned off = static_cast<unsigned>(start) - 1;
-            unsigned len = base.len - off;          // по умолчанию до конца
-
-            if (e.a.size() > 2) {
-                if (!eval_num(e.a[2], n)) return false;
-                long want = 0;
-                if (!n.floor_to_int(want))
-                    return fail("STR(: длина не целое число");
-                if (want < 1) return fail("STR(: длина меньше единицы");
-                if (static_cast<unsigned long>(want) > len)
-                    return fail("STR(: длина за границей строки");
-                len = static_cast<unsigned>(want);
-            }
-
-            loc.data = base.data;
-            loc.off = base.off + off;
-            loc.len = len;
-            return true;
-        }
-
-        default:
-            return fail("здесь ожидалась символьная переменная");
-    }
-}
-
-// «Если длина присваиваемого значения больше размерности символьной
-// переменной, то крайние справа символы игнорируются» (разд. 4.3);
-// остаток поля добивается пробелами.
-bool Interp::assign_string(const Expr & target, const std::string & value)
-{
-    StrLoc loc;
-    if (!str_loc(target, loc)) return false;
-
-    for (unsigned i = 0; i < loc.len; ++i)
-        (*loc.data)[loc.off + i] = (i < value.size()) ? value[i] : ' ';
-    return true;
 }
 
 // Образ CONVERT: [+|-] [###] [.] [###] [^^^^] (руководство, разд. 13.6).
@@ -383,396 +108,90 @@ bool format_by_image(const Number & value, const std::string & image,
     return true;
 }
 
-bool Interp::do_convert(const Stmt & s)
+
+// Шапка оператора: глагол (один или два байта) и длина операндов.
+bool stmt_head(const std::vector<uint8_t> & body, unsigned at,
+               unsigned & verb, unsigned & ops_at, unsigned & len)
 {
-    if (s.targets.size() != 1) return fail("CONVERT ждёт одну цель");
-
-    if (is_string_expr(s.targets[0])) {
-        // Число в символьное представление: нужен образ.
-        Number v;
-        if (!eval_num(s.e, v)) return false;
-
-        std::string text;
-        if (s.has_prompt) {
-            std::string error;
-            if (!format_by_image(v, s.prompt, text, error)) return fail(error);
-        } else {
-            // Образ не задан. Книга такой формы не описывает, но в корпусе
-            // она встречается (BAM*: CONVERT V0E TO STR(V0D¤,12,4)).
-            // Допущение: число прижимается вправо к длине приёмника.
-            StrLoc loc;
-            if (!str_loc(s.targets[0], loc)) return false;
-            text = v.to_display();
-            if (!v.is_negative() && !text.empty() && text[0] == ' ')
-                text = text.substr(1);
-            while (text.size() < loc.len) text = " " + text;
-        }
-        return assign_string(s.targets[0], text);
+    if (at + 1 >= body.size()) return false;
+    unsigned p = at;
+    verb = body[p++];
+    if (verb == 0x06) {
+        if (p >= body.size()) return false;
+        verb = 0x0600 | body[p++];
     }
+    if (p >= body.size()) return false;
+    len = body[p++];
+    ops_at = p;
+    return ops_at + len <= body.size();
+}
 
-    // Символьное представление в число: «преобразуемое значение должно
-    // представлять собой правильную запись числа» (разд. 13.6).
-    std::string text;
-    if (!eval_str(s.e, text)) return false;
+Interp::Interp(const ProgramImage & img, Host & host)
+    : img_(img), host_(host), store_(img.vars()), labels_ready_(false),
+      li_(0), off_(0), next_off_(0), jumped_(false), stopped_(false),
+      max_steps_(0)
+{
+}
 
-    Number n;
-    if (!Number::parse(text, n)) return fail("CONVERT: «" + text + "» не число");
+bool Interp::fail(const std::string & m)
+{
+    if (error_.empty()) {
+        error_ = m;
+        if (li_ < img_.line_count())
+            error_ = "строка " + num_str(img_.line(li_).number) + ": " + m;
+    }
+    return false;
+}
+
+bool Interp::variable(unsigned index, Number & out) const
+{
+    // Хранилище отдаёт ячейку только неконстантно; для проверок хватает
+    // копии через тот же путь.
+    VarStore & s = const_cast<VarStore &>(store_);
     Number * cell = 0;
-    if (!slot(s.targets[0], cell)) return false;
-    *cell = n;
+    std::string err;
+    if (!s.slot(index, 0, 0, cell, err)) return false;
+    out = *cell;
     return true;
 }
 
-// MAT REDIM меняет размерности уже существующего массива; содержимое
-// памяти при этом сохраняется.
-bool Interp::do_redim(const Stmt & s)
+void Interp::emit(const std::string & koi8)
 {
-    for (unsigned i = 0; i < s.dims.size(); ++i) {
-        const DimEntry & d = s.dims[i];
-
-        unsigned dim[2] = { 0, 0 };
-        for (unsigned k = 0; k < d.sizes.size() && k < 2; ++k) {
-            Number n;
-            if (!eval_num(d.sizes[k], n)) return false;
-            long v = 0;
-            if (!n.floor_to_int(v) || v < 1)
-                return fail("MAT REDIM: размерность не положительное целое");
-            dim[k] = static_cast<unsigned>(v);
-        }
-        if (!dim[0]) return fail("MAT REDIM без размерности");
-
-        const bool is_string = d.var < prog_.vars.size() && prog_.vars[d.var].is_string;
-        if (is_string) {
-            unsigned len = d.str_len;
-            if (!len && d.var < prog_.vars.size()) len = prog_.vars[d.var].str_len;
-            if (!len) len = 16;
-            const std::size_t total = static_cast<std::size_t>(len) * dim[0] *
-                                      (dim[1] ? dim[1] : 1);
-            if (total > 64u * 1024u) return fail("MAT REDIM: слишком большой массив");
-            str_field(d.var).resize(total, ' ');
-            continue;
-        }
-
-        const unsigned long total = static_cast<unsigned long>(dim[0]) *
-                                    (dim[1] ? dim[1] : 1);
-        if (total > 1000000UL) return fail("MAT REDIM: слишком большой массив");
-
-        Array & a = arrays_[d.var];
-        a.dim1 = dim[0];
-        a.dim2 = dim[1];
-        a.cells.resize(static_cast<std::size_t>(total), Number());
-    }
-    return true;
+    if (koi8.empty()) return;
+    host_.screen().write(reinterpret_cast<const uint8_t *>(koi8.data()),
+                         static_cast<unsigned>(koi8.size()));
 }
 
-bool Interp::do_dim(const Stmt & s)
+void Interp::emit_newline()
 {
-    for (unsigned i = 0; i < s.dims.size(); ++i) {
-        const DimEntry & d = s.dims[i];
-        const bool is_string = d.var < prog_.vars.size() && prog_.vars[d.var].is_string;
-        if (is_string) {
-            // Поле заводится по описанию из таблицы переменных; повторное
-            // объявление очищает его.
-            strs_.erase(d.var);
-            str_field(d.var);
-            continue;
-        }
-        if (!array_alloc(d.var, d.dim1, d.dim2)) return false;
-    }
-    return true;
+    Screen & s = host_.screen();
+    s.put(CC_CR);
+    s.put(CC_DOWN);
 }
 
-bool Interp::eval_num(const Expr & e, Number & n)
+void Interp::emit_zone()
+{
+    Screen & s = host_.screen();
+    const unsigned col = s.col();
+    unsigned next = ((col - 1) / ZONE + 1) * ZONE + 1;
+    if (next > SCREEN_COLS) {
+        // «если предыдущее значение печаталось в последней зоне, следующее
+        // будет печататься в первой зоне следующей строки»
+        emit_newline();
+        return;
+    }
+    s.at(s.row(), next);
+}
+
+// --- присваивание -----------------------------------------------------------
+
+bool Interp::assign_string(Stream & st, const Evaluator::Target & t,
+                           const std::string & value)
 {
     Value v;
-    if (!eval(e, v)) return false;
-    if (v.is_str) return fail("здесь ожидалось число, а не строка");
-    n = v.num;
-    return true;
-}
-
-bool Interp::eval_str(const Expr & e, std::string & out)
-{
-    Value v;
-    if (!eval(e, v)) return false;
-    if (!v.is_str) return fail("здесь ожидалась строка, а не число");
-    out = v.str;
-    return true;
-}
-
-namespace {
-
-// LEN: «количество символов от крайнего левого байта и до последнего не
-// равного пробелу включительно; если строка из всех пробелов — 1».
-unsigned str_len_value(const std::string & s)
-{
-    for (std::size_t i = s.size(); i-- > 0; )
-        if (s[i] != ' ') return static_cast<unsigned>(i + 1);
-    return 1;
-}
-
-// NUM: длина ведущей правильной записи числа. Пробелы до и после числа
-// входят в счёт, но только если дальше ничего, кроме пробелов, нет —
-// это единственное прочтение, при котором сходятся все три примера
-// руководства (разд. 13.6): «+ 1.2   -14 …» → 5, «98.1E+10» → 16, «0..» → 2.
-unsigned str_num_value(const std::string & s)
-{
-    std::size_t p = 0;
-    while (p < s.size() && s[p] == ' ') ++p;
-
-    // Между знаком и цифрами пробел допускается: в примере руководства
-    // «+ 1.2   -14   +1.2587» ответом служит 5, то есть «+ 1.2» целиком.
-    if (p < s.size() && (s[p] == '+' || s[p] == '-')) {
-        ++p;
-        while (p < s.size() && s[p] == ' ') ++p;
-    }
-
-    std::size_t digits = 0;
-    while (p < s.size() && s[p] >= '0' && s[p] <= '9') { ++p; ++digits; }
-    if (p < s.size() && s[p] == '.') {
-        ++p;
-        while (p < s.size() && s[p] >= '0' && s[p] <= '9') { ++p; ++digits; }
-    }
-    if (!digits) return 0;
-
-    if (p < s.size() && (s[p] == 'E' || s[p] == 'e')) {
-        const std::size_t save = p;
-        ++p;
-        if (p < s.size() && (s[p] == '+' || s[p] == '-')) ++p;
-        std::size_t ed = 0;
-        while (p < s.size() && s[p] >= '0' && s[p] <= '9') { ++p; ++ed; }
-        if (!ed) p = save;
-    }
-
-    // Хвост из одних пробелов входит в длину, иначе — нет.
-    std::size_t tail = p;
-    while (tail < s.size() && s[tail] == ' ') ++tail;
-    if (tail == s.size()) return static_cast<unsigned>(s.size());
-    return static_cast<unsigned>(p);
-}
-
-} // namespace
-
-bool Interp::eval(const Expr & e, Value & v)
-{
-    v = Value();
-
-    // Символьные значения: переменная, элемент, массив целиком, подстрока.
-    if (e.kind == EX_SUBSTR || e.kind == EX_ARRAY ||
-        ((e.kind == EX_VAR || e.kind == EX_ELEM) && is_string_expr(e))) {
-        StrLoc loc;
-        if (!str_loc(e, loc)) return false;
-        v.is_str = true;
-        v.str = loc.data->substr(loc.off, loc.len);
-        return true;
-    }
-
-    switch (e.kind) {
-        case EX_LEN: {
-            std::string s;
-            if (!eval_str(e.a[0], s)) return false;
-            v.num = Number::from_int(static_cast<long>(str_len_value(s)));
-            return true;
-        }
-
-        case EX_NUMF: {
-            std::string s;
-            if (!eval_str(e.a[0], s)) return false;
-            v.num = Number::from_int(static_cast<long>(str_num_value(s)));
-            return true;
-        }
-
-        case EX_VAL: {
-            // «Преобразует двоичное значение содержимого первого байта или
-            // первых двух байтов» (разд. 14.2). Старший байт первый — так
-            // велит тождество из книги:
-            // VAL(X¤,2) = VAL(X¤)*256 + VAL(STR(X¤,2)).
-            std::string s;
-            if (!eval_str(e.a[0], s)) return false;
-            if (s.empty()) return fail("VAL( от пустой строки");
-            unsigned long r = static_cast<unsigned char>(s[0]);
-            if (e.a.size() > 1) {
-                if (s.size() < 2) return fail("VAL( с двумя байтами от строки короче двух");
-                r = r * 256 + static_cast<unsigned char>(s[1]);
-            }
-            v.num = Number::from_int(static_cast<long>(r));
-            return true;
-        }
-
-        case EX_POS: {
-            // «Поиск проводится с начала поисковой переменной, и за одну
-            // операцию находится только одна величина» (разд. 15.1).
-            std::string s;
-            if (!eval_str(e.a[0], s)) return false;
-            if (e.a.size() < 2) return fail("POS( без искомого значения");
-
-            int want;
-            if (is_string_expr(e.a[1])) {
-                std::string p;
-                if (!eval_str(e.a[1], p)) return false;
-                if (p.empty()) return fail("POS( с пустым образцом");
-                want = static_cast<unsigned char>(p[0]);
-            } else {
-                Number n;
-                if (!eval_num(e.a[1], n)) return false;
-                long b = 0;
-                n.to_int(b);
-                want = static_cast<int>(b);
-            }
-
-            unsigned found = 0;
-            for (std::size_t i = 0; i < s.size(); ++i) {
-                const int c = static_cast<unsigned char>(s[i]);
-                bool hit = false;
-                switch (e.rel) {
-                    case EX_EQ: hit = (c == want); break;
-                    case EX_NE: hit = (c != want); break;
-                    case EX_LT: hit = (c <  want); break;
-                    case EX_LE: hit = (c <= want); break;
-                    case EX_GT: hit = (c >  want); break;
-                    default:    hit = (c >= want); break;
-                }
-                if (hit) { found = static_cast<unsigned>(i + 1); break; }
-            }
-            v.num = Number::from_int(static_cast<long>(found));
-            return true;
-        }
-
-        default: break;
-    }
-
-    // Сравнение строк — побайтовое; более короткая дополняется пробелами.
-    if (e.kind >= EX_EQ && e.kind <= EX_GE &&
-        (is_string_expr(e.a[0]) || is_string_expr(e.a[1]))) {
-        std::string x, y;
-        if (!eval_str(e.a[0], x)) return false;
-        if (!eval_str(e.a[1], y)) return false;
-        while (x.size() < y.size()) x += ' ';
-        while (y.size() < x.size()) y += ' ';
-
-        const int c = x.compare(y);
-        bool r = false;
-        switch (e.kind) {
-            case EX_EQ: r = (c == 0); break;
-            case EX_NE: r = (c != 0); break;
-            case EX_LT: r = (c <  0); break;
-            case EX_LE: r = (c <= 0); break;
-            case EX_GT: r = (c >  0); break;
-            default:    r = (c >= 0); break;
-        }
-        v.num = Number::from_int(r ? 1 : 0);
-        return true;
-    }
-
-    switch (e.kind) {
-        // Связки условий. Отношение даёт 1 или 0, связка — тоже.
-        case EX_AND:
-        case EX_OR:
-        case EX_XOR: {
-            Number a, b;
-            if (!eval_num(e.a[0], a)) return false;
-            if (!eval_num(e.a[1], b)) return false;
-            const bool x = !a.is_zero(), y = !b.is_zero();
-            const bool r = (e.kind == EX_AND) ? (x && y)
-                         : (e.kind == EX_OR)  ? (x || y)
-                                              : (x != y);
-            v.num = Number::from_int(r ? 1 : 0);
-            return true;
-        }
-
-        case EX_NUM: v.num = e.num; return true;
-        case EX_PI:  v.num = Number::pi(); return true;
-
-        case EX_STR:
-        case EX_HEX:
-            v.is_str = true;
-            v.str = e.str;
-            return true;
-
-        case EX_VAR: {
-            std::map<unsigned, Number>::const_iterator it = vars_.find(e.var);
-            // Неинициализированная переменная равна нулю — как на машине.
-            if (it != vars_.end()) v.num = it->second;
-            return true;
-        }
-
-        case EX_ELEM: {
-            Number * cell = 0;
-            if (!slot(e, cell)) return false;
-            v.num = *cell;
-            return true;
-        }
-
-        case EX_AT:
-        case EX_TAB:
-            return fail("AT( и TAB( допустимы только в PRINT");
-
-        default: break;
-    }
-
-    Number a, b;
-    if (!eval_num(e.a[0], a)) return false;
-
-    if (e.kind == EX_NEG)  { v.num = a.negated(); return true; }
-    if (e.kind == EX_ABS)  { v.num = a; if (v.num.is_negative()) v.num = v.num.negated(); return true; }
-    if (e.kind == EX_SGN)  {
-        const int c = a.compare(Number());
-        v.num = Number::from_int(c > 0 ? 1 : (c < 0 ? -1 : 0));
-        return true;
-    }
-    if (e.kind == EX_INT) {
-        // Отбрасывание дробной части вниз, как INT в Бейсике.
-        v.num = a.floor();
-        return true;
-    }
-    if (e.kind == EX_SQR) {
-        if (!Number::sqrt(a, v.num)) return fail("корень из отрицательного числа");
-        return true;
-    }
-    if (e.kind == EX_LOG) {
-        if (a.compare(Number()) <= 0) return fail("логарифм неположительного числа");
-        v.num = Number::from_double(std::log(a.to_double()));
-        return true;
-    }
-    if (e.kind == EX_EXP) {
-        v.num = Number::from_double(std::exp(a.to_double()));
-        return true;
-    }
-
-    if (!eval_num(e.a[1], b)) return false;
-
-    bool ok = true;
-    switch (e.kind) {
-        case EX_ADD: ok = Number::add(a, b, v.num); break;
-        case EX_SUB: ok = Number::sub(a, b, v.num); break;
-        case EX_MUL: ok = Number::mul(a, b, v.num); break;
-        case EX_DIV:
-            if (b.is_zero()) return fail("деление на нуль");
-            ok = Number::div(a, b, v.num);
-            break;
-        case EX_POW: ok = Number::pow(a, b, v.num); break;
-
-        case EX_EQ: case EX_NE: case EX_LT:
-        case EX_LE: case EX_GT: case EX_GE: {
-            const int c = a.compare(b);
-            bool r = false;
-            switch (e.kind) {
-                case EX_EQ: r = (c == 0); break;
-                case EX_NE: r = (c != 0); break;
-                case EX_LT: r = (c < 0);  break;
-                case EX_LE: r = (c <= 0); break;
-                case EX_GT: r = (c > 0);  break;
-                default:    r = (c >= 0); break;
-            }
-            v.num = Number::from_int(r ? 1 : 0);
-            return true;
-        }
-
-        default:
-            return fail("не реализованная операция");
-    }
-
-    if (!ok) return fail("переполнение порядка");
+    v.is_str = true;
+    v.str = value;
+    if (!st.ev.store(t, v)) return fail(st.ev.error());
     return true;
 }
 
@@ -784,14 +203,6 @@ bool Interp::machine_error(const char * code, const std::string & m)
     return fail(m);
 }
 
-bool Interp::do_onerr(const Stmt & s)
-{
-    trap_.mode = s.mode;
-    trap_.line = s.line;
-    trap_.targets = s.targets;
-    return true;
-}
-
 bool Interp::handle_error()
 {
     if (trap_.mode == EM_OFF || err_code_.empty()) return false;
@@ -800,77 +211,268 @@ bool Interp::handle_error()
     err_code_.clear();
     error_.clear();
 
-    if (trap_.targets.size() == 2) {
+    if (trap_.has_targets) {
         // «В переменную 1 заносится код ошибки, в переменную 2 —
         // четырёхзначный номер программной строки» (руководство, разд. 11.6).
         char buf[16];
-        std::sprintf(buf, "%04u", li_ < prog_.lines.size()
-                                      ? prog_.lines[li_].number : 0u);
-        if (!assign_string(trap_.targets[0], code)) return false;
-        if (!assign_string(trap_.targets[1], buf)) return false;
+        std::sprintf(buf, "%04u", li_ < img_.line_count()
+                                      ? img_.line(li_).number : 0u);
+        std::string err;
+        VarStore::StrLoc a, b;
+        if (!store_.str_element(trap_.target_a, 0, 0, a, err)) return fail(err);
+        if (!store_.str_element(trap_.target_b, 0, 0, b, err)) return fail(err);
+        for (unsigned i = 0; i < a.len; ++i)
+            (*a.data)[a.off + i] = (i < code.size()) ? code[i] : ' ';
+        const std::string num = buf;
+        for (unsigned i = 0; i < b.len; ++i)
+            (*b.data)[b.off + i] = (i < num.size()) ? num[i] : ' ';
     }
 
     // THEN возвращает на оператор ПОСЛЕ ошибочного, GOSUB — на него самого.
     if (trap_.mode == EM_THEN)
-        calls_.push_back(std::make_pair(li_, si_ + 1));
+        calls_.push_back(std::make_pair(li_, next_off_));
     else if (trap_.mode == EM_GOSUB)
-        calls_.push_back(std::make_pair(li_, si_));
+        calls_.push_back(std::make_pair(li_, off_));
 
     return jump(trap_.line);
 }
 
-// --- дисковые операторы ----------------------------------------------------
+// --- дисковая приставка ----------------------------------------------------
 
-bool Interp::resolve_disk(const DiskRef & ref, unsigned & row, unsigned & drive)
+bool Interp::disk_prefix(Stream & st, bool with_device, Disk & d,
+                         bool allow_verify)
 {
-    row = 0;                                    // без `#n` работает строка #0
-    if (ref.has_row) {
+    bool has_device = false, removable = false;
+    unsigned device = 2;
+    uint8_t b = 0;
+
+    if (with_device && st.src.peek_raw_byte(b) && b <= 2) {
+        st.src.skip(1);
+        has_device = true;
+        device = b;
+    }
+    // У DSKIP и DBACKSPACE байт D6 значит BEG, а не «¤»: приставка с
+    // контрольным считыванием у них не встречается.
+    if (allow_verify && st.src.peek_raw_byte(b) && b == 0xD6) st.src.skip(1);
+
+    bool has_addr = false;
+    unsigned addr = 0;
+    if (st.src.peek_raw_byte(b) && b == 0xDC) {
+        st.src.skip(1);
+        uint8_t de = 0, a = 0;
+        if (!st.src.take_raw_byte(de) || de != 0xDE) return fail("после DC нет DE");
+        if (!st.src.take_raw_byte(a)) return fail("нет адреса устройства");
+        has_addr = true;
+        addr = a;
+        if (st.src.peek_raw_byte(b) && b == 0xDE) st.src.skip(1);
+    }
+
+    d.row = 0;                                  // без `#n` работает строка #0
+    if (st.src.peek_raw_byte(b) && b == 0xDB) {
+        st.src.skip(1);
         Number n;
-        if (!eval_num(ref.row, n)) return false;
+        if (!st.ev.number(n)) return fail(st.ev.error());
         long v = 0;
         if (!n.floor_to_int(v) || v < 0 || v >= static_cast<long>(DeviceTable::ROWS))
             return fail("номер строки таблицы устройств вне 0…7");
-        row = static_cast<unsigned>(v);
+        d.row = static_cast<unsigned>(v);
+        Tok t;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t == Tok::COMMA) st.ev.parser().consume();
+        else st.ev.parser().unpeek();
     }
 
-    DeviceRow & r = dev_.row(row);
-    unsigned addr = ref.has_addr ? ref.addr : r.addr;
+    DeviceRow & r = dev_.row(d.row);
+    if (!has_addr) addr = r.addr;
     if (!addr) addr = dev_.row(0).addr;         // строка не настроена — как #0
-    bool removable = r.removable;
+    removable = r.removable;
     // «Если в операторе открытия файла указан тип диска, отличный от того,
     // который был назначен по оператору SELECT, то тип диска берётся из
     // оператора открытия файла» (руководство, разд. 18.10). Буква T значит
     // «взять из таблицы устройств», её тип не меняет.
-    if (ref.has_device && ref.device < 2) removable = (ref.device == 1);
+    if (has_device && device < 2) removable = (device == 1);
 
-    if (!DeviceTable::drive_index(static_cast<uint8_t>(addr), removable, drive))
+    if (!DeviceTable::drive_index(static_cast<uint8_t>(addr), removable, d.drive))
         return fail("неизвестный адрес дискового устройства");
-    if (!host_.disk_sectors(drive)) return fail("дисковода нет");
+    if (!host_.disk_sectors(d.drive)) return fail("дисковода нет");
 
     r.addr = static_cast<uint8_t>(addr);
     r.removable = removable;
     return true;
 }
 
-bool Interp::do_open(const Stmt & s)
+// --- операторы --------------------------------------------------------------
+
+bool Interp::do_print(Stream & st)
 {
-    unsigned row = 0, drive = 0;
-    if (!resolve_disk(s.disk, row, drive)) return false;
+    bool last_was_at = false;
+    bool newline = true;
+
+    for (;;) {
+        Tok t;
+        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+        if (t.t == Tok::END) break;
+
+        if (t.t == Tok::COMMA) { st.ev.parser().consume(); emit_zone(); newline = false; continue; }
+        if (t.t == Tok::SEMI)  { st.ev.parser().consume(); newline = false; continue; }
+
+        if (t.t == Tok::FN_TAB) {
+            // «позиции строки нумеруются с нуля» (разд. 4.4), и курсор
+            // двигается только вправо.
+            st.ev.parser().consume();
+            Number n;
+            if (!st.ev.number(n)) return fail(st.ev.error());
+            Tok c;
+            if (!st.ev.parser().take(c, false) || c.t != Tok::RPAR)
+                return fail("TAB( не закрыт");
+            long v = 0;
+            n.to_int(v);
+            const unsigned col = static_cast<unsigned>(v < 0 ? 0 : v) + 1;
+            if (col > host_.screen().col() && col <= SCREEN_COLS)
+                host_.screen().at(host_.screen().row(), col);
+            last_was_at = false;
+            newline = true;
+        } else if (t.t == Tok::FN_AT) {
+            // У AT( закрывающей скобки в потоке нет вовсе.
+            st.ev.parser().consume();
+            Number a[3];
+            unsigned n = 0;
+            for (;;) {
+                if (n >= 3) return fail("у AT( не больше трёх аргументов");
+                if (!st.ev.number(a[n++])) return fail(st.ev.error());
+                Tok c;
+                if (!st.ev.parser().peek(c, false)) return fail(st.ev.error());
+                if (c.t != Tok::COMMA) break;
+                st.ev.parser().consume();
+            }
+            if (n < 2) return fail("у AT( меньше двух аргументов");
+            long rv = 0, cv = 0;
+            a[0].to_int(rv);
+            a[1].to_int(cv);
+            host_.screen().at(static_cast<unsigned>(rv < 1 ? 1 : rv),
+                              static_cast<unsigned>(cv < 1 ? 1 : cv));
+            if (n > 2) {
+                long nv = 0;
+                a[2].to_int(nv);
+                if (nv > 0) host_.screen().erase(static_cast<unsigned>(nv));
+            }
+            last_was_at = true;
+            newline = true;
+        } else {
+            Value v;
+            if (!st.ev.expr(v)) return fail(st.ev.error());
+            if (v.is_str) {
+                emit(v.str);
+            } else {
+                // «с учетом знака перед числом и пробела после числа»
+                emit(v.num.to_display());
+                emit(" ");
+            }
+            last_was_at = false;
+            newline = true;
+        }
+
+        // Разделитель после значения читается в позиции операции: разбор
+        // выражения уже заглянул вперёд именно в ней (CLAUDE.md).
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t == Tok::COMMA) { st.ev.parser().consume(); emit_zone(); newline = false; }
+        else if (t.t == Tok::SEMI) { st.ev.parser().consume(); newline = false; }
+        else break;
+    }
+
+    // PRINT AT(...) курсор только ставит и перевода строки не делает:
+    // «курсор устанавливается в тридцатую позицию восьмой строки экрана»,
+    // а печать следующего оператора идёт с этой позиции (пример 17.5).
+    if (newline && !last_was_at) emit_newline();
+    return true;
+}
+
+bool Interp::do_select(Stream & st)
+{
+    for (;;) {
+        uint8_t code = 0;
+        if (!st.src.take_raw_byte(code)) break;
+
+        bool disk = false;
+        unsigned addr = 0, row = 0, width = 0;
+        bool has_addr = false;
+
+        if (code == 0x00) {
+            uint8_t r = 0, a = 0;
+            if (!st.src.take_raw_byte(r) || !st.src.take_raw_byte(a))
+                return fail("SELECT #: нет адреса");
+            row = r;
+            addr = a;
+            disk = true;
+        } else if (code == 0x05) {
+            uint8_t p = 0;
+            unsigned pause = 0;
+            if (st.src.peek_raw_byte(p) && p <= 9) { st.src.skip(1); pause = p; }
+            // `SELECT P` без цифры снимает паузу (руководство, разд. 11.4).
+            dev_.set_pause(pause);
+        } else {
+            uint8_t a = 0;
+            if (!st.src.take_raw_byte(a)) return fail("SELECT: нет адреса");
+            addr = a;
+            has_addr = true;
+            disk = (code == 0x0A);
+        }
+
+        uint8_t b = 0;
+        bool removable = false;
+        if (disk) {
+            if (st.src.peek_raw_byte(b) && (b == 0x00 || b == 0x01)) {
+                st.src.skip(1);
+                removable = (b == 0x01);
+            }
+        } else if (st.src.peek_raw_byte(b) && b == 0xEB) {
+            st.src.skip(1);
+            uint8_t hi = 0, lo = 0;
+            if (!st.src.take_raw_byte(hi) || !st.src.take_raw_byte(lo))
+                return fail("SELECT: нет ширины строки");
+            width = (static_cast<unsigned>(hi) << 8) | lo;
+        }
+
+        if (code == 0x00) {
+            if (!DeviceTable::valid_row(row))
+                return fail("SELECT #: строки " + num_str(row) + " нет");
+            dev_.select_row(row, static_cast<uint8_t>(addr), removable);
+        } else if (code == 0x0A) {
+            dev_.select_disk(static_cast<uint8_t>(addr), removable);
+        } else if (code != 0x05) {
+            DeviceGroup g;
+            if (!group_of_code(code, g))
+                return fail("SELECT: неизвестная группа устройств, код "
+                            + num_str(code));
+            dev_.select(g, static_cast<uint8_t>(addr), width);
+        }
+        (void)has_addr;
+
+        if (!st.src.peek_raw_byte(b) || b != 0xDE) break;
+        st.src.skip(1);
+    }
+    return true;
+}
+
+bool Interp::do_open(Stream & st, bool with_device)
+{
+    Disk d;
+    if (!disk_prefix(st, with_device, d)) return false;
 
     std::string name;
-    if (!eval_str(s.e, name)) return false;
+    if (!st.ev.text(name)) return fail(st.ev.error());
 
     uint8_t nm[NAME_LEN];
     Catalog::make_name(name, nm);
 
-    Catalog cat(host_, drive);
+    Catalog cat(host_, d.drive);
     CatalogEntry e;
     std::string err;
     if (!cat.find(nm, e, err)) return fail(err);
     if (!e.exists() || e.scratched())
         return machine_error(err::NO_FILE, "файла нет в каталоге");
 
-    DeviceRow & r = dev_.row(row);
+    DeviceRow & r = dev_.row(d.row);
     r.bound = true;
     r.first = e.first;
     r.current = e.first;
@@ -878,67 +480,59 @@ bool Interp::do_open(const Stmt & s)
     return true;
 }
 
-bool Interp::store_value(const Expr & target, const std::vector<Value> & vals,
-                         std::size_t & used)
+bool Interp::store_value(const Evaluator::Target & target, Stream & st,
+                         const std::vector<Value> & vals, std::size_t & used)
 {
     // Массив целиком — столько значений, сколько в нём элементов: «элементы
     // массива записываются построчно» (руководство, разд. 18.6).
-    if (target.kind == EX_ARRAY) {
-        if (is_string_expr(target)) {
-            const VarInfo & vi = prog_.vars[target.var];
-            const unsigned n = vi.dim1 ? vi.dim1 : 1;
-            std::string & field = str_field(target.var);
-            for (unsigned i = 0; i < n; ++i) {
-                if (used >= vals.size()) return fail("в записи меньше значений, чем приёмников");
-                const Value & v = vals[used++];
-                if (!v.is_str) return fail("числу в записи соответствует символьный приёмник");
-                const unsigned off = i * vi.str_len;
-                if (off + vi.str_len > field.size()) break;
-                for (unsigned k = 0; k < vi.str_len; ++k)
-                    field[off + k] = (k < v.str.size()) ? v.str[k] : ' ';
-            }
-            return true;
-        }
-        std::map<unsigned, Array>::iterator it = arrays_.find(target.var);
-        if (it == arrays_.end()) return fail("массив не описан");
-        for (std::size_t i = 0; i < it->second.cells.size(); ++i) {
+    if (target.whole && target.is_str) {
+        const std::vector<VarInfo> & vi = store_.vars();
+        const unsigned n = (target.var < vi.size() && vi[target.var].dim1)
+                               ? vi[target.var].dim1 : 1;
+        const unsigned len = store_.str_len(target.var);
+        std::string & field = store_.str_field(target.var);
+        for (unsigned i = 0; i < n; ++i) {
             if (used >= vals.size()) return fail("в записи меньше значений, чем приёмников");
             const Value & v = vals[used++];
-            if (v.is_str) return fail("строке в записи соответствует числовой приёмник");
-            it->second.cells[i] = v.num;
+            if (!v.is_str) return fail("числу в записи соответствует символьный приёмник");
+            const unsigned off = i * len;
+            if (off + len > field.size()) break;
+            for (unsigned k = 0; k < len; ++k)
+                field[off + k] = (k < v.str.size()) ? v.str[k] : ' ';
         }
         return true;
     }
 
     if (used >= vals.size()) return fail("в записи меньше значений, чем приёмников");
     const Value & v = vals[used++];
-    if (is_string_expr(target)) {
-        if (!v.is_str) return fail("числу в записи соответствует символьный приёмник");
-        return assign_string(target, v.str);
-    }
-    if (v.is_str) return fail("строке в записи соответствует числовой приёмник");
-    Number * cell = 0;
-    if (!slot(target, cell)) return false;
-    *cell = v.num;
+    if (target.is_str != v.is_str)
+        return fail("тип значения в записи не совпадает с приёмником");
+    if (!st.ev.store(target, v)) return fail(st.ev.error());
     return true;
 }
 
-bool Interp::do_dload(const Stmt & s)
+bool Interp::do_dload(Stream & st)
 {
-    unsigned row = 0, drive = 0;
-    if (!resolve_disk(s.disk, row, drive)) return false;
-    DeviceRow & r = dev_.row(row);
+    Disk d;
+    if (!disk_prefix(st, false, d)) return false;
+    DeviceRow & r = dev_.row(d.row);
     if (!r.bound) return fail("файл не открыт");
 
     std::vector<Value> vals;
     unsigned next = 0;
     std::string err;
-    if (!read_record(host_, drive, r.current, vals, next, err))
+    if (!read_record(host_, d.drive, r.current, vals, next, err))
         return machine_error(err::UNKNOWN, err);
 
     std::size_t used = 0;
-    for (std::size_t i = 0; i < s.targets.size(); ++i)
-        if (!store_value(s.targets[i], vals, used)) return false;
+    for (;;) {
+        Tok t;
+        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+        if (t.t == Tok::END) break;
+        Evaluator::Target target;
+        if (!st.ev.target(target, true)) return fail(st.ev.error());
+        if (!store_value(target, st, vals, used)) return false;
+    }
 
     // «По окончании операции загрузки адрес текущего сектора устанавливается
     // на первый сектор следующей записи» (руководство, разд. 18.4).
@@ -946,34 +540,41 @@ bool Interp::do_dload(const Stmt & s)
     return true;
 }
 
-bool Interp::do_dskip(const Stmt & s)
+bool Interp::do_dskip(Stream & st, bool backwards)
 {
-    unsigned row = 0, drive = 0;
-    if (!resolve_disk(s.disk, row, drive)) return false;
-    DeviceRow & r = dev_.row(row);
+    Disk d;
+    if (!disk_prefix(st, false, d, false)) return false;
+    DeviceRow & r = dev_.row(d.row);
     if (!r.bound) return fail("файл не открыт");
 
     std::string err;
-    if (s.mode == SK_BEG) { r.current = r.first; return true; }
-    if (s.mode == SK_END) {
+    uint8_t b = 0;
+    if (st.src.peek_raw_byte(b) && b == 0xD6) { st.src.skip(1); r.current = r.first; return true; }
+    if (st.src.peek_raw_byte(b) && b == 0xD7) {
+        st.src.skip(1);
         unsigned sector = 0, used = 0;
-        if (!find_end_record(host_, drive, r.first, r.last, sector, used))
+        if (!find_end_record(host_, d.drive, r.first, r.last, sector, used))
             return machine_error(err::UNKNOWN, "в файле нет концевой записи");
         r.current = sector;
         return true;
     }
 
     Number n;
-    if (!eval_num(s.e, n)) return false;
+    if (!st.ev.number(n)) return fail(st.ev.error());
     long count = 0;
     if (!n.floor_to_int(count)) return fail("DSKIP/DBACKSPACE: не целое число");
     if (count < 0) return fail("DSKIP/DBACKSPACE: отрицательное число");
+    // Признак «в секторах» — байт 05 за разобранным выражением. Разбор
+    // выражения его уже заглянул, поэтому сперва возвращаем источник.
+    st.ev.parser().unpeek();
+    bool sectors = false;
+    if (st.src.peek_raw_byte(b) && b == 0x05) { st.src.skip(1); sectors = true; }
 
     unsigned cur = r.current;
-    if (s.sectors) {
+    if (sectors) {
         // «Целая часть указанного выражения прибавляется к адресу текущего
         // сектора» (руководство, разд. 18.7) — без разбора записей.
-        if (s.backwards)
+        if (backwards)
             cur = (static_cast<unsigned long>(count) > cur - r.first)
                       ? r.first : cur - static_cast<unsigned>(count);
         else
@@ -981,15 +582,15 @@ bool Interp::do_dskip(const Stmt & s)
                       ? r.last : cur + static_cast<unsigned>(count);
     } else {
         for (long i = 0; i < count; ++i) {
-            if (s.backwards) {
+            if (backwards) {
                 if (cur <= r.first) { cur = r.first; break; }
                 unsigned start = cur - 1;
-                if (!record_start(host_, drive, r.first, cur - 1, start))
+                if (!record_start(host_, d.drive, r.first, cur - 1, start))
                     return fail("не читается сектор при DBACKSPACE");
                 cur = start;
             } else {
                 unsigned next = cur;
-                if (!record_end(host_, drive, cur, next, err)) return fail(err);
+                if (!record_end(host_, d.drive, cur, next, err)) return fail(err);
                 if (next > r.last) { cur = r.last; break; }
                 cur = next;
             }
@@ -1005,20 +606,25 @@ bool Interp::do_dskip(const Stmt & s)
 
 // «Пометка ненужных файлов в каталоге осуществляется с помощью оператора
 // SCRATCH путём указания в кавычках имени файла» (руководство, разд. 5.4).
-bool Interp::do_scratch(const Stmt & s)
+bool Interp::do_scratch(Stream & st)
 {
-    unsigned row = 0, drive = 0;
-    if (!resolve_disk(s.disk, row, drive)) return false;
+    Disk d;
+    if (!disk_prefix(st, true, d)) return false;
 
-    Catalog cat(host_, drive);
-    for (std::size_t i = 0; i < s.targets.size(); ++i) {
+    Catalog cat(host_, d.drive);
+    for (;;) {
         std::string name;
-        if (!eval_str(s.targets[i], name)) return false;
+        if (!st.ev.text(name)) return fail(st.ev.error());
         uint8_t nm[NAME_LEN];
         Catalog::make_name(name, nm);
 
         std::string err;
         if (!cat.scratch(nm, err)) return machine_error(err::NO_FILE, err);
+
+        Tok t;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t != Tok::COMMA) { st.ev.parser().unpeek(); break; }
+        st.ev.parser().consume();
     }
     return true;
 }
@@ -1026,21 +632,32 @@ bool Interp::do_scratch(const Stmt & s)
 // «Оператор SCRATCH DISK, в котором указываются число секторов в указателе
 // каталога и номер последнего сектора, входящего в область каталога»
 // (руководство, разд. 5.1).
-bool Interp::do_scratch_disk(const Stmt & s)
+bool Interp::do_scratch_disk(Stream & st)
 {
-    unsigned row = 0, drive = 0;
-    if (!resolve_disk(s.disk, row, drive)) return false;
+    Disk d;
+    if (!disk_prefix(st, true, d)) return false;
 
     // «В случае, если число секторов в указателе каталога не задано, оно
     // устанавливается равным 24.»
     long ls = 24;
-    if (s.has_prompt) {
+    uint8_t b = 0;
+    if (st.src.peek_raw_byte(b) && b == 0x06) {
+        st.src.skip(1);
+        uint8_t eq = 0;
+        if (!st.src.take_raw_byte(eq) || eq != 0xD9) return fail("SCRATCH DISK: LS без =");
         Number n;
-        if (!eval_num(s.e, n)) return false;
+        if (!st.ev.number(n)) return fail(st.ev.error());
         if (!n.floor_to_int(ls)) return fail("SCRATCH DISK: LS не целое число");
+        Tok t;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t == Tok::COMMA) st.ev.parser().consume();
+        else st.ev.parser().unpeek();
     }
+    if (!st.src.take_raw_byte(b) || b != 0xD7) return fail("SCRATCH DISK без END");
+    uint8_t eq = 0;
+    if (!st.src.take_raw_byte(eq) || eq != 0xD9) return fail("SCRATCH DISK: END без =");
     Number e;
-    if (!eval_num(s.limit, e)) return false;
+    if (!st.ev.number(e)) return fail(st.ev.error());
     long end = 0;
     if (!e.floor_to_int(end)) return fail("SCRATCH DISK: END не целое число");
     if (ls < 1 || ls > 255) return machine_error(err::UNKNOWN,
@@ -1048,7 +665,7 @@ bool Interp::do_scratch_disk(const Stmt & s)
     if (end < ls) return machine_error(err::UNKNOWN,
                                        "SCRATCH DISK: END раньше указателя");
 
-    Catalog cat(host_, drive);
+    Catalog cat(host_, d.drive);
     std::string msg;
     if (!cat.format(static_cast<unsigned>(ls), static_cast<unsigned>(end), msg))
         return machine_error(err::UNKNOWN, msg);
@@ -1057,10 +674,9 @@ bool Interp::do_scratch_disk(const Stmt & s)
     // этот диск, больше ни на что не указывают.
     for (unsigned i = 0; i < DeviceTable::ROWS; ++i) {
         DeviceRow & r = dev_.row(i);
-        unsigned d = 0;
-        if (r.bound && DeviceTable::drive_index(r.addr, r.removable, d)
-            && d == drive) {
-            // Устройство за строкой остаётся, а файла за ней больше нет.
+        unsigned dr = 0;
+        if (r.bound && DeviceTable::drive_index(r.addr, r.removable, dr)
+            && dr == d.drive) {
             r.bound = false;
             r.first = r.current = r.last = 0;
         }
@@ -1068,25 +684,31 @@ bool Interp::do_scratch_disk(const Stmt & s)
     return true;
 }
 
-bool Interp::do_limits(const Stmt & s)
+bool Interp::do_limits(Stream & st)
 {
-    unsigned row = 0, drive = 0;
-    if (!resolve_disk(s.disk, row, drive)) return false;
-    DeviceRow & r = dev_.row(row);
+    Disk d;
+    if (!disk_prefix(st, true, d)) return false;
+    DeviceRow & r = dev_.row(d.row);
+
+    // Форма с именем файла отличается тем, что первый операнд символьный
+    // (руководство, разд. 18.8.3).
+    Tok t;
+    if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+    const bool named = (t.t == Tok::STR)
+        || ((t.t == Tok::VAR || t.t == Tok::ARRAY) && store_.is_string(t.var));
 
     unsigned code = 0;
-    if (s.has_prompt) {
-        // Форма 1: найти файл по имени и переписать его параметры в строку
-        // таблицы устройств (руководство, разд. 18.8.3).
+    if (named) {
         std::string name;
-        if (!eval_str(s.e, name)) return false;
+        if (!st.ev.text(name)) return fail(st.ev.error());
         uint8_t nm[NAME_LEN];
         Catalog::make_name(name, nm);
 
-        Catalog cat(host_, drive);
+        Catalog cat(host_, d.drive);
         CatalogEntry e;
         std::string err;
         if (!cat.find(nm, e, err)) return fail(err);
+        st.ev.parser().unpeek();
         code = limits_code(e);
         if (e.exists()) {
             r.bound = true;
@@ -1103,112 +725,144 @@ bool Interp::do_limits(const Stmt & s)
     }
 
     unsigned sector = 0, used = 0;
-    if (!r.bound || !find_end_record(host_, drive, r.first, r.last, sector, used))
+    if (!r.bound || !find_end_record(host_, d.drive, r.first, r.last, sector, used))
         used = 0;
 
     const unsigned vals[4] = { r.first, r.last, used, code };
-    for (std::size_t i = 0; i < s.targets.size() && i < 4; ++i) {
-        Number * cell = 0;
-        if (is_string_expr(s.targets[i]))
-            return fail("LIMITS: приёмники числовые");
-        if (!slot(s.targets[i], cell)) return false;
-        *cell = Number::from_int(static_cast<long>(vals[i]));
+    for (unsigned i = 0; i < 4; ++i) {
+        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+        if (t.t == Tok::END) break;
+        Evaluator::Target target;
+        if (!st.ev.target(target, true)) return fail(st.ev.error());
+        if (target.is_str) return fail("LIMITS: приёмники числовые");
+        Value v;
+        v.num = Number::from_int(static_cast<long>(vals[i]));
+        if (!st.ev.store(target, v)) return fail(st.ev.error());
     }
     return true;
 }
 
-bool Interp::do_select(const Stmt & s)
+bool Interp::do_onerr(Stream & st)
 {
-    for (std::size_t i = 0; i < s.selects.size(); ++i) {
-        const SelectItem & it = s.selects[i];
-        switch (it.code) {
-            case SC_ROW:
-                if (!DeviceTable::valid_row(it.row))
-                    return fail("SELECT #: строки " + num_str(it.row) + " нет");
-                dev_.select_row(it.row, static_cast<uint8_t>(it.addr), it.removable);
-                break;
+    trap_ = ErrorTrap();
+    if (st.src.at_end()) return true;
 
-            case SC_DISK:
-                dev_.select_disk(static_cast<uint8_t>(it.addr), it.removable);
-                break;
-
-            case SC_PAUSE:
-                // `SELECT P` без цифры снимает паузу (руководство, разд. 11.4).
-                dev_.set_pause(it.has_addr ? it.addr : 0);
-                break;
-
-            case SC_TRIG:
-                dev_.set_angle(static_cast<AngleMode>(it.addr));
-                break;
-
-            default: {
-                DeviceGroup g;
-                if (!group_of_code(it.code, g))
-                    return fail("SELECT: неизвестная группа устройств, код "
-                                + num_str(it.code));
-                dev_.select(g, static_cast<uint8_t>(it.addr), it.width);
-                break;
-            }
+    Tok t;
+    if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+    if (t.t == Tok::VAR) {
+        // Приёмники идут парой, разделителя между ними в потоке нет.
+        for (unsigned k = 0; k < 2; ++k) {
+            if (!st.ev.parser().take(t, true) || t.t != Tok::VAR)
+                return fail("ON ERROR: ждали символьную переменную");
+            if (k == 0) trap_.target_a = t.var; else trap_.target_b = t.var;
         }
+        trap_.has_targets = true;
+    } else {
+        // Приёмников нет — заглянутую в позиции операнда лексему надо
+        // вернуть: GOTO и THEN читаются в позиции операции.
+        st.ev.parser().unpeek();
+    }
+    if (!st.ev.parser().take(t, false)) return fail(st.ev.error());
+    long ln = 0;
+    if (t.t == Tok::KW_THEN) {
+        trap_.mode = EM_THEN;
+        if (!t.num.to_int(ln)) return fail("ON ERROR: неверный номер строки");
+    } else if (t.t == Tok::KW_GOTO || t.t == Tok::KW_GOSUB) {
+        trap_.mode = (t.t == Tok::KW_GOTO) ? EM_GOTO : EM_GOSUB;
+        uint8_t a = 0, b = 0;
+        if (!st.src.take_raw_byte(a) || !st.src.take_raw_byte(b))
+            return fail("ON ERROR без номера строки");
+        ln = bcd2(a) * 100 + bcd2(b);
+    } else {
+        return fail("ON ERROR без GOTO, THEN или GOSUB");
+    }
+    trap_.line = static_cast<unsigned>(ln);
+    return true;
+}
+
+bool Interp::do_dim(Stream & st, unsigned len, const uint8_t * ops, bool common)
+{
+    (void)st;
+    (void)common;
+    for (unsigned i = 0; i < len; ++i) {
+        const unsigned var = ops[i];
+        std::string err;
+        if (store_.is_string(var)) {
+            // Поле заводится по описанию из таблицы переменных; повторное
+            // объявление очищает его.
+            store_.reset_string(var);
+            store_.str_field(var);
+            continue;
+        }
+        unsigned d1 = 0, d2 = 0;
+        if (var < store_.vars().size()) {
+            d1 = store_.vars()[var].dim1;
+            d2 = store_.vars()[var].dim2;
+        }
+        if (!store_.array_alloc(var, d1, d2, err)) return fail(err);
     }
     return true;
 }
 
-bool Interp::do_print(const Stmt & s)
+// MAT REDIM меняет размерности уже существующего массива; содержимое
+// памяти при этом сохраняется.
+bool Interp::do_redim(Stream & st)
 {
-    bool last_was_at = false;
+    for (;;) {
+        Tok t;
+        if (!st.ev.parser().take(t, true)) return fail(st.ev.error());
+        if (t.t != Tok::ARRAY) return fail("MAT REDIM без массива");
+        const unsigned var = t.var;
+        if (!st.ev.parser().take(t, true) || t.t != Tok::LPAR)
+            return fail("MAT REDIM без размерностей");
 
-    for (unsigned i = 0; i < s.items.size(); ++i) {
-        const PrintItem & item = s.items[i];
+        unsigned dim[2] = { 0, 0 };
+        unsigned n = 0;
+        for (;;) {
+            Number v;
+            if (!st.ev.number(v)) return fail(st.ev.error());
+            long k = 0;
+            if (!v.floor_to_int(k) || k < 1)
+                return fail("MAT REDIM: размерность не положительное целое");
+            if (n < 2) dim[n] = static_cast<unsigned>(k);
+            ++n;
+            if (!st.ev.parser().take(t, false)) return fail(st.ev.error());
+            if (t.t == Tok::COMMA) continue;
+            if (t.t != Tok::RPAR) return fail("MAT REDIM: скобка не закрыта");
+            break;
+        }
+        if (!dim[0]) return fail("MAT REDIM без размерности");
 
-        if (item.e.kind == EX_TAB) {
-            // «позиции строки нумеруются с нуля» (разд. 4.4), и курсор
-            // двигается только вправо.
-            Number n;
-            if (!eval_num(item.e.a[0], n)) return false;
-            long v = 0;
-            n.to_int(v);
-            const unsigned col = static_cast<unsigned>(v < 0 ? 0 : v) + 1;
-            if (col > host_.screen().col() && col <= SCREEN_COLS)
-                host_.screen().at(host_.screen().row(), col);
-            last_was_at = false;
-        } else if (item.e.kind == EX_AT) {
-            Number r, c;
-            if (!eval_num(item.e.a[0], r)) return false;
-            if (!eval_num(item.e.a[1], c)) return false;
-            long rv = 0, cv = 0;
-            r.to_int(rv);
-            c.to_int(cv);
-            host_.screen().at(static_cast<unsigned>(rv < 1 ? 1 : rv),
-                              static_cast<unsigned>(cv < 1 ? 1 : cv));
-            if (item.e.a.size() > 2) {
-                Number n;
-                if (!eval_num(item.e.a[2], n)) return false;
-                long nv = 0;
-                n.to_int(nv);
-                if (nv > 0) host_.screen().erase(static_cast<unsigned>(nv));
-            }
-            last_was_at = true;
+        // За скобкой у символьного массива может стоять длина элемента.
+        // Заглядываем в позиции операции: там же стоит запятая между
+        // записями, а в позиции операнда DE значит совсем другое.
+        unsigned str_len = 0;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t != Tok::END && t.t != Tok::COMMA) {
+            st.ev.parser().unpeek();
+            Number v;
+            if (!st.ev.number(v)) return fail(st.ev.error());
+            long k = 0;
+            if (!v.floor_to_int(k) || k < 1)
+                return fail("MAT REDIM: длина элемента не положительна");
+            str_len = static_cast<unsigned>(k);
+        }
+
+        std::string err;
+        if (store_.is_string(var)) {
+            unsigned len = str_len ? str_len : store_.str_len(var);
+            const std::size_t total = static_cast<std::size_t>(len) * dim[0] *
+                                      (dim[1] ? dim[1] : 1);
+            if (total > 64u * 1024u) return fail("MAT REDIM: слишком большой массив");
+            store_.str_field(var).resize(total, ' ');
         } else {
-            Value v;
-            if (!eval(item.e, v)) return false;
-            if (v.is_str) {
-                emit(v.str);
-            } else {
-                // «с учетом знака перед числом и пробела после числа»
-                emit(v.num.to_display());
-                emit(" ");
-            }
-            last_was_at = false;
+            if (!store_.array_grow(var, dim[0], dim[1], err)) return fail(err);
         }
 
-        if (item.sep == SEP_ZONE) emit_zone();
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t != Tok::COMMA) break;
+        st.ev.parser().consume();
     }
-
-    // PRINT AT(...) курсор только ставит и перевода строки не делает:
-    // «курсор устанавливается в тридцатую позицию восьмой строки экрана»,
-    // а печать следующего оператора идёт с этой позиции (пример 17.5).
-    if (s.newline && !last_was_at) emit_newline();
     return true;
 }
 
@@ -1240,24 +894,60 @@ bool Interp::read_line(const std::string & prompt, bool has_prompt,
 }
 
 // LINPUT принимает строку целиком, без разбора на поля.
-bool Interp::do_linput(const Stmt & s)
+bool Interp::do_linput(Stream & st)
 {
+    std::string prompt;
+    bool has_prompt = false;
+    Tok t;
+    if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+    if (t.t == Tok::STR) {
+        st.ev.parser().consume();
+        prompt = t.s;
+        has_prompt = true;
+        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+    }
+    // Минус перед приёмником назначения пока не имеет.
+    if (t.t == Tok::MINUS) st.ev.parser().consume();
+
+    Evaluator::Target target;
+    if (!st.ev.target(target, true)) return fail(st.ev.error());
+    if (!target.is_str) return fail("LINPUT ждёт символьный приёмник");
+
     std::string line;
-    if (!read_line(s.prompt, s.has_prompt, line)) return false;
-    if (s.targets.size() != 1) return fail("LINPUT ждёт один приёмник");
-    if (!is_string_expr(s.targets[0])) return fail("LINPUT ждёт символьный приёмник");
-    return assign_string(s.targets[0], line);
+    if (!read_line(prompt, has_prompt, line)) return false;
+    return assign_string(st, target, line);
 }
 
-bool Interp::do_input(const Stmt & s)
+bool Interp::do_input(Stream & st)
 {
+    std::string prompt;
+    bool has_prompt = false;
+    Tok t;
+    if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+    if (t.t == Tok::STR) {
+        st.ev.parser().consume();
+        prompt = t.s;
+        has_prompt = true;
+    }
+
+    // Приёмники идут вплотную, разделителей в потоке нет.
+    std::vector<Evaluator::Target> targets;
+    for (;;) {
+        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+        if (t.t == Tok::END) break;
+        Evaluator::Target target;
+        if (!st.ev.target(target, true)) return fail(st.ev.error());
+        targets.push_back(target);
+    }
+
     std::string line;
-    if (!read_line(s.prompt, s.has_prompt, line)) return false;
+    if (!read_line(prompt, has_prompt, line)) return false;
+    if (targets.empty()) return true;
 
     unsigned p = 0;
-    for (unsigned i = 0; i < s.targets.size(); ++i) {
+    for (unsigned i = 0; i < targets.size(); ++i) {
         std::string field;
-        if (s.targets.size() == 1 && is_string_expr(s.targets[i])) {
+        if (targets.size() == 1 && targets[i].is_str) {
             // Единственный символьный приёмник получает строку целиком:
             // запятая в ней — обычный символ.
             field = line;
@@ -1267,65 +957,257 @@ bool Interp::do_input(const Stmt & s)
             if (p < line.size()) ++p;
         }
 
-        if (is_string_expr(s.targets[i])) {
-            if (!assign_string(s.targets[i], field)) return false;
+        if (targets[i].is_str) {
+            if (!assign_string(st, targets[i], field)) return false;
             continue;
         }
-
-        Number n;
-        if (!Number::parse(field, n)) return fail("INPUT: не число «" + field + "»");
-        Number * cell = 0;
-        if (!slot(s.targets[i], cell)) return false;
-        *cell = n;
+        Value v;
+        if (!Number::parse(field, v.num)) return fail("INPUT: не число «" + field + "»");
+        if (!st.ev.store(targets[i], v)) return fail(st.ev.error());
     }
     return true;
 }
 
-bool Interp::do_for(const Stmt & s)
+bool Interp::do_convert(Stream & st)
 {
+    // `CONVERT <а.в.> TO <приёмник>[,<образ>]`; знак равенства и скобки
+    // вокруг образа в потоке не кодируются.
+    Value from;
+    if (!st.ev.expr(from)) return fail(st.ev.error());
+    Tok t;
+    if (!st.ev.parser().take(t, false) || t.t != Tok::KW_TO)
+        return fail("CONVERT без TO");
+
+    Evaluator::Target target;
+    if (!st.ev.target(target, true)) return fail(st.ev.error());
+
+    if (target.is_str) {
+        // Число в символьное представление: нужен образ.
+        if (from.is_str) return fail("CONVERT: слева ожидалось число");
+        std::string image;
+        bool has_image = false;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t == Tok::COMMA) st.ev.parser().consume();
+        else st.ev.parser().unpeek();
+        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+        if (t.t == Tok::STR) {
+            st.ev.parser().consume();
+            image = t.s;
+            has_image = true;
+        } else {
+            st.ev.parser().unpeek();
+        }
+
+        std::string text;
+        if (has_image) {
+            std::string error;
+            if (!format_by_image(from.num, image, text, error)) return fail(error);
+        } else {
+            // Образ не задан. Книга такой формы не описывает, но в корпусе
+            // она встречается (BAM*: CONVERT V0E TO STR(V0D¤,12,4)).
+            // Допущение: число прижимается вправо к длине приёмника.
+            text = from.num.to_display();
+            if (!from.num.is_negative() && !text.empty() && text[0] == ' ')
+                text = text.substr(1);
+            while (text.size() < target.len) text = " " + text;
+        }
+        return assign_string(st, target, text);
+    }
+
+    // Символьное представление в число: «преобразуемое значение должно
+    // представлять собой правильную запись числа» (разд. 13.6).
+    if (!from.is_str) return fail("CONVERT: слева ожидалась строка");
+    Value v;
+    if (!Number::parse(from.str, v.num))
+        return fail("CONVERT: «" + from.str + "» не число");
+    if (!st.ev.store(target, v)) return fail(st.ev.error());
+    return true;
+}
+
+// «Преобразует целую часть арифметического выражения в двоичное число и
+// записывает это число в первом байте или в первых двух байтах символьной
+// переменной» (руководство, разд. 14.2). Операция, обратная функции VAL(.
+bool Interp::do_bin(Stream & st)
+{
+    Evaluator::Target target;
+    if (!st.ev.target(target, true)) return fail(st.ev.error());
+    if (!target.is_str) return fail("BIN( записывает в символьную переменную");
+
+    // «,2» кодируется парой DE DB. Смотрим сырой байт, а не лексему: за
+    // приёмником может сразу стоять индекс переменной, и в позиции операции
+    // он выглядит как индексация символьной переменной.
+    unsigned bytes = 1;
+    uint8_t sep = 0;
+    if (st.src.peek_raw_byte(sep) && sep == 0xDE) {
+        st.src.skip(1);
+        uint8_t db = 0;
+        if (!st.src.take_raw_byte(db) || db != 0xDB)
+            return fail("BIN(: второй аргумент может быть только 2");
+        bytes = 2;
+    }
+
+    Number n;
+    if (!st.ev.number(n)) return fail(st.ev.error());
+    long v = 0;
+    if (!n.floor_to_int(v)) return fail("BIN(: значение не помещается в целое");
+
+    // «Если значение арифметического выражения превысит соответствующие
+    // пределы, то при выполнении оператора возникнет ошибка».
+    const long limit = (bytes == 2) ? 65535 : 255;
+    if (v < 0 || v > limit)
+        return fail("BIN(: значение вне пределов 0…" + num_str(static_cast<unsigned>(limit)));
+    if (target.len < bytes)
+        return fail("BIN(: приёмник короче " + num_str(bytes) + " байт");
+
+    // Пишем только эти байты: остаток поля BIN не трогает — в примере 14.4
+    // BIN(A¤)=1 при A¤ из двух нулевых байт даёт 0100, а не 01.
+    unsigned long u = static_cast<unsigned long>(v);
+    if (bytes == 2) {
+        (*target.data)[target.off]     = static_cast<char>((u >> 8) & 0xFF);
+        (*target.data)[target.off + 1] = static_cast<char>(u & 0xFF);
+    } else {
+        (*target.data)[target.off] = static_cast<char>(u & 0xFF);
+    }
+    return true;
+}
+
+// «Для задания одинаковых значений во все байты символьных переменных или их
+// подстрок» (руководство, разд. 13.3).
+bool Interp::do_init(Stream & st)
+{
+    // Значение — код из двух шестнадцатеричных цифр, символ в кавычках либо
+    // символьная переменная: «в последнем случае для задания значения
+    // используется первый байт» (руководство, разд. 13.3).
+    Tok t;
+    if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+    Value code;
+    if (t.t == Tok::STR || t.t == Tok::NUM) {
+        st.ev.parser().consume();
+        code.is_str = (t.t == Tok::STR);
+        code.str = t.s;
+        code.num = t.num;
+    } else {
+        // Переменная тут читается по таблицам: за ней сразу идут приёмники,
+        // и заглядывание приняло бы их за список индексов (CLAUDE.md).
+        Evaluator::Target src;
+        if (!st.ev.target(src, true)) return fail(st.ev.error());
+        if (!st.ev.load(src, code)) return fail(st.ev.error());
+    }
+
+    char fill;
+    if (code.is_str) {
+        if (code.str.empty()) return fail("INIT( от пустой строки");
+        fill = code.str[0];
+    } else {
+        long n = 0;
+        if (!code.num.floor_to_int(n) || n < 0 || n > 255)
+            return fail("INIT(: значение не байт");
+        fill = static_cast<char>(n & 0xFF);
+    }
+
+    bool any = false;
+    for (;;) {
+        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+        if (t.t == Tok::END) break;
+        Evaluator::Target target;
+        if (!st.ev.target(target, true)) return fail(st.ev.error());
+        if (!target.is_str) return fail("INIT( заполняет символьные переменные");
+        // «Значение присваивается всем байтам»: у массива без STR( — всему
+        // полю целиком, оно одна непрерывная строка.
+        for (unsigned k = 0; k < target.len; ++k)
+            (*target.data)[target.off + k] = fill;
+        any = true;
+    }
+    if (!any) return fail("INIT( без приёмников");
+    return true;
+}
+
+bool Interp::do_let(Stream & st)
+{
+    std::vector<Evaluator::Target> targets;
+    for (;;) {
+        Evaluator::Target t;
+        if (!st.ev.target(t, true)) return fail(st.ev.error());
+        targets.push_back(t);
+        Tok k;
+        // Заглядывать надо в позиции операнда: дальше либо `=`, либо
+        // очередная цель (CLAUDE.md).
+        if (!st.ev.parser().peek(k, true)) return fail(st.ev.error());
+        if (k.t == Tok::EQ) { st.ev.parser().consume(); break; }
+    }
+
+    Value v;
+    if (!st.ev.expr(v)) return fail(st.ev.error());
+    for (unsigned i = 0; i < targets.size(); ++i) {
+        if (targets[i].is_str != v.is_str)
+            return fail("в присваивании не совпадают типы");
+        if (!st.ev.store(targets[i], v)) return fail(st.ev.error());
+    }
+    return true;
+}
+
+bool Interp::do_for(Stream & st)
+{
+    Evaluator::Target t;
+    if (!st.ev.target(t, true)) return fail(st.ev.error());
+    if (t.is_str || t.nidx) return fail("FOR: счётчиком может быть только простая переменная");
+
     Number start, limit, step;
-    if (!eval_num(s.e, start)) return false;
-    if (!eval_num(s.limit, limit)) return false;
-    if (s.has_step) {
-        if (!eval_num(s.step, step)) return false;
+    if (!st.ev.number(start)) return fail(st.ev.error());
+    Tok k;
+    if (!st.ev.parser().take(k, false) || k.t != Tok::KW_TO) return fail("FOR без TO");
+    if (!st.ev.number(limit)) return fail(st.ev.error());
+    if (!st.ev.parser().peek(k, false)) return fail(st.ev.error());
+    if (k.t == Tok::KW_STEP) {
+        st.ev.parser().consume();
+        if (!st.ev.number(step)) return fail(st.ev.error());
     } else {
         step = Number::from_int(1);
     }
     if (step.is_zero()) return fail("FOR с нулевым шагом");
 
-    vars_[s.var] = start;
+    Value v;
+    v.num = start;
+    if (!st.ev.store(t, v)) return fail(st.ev.error());
 
     // Уже открытый цикл по той же переменной перезапускается.
-    for (unsigned i = 0; i < loops_.size(); ++i) {
-        if (loops_[i].var == s.var) { loops_.resize(i); break; }
-    }
+    for (unsigned i = 0; i < loops_.size(); ++i)
+        if (loops_[i].var == t.var) { loops_.resize(i); break; }
 
     Frame f;
-    f.var = s.var;
+    f.var = t.var;
     f.limit = limit;
     f.step = step;
     f.line = li_;
-    f.stmt = si_ + 1;
+    f.off = next_off_;
     loops_.push_back(f);
     return true;
 }
 
-bool Interp::do_next(const Stmt & s)
+bool Interp::do_next(Stream & st)
 {
-    while (!loops_.empty() && loops_.back().var != s.var) loops_.pop_back();
+    Tok k;
+    if (!st.ev.parser().take(k, true) || k.t != Tok::VAR)
+        return fail("NEXT без переменной");
+    const unsigned var = k.var;
+
+    while (!loops_.empty() && loops_.back().var != var) loops_.pop_back();
     if (loops_.empty()) return fail("NEXT без FOR");
 
     Frame & f = loops_.back();
-    Number v = vars_[f.var];
+    std::string err;
+    Number * cell = 0;
+    if (!store_.slot(f.var, 0, 0, cell, err)) return fail(err);
+    Number v = *cell;
     if (!Number::add(v, f.step, v)) return fail("переполнение счётчика цикла");
-    vars_[f.var] = v;
+    *cell = v;
 
     const bool up = !f.step.is_negative();
     const bool go_on = up ? (v.compare(f.limit) <= 0) : (v.compare(f.limit) >= 0);
 
     if (go_on) {
         li_ = f.line;
-        si_ = f.stmt;
+        off_ = f.off;
         jumped_ = true;
     } else {
         loops_.pop_back();
@@ -1333,143 +1215,154 @@ bool Interp::do_next(const Stmt & s)
     return true;
 }
 
-// «Преобразует целую часть арифметического выражения в двоичное число и
-// записывает это число в первом байте или в первых двух байтах символьной
-// переменной» (руководство, разд. 14.2). Операция, обратная функции VAL(.
-bool Interp::do_bin(const Stmt & s)
+bool Interp::do_if(Stream & st)
 {
-    if (s.targets.empty()) return fail("BIN( без приёмника");
-    if (!is_string_expr(s.targets[0]))
-        return fail("BIN( записывает в символьную переменную");
-
-    Number n;
-    if (!eval_num(s.e, n)) return false;
-    long v = 0;
-    if (!n.floor_to_int(v))
-        return fail("BIN(: значение не помещается в целое");
-
-    // «Если значение арифметического выражения превысит соответствующие
-    // пределы, то при выполнении оператора возникнет ошибка».
-    const long limit = (s.bytes == 2) ? 65535 : 255;
-    if (v < 0 || v > limit)
-        return fail("BIN(: значение вне пределов 0…" + num_str(static_cast<unsigned>(limit)));
-
-    StrLoc loc;
-    if (!str_loc(s.targets[0], loc)) return false;
-    if (loc.len < s.bytes)
-        return fail("BIN(: приёмник короче " + num_str(s.bytes) + " байт");
-
-    // Пишем только эти байты: остаток поля BIN не трогает — в примере 14.4
-    // BIN(A¤)=1 при A¤ из двух нулевых байт даёт 0100, а не 01.
-    unsigned long u = static_cast<unsigned long>(v);
-    if (s.bytes == 2) {
-        (*loc.data)[loc.off]     = static_cast<char>((u >> 8) & 0xFF);
-        (*loc.data)[loc.off + 1] = static_cast<char>(u & 0xFF);
-    } else {
-        (*loc.data)[loc.off] = static_cast<char>(u & 0xFF);
-    }
-    return true;
+    Value v;
+    if (!st.ev.expr(v)) return fail(st.ev.error());
+    Tok t;
+    if (!st.ev.parser().take(t, false) || t.t != Tok::KW_THEN)
+        return fail("IF без THEN");
+    if (v.is_str) return fail("условием IF оказалась строка");
+    if (v.num.is_zero()) return true;
+    long ln = 0;
+    if (!t.num.to_int(ln)) return fail("IF: неверный номер строки");
+    return jump(static_cast<unsigned>(ln));
 }
 
-// «Для задания одинаковых значений во все байты символьных переменных или их
-// подстрок» (руководство, разд. 13.3). Значение — код из двух шестнадцатеричных
-// цифр, символ в кавычках либо символьная переменная: «в последнем случае для
-// задания значения используется первый байт».
-bool Interp::do_init(const Stmt & s)
+bool Interp::do_on(Stream & st)
 {
-    if (s.targets.empty()) return fail("INIT( без приёмников");
+    Number n;
+    if (!st.ev.number(n)) return fail(st.ev.error());
+    Tok t;
+    if (!st.ev.parser().take(t, false)) return fail(st.ev.error());
+    bool is_gosub;
+    if (t.t == Tok::KW_GOSUB) is_gosub = true;
+    else if (t.t == Tok::KW_GOTO) is_gosub = false;
+    else return fail("ON без GOTO или GOSUB");
 
-    Value v;
-    if (!eval(s.e, v)) return false;
-
-    char fill;
-    if (v.is_str) {
-        if (v.str.empty()) return fail("INIT( от пустой строки");
-        fill = v.str[0];
-    } else {
-        long n = 0;
-        if (!v.num.floor_to_int(n) || n < 0 || n > 255)
-            return fail("INIT(: значение не байт");
-        fill = static_cast<char>(n & 0xFF);
+    std::vector<unsigned> lines;
+    for (;;) {
+        uint8_t a = 0, b = 0;
+        if (!st.src.take_raw_byte(a)) break;
+        if (!st.src.take_raw_byte(b)) return fail("ON: оборванный номер строки");
+        lines.push_back(bcd2(a) * 100 + bcd2(b));
     }
+    if (lines.empty()) return fail("ON без номеров строк");
 
-    for (unsigned i = 0; i < s.targets.size(); ++i) {
-        if (!is_string_expr(s.targets[i]))
-            return fail("INIT( заполняет символьные переменные");
-        StrLoc loc;
-        if (!str_loc(s.targets[i], loc)) return false;
-        // «Значение присваивается всем байтам»: у массива без STR( — всему
-        // полю целиком, оно одна непрерывная строка.
-        for (unsigned k = 0; k < loc.len; ++k) (*loc.data)[loc.off + k] = fill;
+    long k = 0;
+    if (!n.floor_to_int(k)) return fail("ON: не целое число");
+    // «Если значение выражения меньше единицы или больше числа указанных
+    // строк, выполняется следующий оператор» (руководство, разд. 10.3).
+    if (k < 1 || static_cast<std::size_t>(k) > lines.size()) return true;
+
+    if (is_gosub) {
+        if (calls_.size() > 1000) return fail("слишком глубокая вложенность GOSUB");
+        calls_.push_back(std::make_pair(li_, next_off_));
     }
-    return true;
+    return jump(lines[static_cast<std::size_t>(k) - 1]);
 }
 
 void Interp::build_labels()
 {
     labels_ready_ = true;
-    for (unsigned l = 0; l < prog_.lines.size(); ++l) {
-        const std::vector<Stmt> & st = prog_.lines[l].stmts;
-        for (unsigned i = 0; i < st.size(); ++i) {
-            if (st[i].kind != ST_DEFFN) continue;
+    for (unsigned l = 0; l < img_.line_count(); ++l) {
+        const std::vector<uint8_t> & b = img_.line(l).body;
+        unsigned at = 0;
+        for (;;) {
+            unsigned verb = 0, ops_at = 0, len = 0;
+            if (!stmt_head(b, at, verb, ops_at, len)) break;
             // Определение клавиши специальных функций подпрограммой не
             // является — на его метку GOSUB' не переходит.
-            if (st[i].has_prompt) continue;
-            // Машина просматривает текст сверху вниз, поэтому при повторе
-            // имени побеждает первое определение.
-            if (labels_.find(st[i].label) != labels_.end()) continue;
-            labels_[st[i].label] = std::make_pair(l, i);
+            if (verb == 0x27 && len >= 1) {
+                const unsigned label = b[ops_at];
+                // Машина просматривает текст сверху вниз, поэтому при
+                // повторе имени побеждает первое определение.
+                if (labels_.find(label) == labels_.end())
+                    labels_[label] = std::make_pair(l, at);
+            }
+            at = ops_at + len;
+            if (at >= b.size()) break;
         }
     }
 }
 
-bool Interp::do_gosubq(const Stmt & s)
+bool Interp::do_deffn(Stream & st, unsigned len)
+{
+    // Само определение исполнения не требует: подпрограмма начинается
+    // после него.
+    (void)st;
+    (void)len;
+    return true;
+}
+
+bool Interp::do_gosubq(Stream & st)
 {
     if (!labels_ready_) build_labels();
 
-    std::map<unsigned, std::pair<unsigned, unsigned> >::const_iterator it =
-        labels_.find(s.label);
-    if (it == labels_.end())
-        return fail("нет подпрограммы с именем " + num_str(s.label));
+    uint8_t label = 0;
+    if (!st.src.take_raw_byte(label)) return fail("GOSUB' без метки");
 
-    const Stmt & def = prog_.lines[it->second.first].stmts[it->second.second];
-    if (def.params.size() != s.args.size())
-        return fail("подпрограмме " + num_str(s.label) + " передано " +
-                    num_str(static_cast<unsigned>(s.args.size())) +
-                    " параметров, а описано " +
-                    num_str(static_cast<unsigned>(def.params.size())));
+    std::map<unsigned, std::pair<unsigned, unsigned> >::const_iterator it =
+        labels_.find(label);
+    if (it == labels_.end())
+        return fail("нет подпрограммы с именем " + num_str(label));
 
     // Все фактические параметры вычисляются до первого присваивания:
     // подпрограмму зовут и через её же формальные переменные, например
     // GOSUB '100(L3,A%,1) при DEFFN '100(L1,L4,L3).
-    std::vector<Value> vals(s.args.size());
-    for (unsigned i = 0; i < s.args.size(); ++i)
-        if (!eval(s.args[i], vals[i])) return false;
+    std::vector<Value> vals;
+    for (;;) {
+        Tok t;
+        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+        if (t.t == Tok::END) break;
+        Value v;
+        if (!st.ev.expr(v)) return fail(st.ev.error());
+        vals.push_back(v);
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t != Tok::COMMA) break;
+        st.ev.parser().consume();
+    }
 
-    for (unsigned i = 0; i < def.params.size(); ++i) {
-        const unsigned v = def.params[i];
-        const bool want_str = v < prog_.vars.size() && prog_.vars[v].is_string;
+    // Формальные параметры лежат в самом DEFFN': метка, четыре байта
+    // адреса возврата, дальше индексы переменных вплотную.
+    const std::vector<uint8_t> & db = img_.line(it->second.first).body;
+    unsigned verb = 0, ops_at = 0, dlen = 0;
+    if (!stmt_head(db, it->second.second, verb, ops_at, dlen))
+        return fail("DEFFN' испорчен");
+    if (dlen < 5) return fail("DEFFN' без адреса возврата");
+    std::vector<unsigned> params;
+    for (unsigned i = 5; i < dlen; ++i) params.push_back(db[ops_at + i]);
+
+    if (params.size() != vals.size())
+        return fail("подпрограмме " + num_str(label) + " передано " +
+                    num_str(static_cast<unsigned>(vals.size())) +
+                    " параметров, а описано " +
+                    num_str(static_cast<unsigned>(params.size())));
+
+    for (unsigned i = 0; i < params.size(); ++i) {
+        const unsigned v = params[i];
+        const bool want_str = store_.is_string(v);
         if (want_str != vals[i].is_str)
             return fail("параметр " + num_str(i + 1) + " подпрограммы " +
-                        num_str(s.label) + ": не совпадают типы");
-
-        Expr target;
-        target.kind = EX_VAR;
-        target.var = v;
+                        num_str(label) + ": не совпадают типы");
+        std::string err;
         if (want_str) {
-            if (!assign_string(target, vals[i].str)) return false;
+            VarStore::StrLoc loc;
+            if (!store_.str_element(v, 0, 0, loc, err)) return fail(err);
+            for (unsigned k = 0; k < loc.len; ++k)
+                (*loc.data)[loc.off + k] = (k < vals[i].str.size()) ? vals[i].str[k] : ' ';
         } else {
             Number * cell = 0;
-            if (!slot(target, cell)) return false;
+            if (!store_.slot(v, 0, 0, cell, err)) return fail(err);
             *cell = vals[i].num;
         }
     }
 
     if (calls_.size() > 1000) return fail("слишком глубокая вложенность GOSUB");
-    calls_.push_back(std::make_pair(li_, si_ + 1));
+    calls_.push_back(std::make_pair(li_, next_off_));
 
     li_ = it->second.first;
-    si_ = it->second.second + 1;      // первый оператор после DEFFN'
+    off_ = ops_at + dlen;             // первый оператор после DEFFN'
     jumped_ = true;
     return true;
 }
@@ -1477,171 +1370,112 @@ bool Interp::do_gosubq(const Stmt & s)
 bool Interp::jump(unsigned line_number)
 {
     unsigned idx = 0;
-    if (!prog_.find(line_number, idx))
+    if (!img_.find(line_number, idx))
         return fail("нет строки " + num_str(line_number));
     li_ = idx;
-    si_ = 0;
+    off_ = 0;
     jumped_ = true;
     return true;
 }
 
-bool Interp::exec(const Stmt & s)
+bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
 {
-    switch (s.kind) {
-        case ST_REM:
-            return true;
+    // REM и % операнды не разбирают вовсе.
+    if (verb == 0x56 || verb == 0x3F) return true;
 
-        case ST_PRINT:
-            return do_print(s);
+    Stream st(ops, len, &img_.vars(), store_);
 
-        case ST_SELECT:
-            return do_select(s);
+    switch (verb) {
+        case 0x36: return do_let(st);
+        case 0x4C: return do_print(st);
+        case 0x41: return do_input(st);
+        case 0x0624: return do_linput(st);
+        case 0x24: return do_if(st);
+        case 0x57: return do_for(st);
+        case 0x52: return do_next(st);
+        case 0x26: return do_on(st);
+        case 0x34: return do_onerr(st);
+        case 0x46: return do_dim(st, len, ops, false);
+        case 0x4E: return do_dim(st, len, ops, true);
+        case 0x0602: return do_redim(st);
+        case 0x47: return do_convert(st);
+        case 0x4B: return do_bin(st);
+        case 0x64: return do_init(st);
+        case 0x54: return do_select(st);
+        case 0x27: case 0x3A: return do_deffn(st, len);
+        case 0x23: return do_gosubq(st);
 
-        case ST_OPEN:
-            return do_open(s);
+        case 0x75: return do_open(st, true);
+        case 0x74: return do_dload(st);
+        case 0x79: return do_dskip(st, true);
+        case 0x7A: return do_dskip(st, false);
+        case 0x7B: return do_limits(st);
+        case 0x81: return do_scratch(st);
+        case 0x82: return do_scratch_disk(st);
 
-        case ST_DLOAD:
-            return do_dload(s);
-
-        case ST_DSKIP:
-            return do_dskip(s);
-
-        case ST_LIMITS:
-            return do_limits(s);
-
-        case ST_ONERR:
-            return do_onerr(s);
-
-        case ST_SCRATCH:
-            return do_scratch(s);
-
-        case ST_SCRATCH_DISK:
-            return do_scratch_disk(s);
-
-        case ST_INPUT:
-            return do_input(s);
-
-        case ST_LET: {
-            // Символьное присваивание: и цель, и значение — строки.
-            bool to_string = false;
-            for (unsigned i = 0; i < s.targets.size(); ++i)
-                if (is_string_expr(s.targets[i])) to_string = true;
-
-            if (to_string) {
-                std::string value;
-                if (!eval_str(s.e, value)) return false;
-                for (unsigned i = 0; i < s.targets.size(); ++i) {
-                    if (!is_string_expr(s.targets[i]))
-                        return fail("в одном присваивании смешаны символьная и числовая цели");
-                    if (!assign_string(s.targets[i], value)) return false;
-                }
-                return true;
-            }
-
-            Number n;
-            if (!eval_num(s.e, n)) return false;
-            for (unsigned i = 0; i < s.targets.size(); ++i) {
-                Number * cell = 0;
-                if (!slot(s.targets[i], cell)) return false;
-                *cell = n;
-            }
-            return true;
-        }
-
-        case ST_DIM:
-            return do_dim(s);
-
-        case ST_REDIM:
-            return do_redim(s);
-
-        case ST_LINPUT:
-            return do_linput(s);
-
-        case ST_CONVERT:
-            return do_convert(s);
-
-        case ST_BIN:
-            return do_bin(s);
-
-        case ST_INIT:
-            return do_init(s);
-
-        case ST_GOTO:
-            return jump(s.line);
-
-        case ST_GOSUB:
-            if (calls_.size() > 1000) return fail("слишком глубокая вложенность GOSUB");
-            calls_.push_back(std::make_pair(li_, si_ + 1));
-            return jump(s.line);
-
-        case ST_ON: {
-            // Значение 1 ведёт на первый номер, 2 — на второй и т. д.
-            // Ноль и всё, что за списком, просто передаёт управление дальше.
-            Number n;
-            if (!eval_num(s.e, n)) return false;
-            long v = 0;
-            if (!n.floor_to_int(v)) return true;
-            if (v < 1 || static_cast<unsigned long>(v) > s.lines.size()) return true;
-
-            const unsigned target = s.lines[static_cast<unsigned>(v) - 1];
-            if (s.is_gosub) {
+        case 0x21: case 0x22: {
+            uint8_t a = 0, b = 0;
+            if (!st.src.take_raw_byte(a) || !st.src.take_raw_byte(b))
+                return fail("переход без номера строки");
+            if (verb == 0x22) {
                 if (calls_.size() > 1000) return fail("слишком глубокая вложенность GOSUB");
-                calls_.push_back(std::make_pair(li_, si_ + 1));
+                calls_.push_back(std::make_pair(li_, next_off_));
             }
-            return jump(target);
+            return jump(bcd2(a) * 100 + bcd2(b));
         }
 
-        case ST_DEFFN:
-            // Помеченный вход сам по себе ничего не делает: встреченный по
-            // ходу исполнения, он «не влияет на ход выполнения программы»
-            // (руководство, разд. 10.4).
-            return true;
-
-        case ST_GOSUBQ:
-            return do_gosubq(s);
-
-        case ST_RETURN: {
+        case 0x5E: {                                   // RETURN
             if (calls_.empty()) return fail("RETURN без GOSUB");
             li_ = calls_.back().first;
-            si_ = calls_.back().second;
+            off_ = calls_.back().second;
             calls_.pop_back();
             jumped_ = true;
             return true;
         }
 
-        case ST_IF: {
-            Number c;
-            if (!eval_num(s.e, c)) return false;
-            if (!c.is_zero()) return jump(s.line);
-            return true;                       // иначе — следующий оператор
-        }
-
-        case ST_FOR:
-            return do_for(s);
-
-        case ST_NEXT:
-            return do_next(s);
-
-        case ST_STOP:
-        case ST_END:
+        case 0x42:                                     // STOP
+            // Сообщение, если оно есть, печатается перед остановкой.
+            if (len) {
+                Value v;
+                if (!st.ev.expr(v)) return fail(st.ev.error());
+                if (v.is_str) { emit(v.str); emit_newline(); }
+            }
             stopped_ = true;
             return true;
+
+        case 0x59:                                     // END
+            stopped_ = true;
+            return true;
+
+        default: break;
     }
-    return fail("неизвестный оператор");
+
+    char b[16];
+    std::sprintf(b, "%02X", verb & 0xFF);
+    return fail(std::string("оператор ") + ((verb > 0xFF) ? "06 " : "") + b
+                + " ещё не исполняется");
 }
 
 bool Interp::run(std::string & error)
 {
     error_.clear();
     li_ = 0;
-    si_ = 0;
+    off_ = 0;
     stopped_ = false;
 
     unsigned long steps = 0;
 
     while (!stopped_) {
-        if (li_ >= prog_.lines.size()) break;
-        if (si_ >= prog_.lines[li_].stmts.size()) { ++li_; si_ = 0; continue; }
+        if (li_ >= img_.line_count()) break;
+        const std::vector<uint8_t> & b = img_.line(li_).body;
+        if (off_ >= b.size()) { ++li_; off_ = 0; continue; }
+
+        unsigned verb = 0, ops_at = 0, len = 0;
+        if (!stmt_head(b, off_, verb, ops_at, len)) {
+            error = "строка " + num_str(img_.line(li_).number) + ": оператор оборван";
+            return false;
+        }
+        next_off_ = ops_at + len;
 
         if (max_steps_ && ++steps > max_steps_) {
             error = "превышено число шагов: похоже на зацикливание";
@@ -1649,13 +1483,13 @@ bool Interp::run(std::string & error)
         }
 
         jumped_ = false;
-        if (!exec(prog_.lines[li_].stmts[si_])) {
+        if (!exec(verb, len ? &b[ops_at] : 0, len)) {
             // Ошибку машины перехватывает ON ERROR; ограничение эмулятора —
             // нет, оно всегда останавливает программу.
             if (!handle_error()) { error = error_; return false; }
             continue;
         }
-        if (!jumped_) ++si_;
+        if (!jumped_) off_ = next_off_;
     }
 
     host_.present();
@@ -1663,3 +1497,4 @@ bool Interp::run(std::string & error)
 }
 
 } // namespace iskra
+

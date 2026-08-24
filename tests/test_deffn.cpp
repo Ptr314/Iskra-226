@@ -8,8 +8,8 @@
 #include <vector>
 
 #include "check.h"
-#include "core/front_text.h"
-#include "core/front_tokens.h"
+#include "core/names.h"
+#include "core/tokenize.h"
 #include "core/interp.h"
 #include "core/koi8.h"
 #include "host_headless/headless_host.h"
@@ -18,10 +18,10 @@ using namespace iskra;
 
 namespace {
 
-bool run_program(const Program & prog, std::string & screen, std::string & error)
+bool run_program(const ProgramImage & img, std::string & screen, std::string & error)
 {
     HeadlessHost host;
-    Interp interp(prog, host);
+    Interp interp(img, host);
     if (!interp.run(error)) return false;
     screen = host.dump();
     return true;
@@ -32,10 +32,12 @@ bool run_text(const char * utf8_source, std::string & screen, std::string & erro
     std::string koi8;
     utf8_to_koi8(utf8_source, koi8);
 
-    Program prog;
     NameTable names;
-    if (!parse_text(koi8, prog, names, error)) return false;
-    return run_program(prog, screen, error);
+    // Текст исполняется не сам по себе: он сначала транслируется в токены,
+    // как и в машине (docs/DECISIONS.md, разд. 12).
+    ProgramImage img;
+    if (!tokenize(koi8, img, names, error)) return false;
+    return run_program(img, screen, error);
 }
 
 std::string line_of(const std::string & screen, unsigned n)
@@ -327,17 +329,17 @@ void test_tokenized()
                                0x5E, 0x00 };
     b.add_line(50, l50, 9);
 
-    Program prog;
+    ProgramImage img;
     std::string error;
-    if (!parse_tokenized(b.file(), prog, error)) {
+    if (!img.load_file(b.file(), error)) {
         std::printf("  разбор: %s\n", error.c_str());
         CHECK(false);
         return;
     }
-    CHECK_EQ(prog.lines.size(), 5u);
+    CHECK_EQ(img.line_count(), 5u);
 
     std::string screen;
-    if (!run_program(prog, screen, error)) {
+    if (!run_program(img, screen, error)) {
         std::printf("  исполнение: %s\n", error.c_str());
         CHECK(false);
         return;
@@ -376,23 +378,21 @@ void test_tokenized_key_text()
     static const int l20[] = { 0x4C, 0x07, 0xE3, 0x05, 0x44, 0x41, 0x4C, 0x53, 0x48 };
     b.add_line(20, l20, 9);
 
-    Program prog;
+    ProgramImage img;
     std::string error;
-    if (!parse_tokenized(b.file(), prog, error)) {
+    if (!img.load_file(b.file(), error)) {
         std::printf("  разбор: %s\n", error.c_str());
         CHECK(false);
         return;
     }
-    CHECK_EQ(prog.lines.size(), 3u);
-    CHECK_EQ(prog.lines[0].stmts.size(), 1u);
-    CHECK(prog.lines[0].stmts[0].kind == ST_DEFFN);
-    CHECK(prog.lines[0].stmts[0].has_prompt);
-    CHECK_STR(prog.lines[0].stmts[0].prompt, "LIST ");
-    CHECK(prog.lines[1].stmts[0].kind == ST_DEFFN);
-    CHECK_STR(prog.lines[1].stmts[0].prompt, "\r");
+    CHECK_EQ(img.line_count(), 3u);
+    // Глагол 3A — определение клавиши; подпрограммой оно не становится,
+    // и исполнение просто идёт мимо него.
+    CHECK_EQ(static_cast<unsigned>(img.line(0).body[0]), 0x3Au);
+    CHECK_EQ(static_cast<unsigned>(img.line(1).body[0]), 0x3Au);
 
     std::string screen;
-    if (!run_program(prog, screen, error)) {
+    if (!run_program(img, screen, error)) {
         std::printf("  исполнение: %s\n", error.c_str());
         CHECK(false);
         return;

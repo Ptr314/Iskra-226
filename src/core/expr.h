@@ -7,7 +7,7 @@
 
 #include <string>
 
-#include "core/ir.h"
+#include "core/number.h"
 
 namespace iskra {
 
@@ -22,7 +22,7 @@ struct Tok {
         PLUS, MINUS, STAR, SLASH, CARET,
         EQ, NE, LT, LE, GT, GE,
         AND, OR, XOR,   // логические связки условий
-        FN_ABS, FN_INT, FN_SGN, FN_SQR, FN_LOG, FN_EXP,
+        FN_ABS, FN_INT, FN_SGN, FN_SQR, FN_LOG, FN_EXP, FN_ROUND, FN_RND,
         FN_HEX,         // строка байт уже разобрана в s
         FN_AT, FN_TAB,
         FN_STR,                 // STR( — первая запятая в потоке не кодируется
@@ -61,6 +61,20 @@ public:
     virtual ~TokenSource() {}
     virtual bool next(Tok & t, bool operand_expected) = 0;
 
+    // Причина отказа у самого источника: у разборщика она беднее, а бывает
+    // и пустой — тогда наружу уходило сообщение ни о чём.
+    // Позиция в источнике — чтобы можно было вернуться к началу заглянутой
+    // лексемы. Двузначный токен в другом состоянии значит другое, и
+    // перечитывать его приходится заново.
+    virtual unsigned tell() const { return 0; }
+    virtual void seek(unsigned) {}
+
+    virtual const std::string & source_error() const
+    {
+        static const std::string none;
+        return none;
+    }
+
     // Зависит ли разбор лексемы от ожидаемого состояния. У токенов да —
     // и тогда заглядывать вперёд можно только в том состоянии, в каком
     // лексема потом будет прочитана. Текстовому лексеру состояние
@@ -75,17 +89,6 @@ class ExprParser
 public:
     explicit ExprParser(TokenSource & src);
 
-    // Полное выражение. При неудаче false, причина — в error().
-    bool parse(Expr & out);
-
-    // Цель присваивания: переменная, элемент массива либо STR(.
-    //
-    // by_table: решать «скаляр или массив» строго по таблицам переменных,
-    // без заглядывания вперёд. Нужно там, где за приёмником сразу идёт
-    // значение и заглядывание принимает его за индекс: приёмник BIN(
-    // (BIN(A¤)=J% — это 4B 02 22 3B) и первый аргумент STR(.
-    bool parse_lvalue(Expr & out, bool by_table = false);
-
     // Заглянуть в следующую лексему, не потребляя её.
     bool peek(Tok & t, bool operand_expected);
     // Потребить лексему, на которую смотрели.
@@ -93,6 +96,14 @@ public:
     bool take(Tok & t, bool operand_expected);
 
     const std::string & error() const { return error_; }
+    // Вернуть источник к началу заглянутой лексемы и забыть её. Нужно
+    // там, где заглядывали в позиции операции, разделителя не оказалось,
+    // и ту же лексему надо прочесть как операнд.
+    void unpeek()
+    {
+        if (has_pending_) { src_.seek(pending_start_); has_pending_ = false; }
+    }
+
     // Сбросить заглянутую лексему. Обязательно после TokenSource::set_pos():
     // иначе разбор продолжится с лексемы, прочитанной со старого места.
     void reset() { has_pending_ = false; }
@@ -101,20 +112,9 @@ public:
     bool failed() const { return !error_.empty(); }
 
 private:
-    bool parse_logic(Expr & out);
-    bool parse_compare(Expr & out);
-    bool parse_sum(Expr & out);
-    bool parse_product(Expr & out);
-    bool parse_unary(Expr & out);
-    bool parse_power(Expr & out);
-    bool parse_primary(Expr & out);
-    bool parse_call(Expr & out, ExprKind kind, unsigned args_min, unsigned args_max);
-    bool parse_indices(Expr & out, const Tok & name);
-    bool parse_substr(Expr & out);
-    bool parse_implicit(Expr & out, ExprKind kind);
-
     TokenSource & src_;
     Tok pending_;
+    unsigned pending_start_;
     bool has_pending_;
     bool pending_operand_;
     std::string error_;
