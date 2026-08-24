@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Mikhail Revzin <p3.141592653589793238462643@gmail.com>
 // Part of the Iskra-226 project: https://github.com/Ptr314/Iskra-226
-// Description: блок отображения символьной информации (БОСГИ, ФАУ 05)
+// Description: блок отображения символьной информации (ФАУ 05, половина БОСГИ)
 
 #include "core/screen.h"
 
@@ -20,11 +20,11 @@ void Screen::clear()
 {
     for (unsigned i = 0; i < SCREEN_ROWS * SCREEN_COLS; ++i) {
         cells_[i].ch = SPACE;
-        cells_[i].attr = ATTR_POSITIVE;
+        cells_[i].attr = ATTR_NEGATIVE;
     }
     row_ = 1;
     col_ = 1;
-    attr_ = ATTR_POSITIVE;
+    attr_ = ATTR_NEGATIVE;
     dirty_ = true;
     cleared_ = true;
     bells_ = 0;
@@ -51,7 +51,7 @@ void Screen::scroll_up()
     for (unsigned i = (SCREEN_ROWS - 1) * SCREEN_COLS;
          i < SCREEN_ROWS * SCREEN_COLS; ++i) {
         cells_[i].ch = SPACE;
-        cells_[i].attr = ATTR_POSITIVE;
+        cells_[i].attr = ATTR_NEGATIVE;
     }
     dirty_ = true;
 }
@@ -139,7 +139,7 @@ void Screen::erase(unsigned count)
     while (count-- > 0) {
         Cell & cell = at_(r, c);
         cell.ch = SPACE;
-        cell.attr = ATTR_POSITIVE;
+        cell.attr = ATTR_NEGATIVE;
         if (++c > SCREEN_COLS) {
             c = 1;
             if (++r > SCREEN_ROWS) break;

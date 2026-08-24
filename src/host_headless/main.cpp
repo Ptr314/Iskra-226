@@ -52,7 +52,7 @@ int usage()
 {
     out("Искра-226 — хост без окна\n\n"
         "  iskra --screen            проверка экрана и знакогенератора\n"
-        "  iskra --chart [8|14|16]   таблица кодов КОИ-8 знакогенератором\n"
+        "  iskra --chart [8|14|16]   таблица кодов КОИ-8; без числа — 7x8\n"
         "  iskra --list ОБРАЗ        каталог образа дискеты\n"
         "  iskra --cat ОБРАЗ ИМЯ     листинг программы с образа\n"
         "  iskra --detok ФАЙЛ        листинг ранее извлечённого файла\n"
@@ -113,13 +113,16 @@ int cmd_screen()
 // Таблица кодов растром знакогенератора: колонки — старшая цифра кода.
 int cmd_chart(unsigned height)
 {
-    const iskra::Font * f = iskra::Font::by_height(height);
+    // Без числа — достоверный знакогенератор; с числом — крупный.
+    const iskra::Font * f = height ? iskra::Font::by_height(height)
+                                   : &iskra::Font::standard();
     if (!f) {
         std::printf("нет знакогенератора высотой %u (есть 8, 14, 16)\n", height);
         return 1;
     }
 
-    std::printf("знакогенератор 8x%u, коды 20-FF\n\n", f->height());
+    std::printf("знакогенератор %ux%u в знакоместе %ux%u, коды 20-FF\n\n",
+                f->width(), f->height(), f->cell_width(), f->cell_height());
     for (unsigned base = 0x20; base < 0x100; base += 0x10) {
         std::printf("      ");
         for (unsigned i = 0; i < 16; ++i) std::printf("%02X       ", base + i);
@@ -127,9 +130,9 @@ int cmd_chart(unsigned height)
         for (unsigned y = 0; y < f->height(); ++y) {
             std::printf("      ");
             for (unsigned i = 0; i < 16; ++i) {
-                const unsigned char bits = f->glyph(static_cast<unsigned char>(base + i))[y];
-                for (int x = 7; x >= 0; --x)
-                    std::printf("%c", (bits & (1 << x)) ? '#' : '.');
+                const unsigned char code = static_cast<unsigned char>(base + i);
+                for (unsigned x = 0; x < f->width(); ++x)
+                    std::printf("%c", f->dot(code, x, y) ? '#' : '.');
                 std::printf(" ");
             }
             std::printf("\n");
@@ -549,7 +552,7 @@ int main(int argc, char ** argv)
     if (cmd == "--screen") return cmd_screen();
 
     if (cmd == "--chart") {
-        unsigned h = 16;
+        unsigned h = 0;                 // 0 — достоверный знакогенератор
         if (argc > 2) h = static_cast<unsigned>(std::atoi(argv[2]));
         return cmd_chart(h);
     }

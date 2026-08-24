@@ -107,12 +107,12 @@ void test_control_codes()
 void test_attributes()
 {
     Screen s;
-    s.put(CC_NEGATIVE);                // СУ2
+    s.put(CC_POSITIVE);                // СУ2 — выделение
     put(s, "A");
-    s.put(CC_POSITIVE);                // СУ1
+    s.put(CC_NEGATIVE);                // СУ1 — обычное состояние
     put(s, "B");
-    CHECK_EQ(s.cell(1, 1).attr, ATTR_NEGATIVE);
-    CHECK_EQ(s.cell(1, 2).attr, ATTR_POSITIVE);
+    CHECK_EQ(s.cell(1, 1).attr, ATTR_POSITIVE);
+    CHECK_EQ(s.cell(1, 2).attr, ATTR_NEGATIVE);
 }
 
 void test_at_erase()
@@ -182,9 +182,12 @@ void test_font()
         CHECK(expected == (f != 0));
     }
 
+    // Достоверный знакогенератор — глиф 7x8 в знакоместе 9x10.
     const Font & f = Font::standard();
-    CHECK_EQ(f.width(), 8u);
-    CHECK_EQ(f.height(), 16u);
+    CHECK_EQ(f.width(), 7u);
+    CHECK_EQ(f.height(), 8u);
+    CHECK_EQ(f.cell_width(), 9u);
+    CHECK_EQ(f.cell_height(), 10u);
 
     // Пробел пуст, буквы — нет.
     bool space_blank = true, letter_blank = true, cyr_blank = true;
@@ -197,11 +200,28 @@ void test_font()
     CHECK(!letter_blank);
     CHECK(!cyr_blank);
 
-    // Глиф 0x24 подменён на ¤: у доллара есть вертикальная перемычка сверху
-    // и снизу, у ¤ верхняя и нижняя строки пусты.
+    // Младший бит байта развёртки не занят вовсе: глиф семиточечный и
+    // прижат влево.
+    unsigned stray = 0;
+    for (unsigned c = 0; c < 256; ++c)
+        for (unsigned y = 0; y < f.height(); ++y)
+            if (f.glyph(static_cast<unsigned char>(c))[y] & 1) ++stray;
+    CHECK_EQ(stray, 0u);
+
+    // В позиции 0x24 «Искра» высвечивает ¤, а не доллар. У этого
+    // знакогенератора так и есть в исходнике, подменять нечего: верхняя
+    // строка пуста, а у доллара там перемычка.
     CHECK_EQ(f.glyph(0x24)[0], 0u);
-    CHECK_EQ(f.glyph(0x24)[f.height() - 1], 0u);
-    CHECK(f.glyph(0x24)[8] != 0);
+    CHECK(f.dot(0x24, 0, 1) && f.dot(0x24, 6, 1));
+
+    // Крупные шрифты — восьмиточечные, знакоместо равно глифу, и там 0x24
+    // подменяется на лету: в консольном PSF лежит доллар.
+    const Font & big = *Font::by_height(16);
+    CHECK_EQ(big.width(), 8u);
+    CHECK_EQ(big.cell_width(), 8u);
+    CHECK_EQ(big.glyph(0x24)[0], 0u);
+    CHECK_EQ(big.glyph(0x24)[big.height() - 1], 0u);
+    CHECK(big.glyph(0x24)[8] != 0);
 
     // Строчная и прописная кириллица различаются — литералы в апострофах
     // на «Искре» бывают строчными.

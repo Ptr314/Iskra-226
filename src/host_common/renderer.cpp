@@ -23,8 +23,12 @@ Renderer::Renderer()
 
 void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch) const
 {
-    const unsigned cw = font_->width();
-    const unsigned ch = font_->height();
+    const unsigned cw = font_->cell_width();
+    const unsigned ch = font_->cell_height();
+    const unsigned gw = font_->width();
+    const unsigned gh = font_->height();
+    const unsigned ox = font_->offset_x();
+    const unsigned oy = font_->offset_y();
     const unsigned sc = scale_;
     const unsigned cur_row = s.row();
     const unsigned cur_col = s.col();
@@ -33,21 +37,28 @@ void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch) const
         for (unsigned c = 1; c <= SCREEN_COLS; ++c) {
             const Cell & cell = s.cell(r, c);
 
-            // Негатив знакоместа и курсор складываются: курсор на негативном
-            // знакоместе гасит негатив, а не пропадает.
-            bool inv = cell.attr == ATTR_NEGATIVE;
-            if (cursor_ && r == cur_row && c == cur_col) inv = !inv;
+            // Позитив — выделение: тёмные знаки на светлом фоне, то есть
+            // перестановка цветов относительно обычного состояния экрана.
+            // Поля знакоместа переставляются вместе со знаком, иначе
+            // выделенная строка вышла бы в полоску.
+            const bool inv = cell.attr == ATTR_POSITIVE;
+            const bool cursor_here = cursor_ && r == cur_row && c == cur_col;
 
-            const unsigned char * glyph = font_->glyph(cell.ch);
             uint32_t * cell_out = out + (r - 1) * ch * sc * pitch
                                       + (c - 1) * cw * sc;
 
             for (unsigned y = 0; y < ch; ++y) {
                 uint32_t * line = cell_out + y * sc * pitch;
-                const unsigned bits = glyph[y];
+                // Подстрочная черта закрашивает нижнюю строку знакоместа
+                // целиком — и на выделенном знакоместе тоже, где она выходит
+                // тёмной на светлом. Пропасть она не может ни там, ни там.
+                const bool underline = cursor_here && y + 1 == ch;
+                const bool in_glyph = y >= oy && y - oy < gh;
+
                 for (unsigned x = 0; x < cw; ++x) {
-                    // Старший бит — левая точка.
-                    const bool on = ((bits >> (cw - 1 - x)) & 1) != 0;
+                    bool on = underline;
+                    if (!on && in_glyph && x >= ox && x - ox < gw)
+                        on = font_->dot(cell.ch, x - ox, y - oy);
                     const uint32_t color = (on != inv) ? fg_ : bg_;
                     for (unsigned k = 0; k < sc; ++k) line[x * sc + k] = color;
                 }

@@ -40,15 +40,20 @@ public:
     void set_scale(unsigned n) { scale_ = n ? n : 1; }
     void set_colors(uint32_t fg, uint32_t bg) { fg_ = fg; bg_ = bg; }
 
-    // Курсор рисуется негативом того знакоместа, где он стоит. Мигание —
-    // забота хоста: у него часы, он и переключает.
+    // Курсор — подстрочная черта: «место, на котором высветится очередной
+    // символ, автоматически указывается с помощью курсора (подстрочной
+    // черты)» (руководство, разд. 2.1). Он занимает нижнюю строку развёртки
+    // знакоместа во всю его ширину. Мигание — забота хоста: у него часы,
+    // он и переключает.
     void set_cursor(bool on) { cursor_ = on; }
 
     const Font & font() const { return *font_; }
     unsigned scale() const { return scale_; }
 
-    unsigned width() const  { return SCREEN_COLS * font_->width()  * scale_; }
-    unsigned height() const { return SCREEN_ROWS * font_->height() * scale_; }
+    // Кадр меряется знакоместами, а не глифами: у достоверного шрифта поле
+    // шире и выше глифа, и межбуквенный просвет живёт именно там.
+    unsigned width() const  { return SCREEN_COLS * font_->cell_width()  * scale_; }
+    unsigned height() const { return SCREEN_ROWS * font_->cell_height() * scale_; }
     unsigned pixels() const { return width() * height(); }
 
     // Нарисовать кадр целиком. pitch — длина строки буфера в точках, а не
