@@ -9,6 +9,14 @@
 #include <string>
 #include <vector>
 
+// Единственное место во всём эмуляторе, где нужна платформа: диалоговый режим
+// в терминале должен знать, показывает ли терминал набранное сам.
+#ifdef _WIN32
+#  include <io.h>
+#else
+#  include <unistd.h>
+#endif
+
 #include "core/names.h"
 #include "core/tokenize.h"
 #include "core/interp.h"
@@ -16,9 +24,9 @@
 #include "font/font.h"
 #include "host_headless/headless_host.h"
 
-#ifdef ISKRA_WITH_DSK_TOOLS
-#include "diskio/image.h"
-#endif
+#include "core/catalog.h"
+#include "core/console.h"
+#include "core/detokenize.h"
 
 namespace {
 
@@ -44,15 +52,12 @@ int usage()
     out("Искра-226 — хост без окна\n\n"
         "  iskra --screen            проверка экрана и знакогенератора\n"
         "  iskra --chart [8|14|16]   таблица кодов КОИ-8 знакогенератором\n"
-#ifdef ISKRA_WITH_DSK_TOOLS
         "  iskra --list ОБРАЗ        каталог образа дискеты\n"
         "  iskra --cat ОБРАЗ ИМЯ     листинг программы с образа\n"
         "  iskra --detok ФАЙЛ        листинг ранее извлечённого файла\n"
         "  iskra --run ОБРАЗ ИМЯ [ВВОД…]  исполнить программу с образа\n"
         "  iskra --run-text ФАЙЛ [ВВОД…]  исполнить текстовый листинг\n"
-#else
-        "\nСобрано без dsk_tools: работа с образами дискет недоступна.\n"
-#endif
+        "  iskra --console [ОБРАЗ]   диалоговый режим в терминале\n"
         );
     return 1;
 }
@@ -131,55 +136,6 @@ int cmd_chart(unsigned height)
     return 0;
 }
 
-#ifdef ISKRA_WITH_DSK_TOOLS
-
-int cmd_list(const char * path)
-{
-    iskra::DiskImage img;
-    if (!img.open(path)) {
-        std::printf("%s\n", img.error().c_str());
-        return 1;
-    }
-
-    std::printf("формат %s, секторов %u\n\n",
-                img.format_id().c_str(), img.sector_count());
-
-    std::vector<iskra::DiskFile> files;
-    if (!img.dir(files)) {
-        std::printf("%s\n", img.error().c_str());
-        return 1;
-    }
-
-    for (unsigned i = 0; i < files.size(); ++i) {
-        // Имена бывают кириллицей, поэтому дополняем по числу символов,
-        // а не байтов: %-10s в UTF-8 считает байты и ломает столбцы.
-        out(pad(files[i].name, 10));
-        std::printf(" %8u  ", files[i].size);
-        out(pad(files[i].type, 6));
-        std::printf("%s\n", files[i].is_protected ? "защищён" : "");
-    }
-    std::printf("\nвсего файлов: %u\n", static_cast<unsigned>(files.size()));
-    return 0;
-}
-
-// Детокенизация файла, снятого с диска раньше: так гоняется корпус.
-int cmd_detok(const char * path)
-{
-    std::FILE * f = std::fopen(path, "rb");
-    if (!f) {
-        std::printf("не удалось открыть %s\n", path);
-        return 1;
-    }
-    std::vector<uint8_t> data;
-    uint8_t buf[4096];
-    std::size_t n;
-    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0)
-        data.insert(data.end(), buf, buf + n);
-    std::fclose(f);
-
-    out(iskra::detokenize(data));
-    return 0;
-}
 
 bool read_file_bytes(const char * path, std::string & out)
 {
@@ -192,11 +148,170 @@ bool read_file_bytes(const char * path, std::string & out)
     return true;
 }
 
-// Исполнение программы на хосте без окна. Строки ввода подаются аргументами
-// командной строки — прогон получается воспроизводимым.
-int run_program(iskra::ProgramImage & img, char ** input, int inputs)
+// Образ дискеты «Искры» — плоский файл: 1001 сектор по 256 байт, без
+// контейнера и без чередования. Никакой распаковки не требуется, поэтому
+// командная строка ходит на диск тем же путём, что и сам эмулятор:
+// монтирует байты в хост и работает через Catalog.
+bool mount_disk(iskra::HeadlessHost & host, const char * path)
+{
+    std::string raw;
+    if (!read_file_bytes(path, raw)) {
+        std::printf("не удалось открыть %s\n", path);
+        return false;
+    }
+    if (raw.size() < iskra::Host::SECTOR_SIZE ||
+        raw.size() % iskra::Host::SECTOR_SIZE) {
+        std::printf("%s не похож на образ: размер не кратен 256 байтам\n", path);
+        return false;
+    }
+    host.mount(0, std::vector<uint8_t>(raw.begin(), raw.end()));
+    return true;
+}
+
+// Файл целиком по записи каталога.
+bool read_disk_file(iskra::HeadlessHost & host, const iskra::CatalogEntry & e,
+                    std::vector<uint8_t> & data)
+{
+    data.assign(static_cast<std::size_t>(e.sectors()) * iskra::Host::SECTOR_SIZE, 0);
+    for (unsigned i = 0; i < e.sectors(); ++i)
+        if (!host.disk_read(0, e.first + i, &data[i * iskra::Host::SECTOR_SIZE]))
+            return false;
+    return true;
+}
+
+// Листинг программы: разбор образа и обратная трансляция — те же, что и в
+// эмуляторе (core/detokenize.*).
+bool listing_of(const std::vector<uint8_t> & file, std::string & utf8)
+{
+    iskra::ProgramImage img;
+    std::string error;
+    if (!img.load_file(file, error)) {
+        std::printf("разбор: %s\n", error.c_str());
+        return false;
+    }
+    // Имена придумывает сама детокенизация: в потоке их нет.
+    iskra::NameTable names;
+    std::string whole;
+    iskra::detokenize(img, names, whole, error);
+
+    // Дальше — построчно: одна строка, которую детокенизатор ещё не умеет,
+    // не должна съедать весь листинг. Причина при этом видна на месте.
+    utf8.clear();
+    for (unsigned i = 0; i < img.line_count(); ++i) {
+        std::string koi8;
+        std::string err;
+        if (!iskra::detokenize_line(img.line(i), names, koi8, err)) {
+            char b[32];
+            std::sprintf(b, "%u", img.line(i).number);
+            utf8 += std::string(b) + " ??? " + err + "\n";
+            continue;
+        }
+        utf8 += iskra::koi8_to_utf8(reinterpret_cast<const uint8_t *>(koi8.data()),
+                                    static_cast<unsigned>(koi8.size()));
+        utf8 += '\n';
+    }
+    return true;
+}
+
+int cmd_list(const char * path)
 {
     iskra::HeadlessHost host;
+    if (!mount_disk(host, path)) return 1;
+
+    iskra::Catalog cat(host, 0);
+    std::string err;
+    if (!cat.open(err)) {
+        std::printf("%s\n", err.c_str());
+        return 1;
+    }
+    std::printf("секторов %u, указатель %u, область до %u, занято до %u\n\n",
+                host.disk_sectors(0), cat.index_sectors(), cat.area_end(),
+                cat.current_end());
+
+    std::vector<iskra::CatalogEntry> files;
+    if (!cat.list(files, true, err)) {
+        std::printf("%s\n", err.c_str());
+        return 1;
+    }
+
+    for (unsigned i = 0; i < files.size(); ++i) {
+        const iskra::CatalogEntry & e = files[i];
+        // Имена бывают кириллицей, поэтому дополняем по числу символов,
+        // а не байтов: %-10s в UTF-8 считает байты и ломает столбцы.
+        const std::string koi8 = e.name_str();
+        out(pad(koi8.empty() ? std::string()
+                             : iskra::koi8_to_utf8(
+                                   reinterpret_cast<const uint8_t *>(koi8.data()),
+                                   static_cast<unsigned>(koi8.size())), 10));
+        std::printf(" %5u %5u %5u  %s%s\n", e.first, e.last, e.sectors(),
+                    e.is_program() ? "программа" : "данные",
+                    e.scratched() ? ", вычеркнут" : "");
+    }
+    std::printf("\nвсего записей: %u\n", static_cast<unsigned>(files.size()));
+    return 0;
+}
+
+// Детокенизация файла, снятого с диска раньше: так гоняется корпус.
+int cmd_detok(const char * path)
+{
+    std::string raw;
+    if (!read_file_bytes(path, raw)) {
+        std::printf("не удалось открыть %s\n", path);
+        return 1;
+    }
+    std::string utf8;
+    if (!listing_of(std::vector<uint8_t>(raw.begin(), raw.end()), utf8)) return 1;
+    out(utf8);
+    return 0;
+}
+
+// Найти файл в каталоге по имени. Имя с командной строки приходит в UTF-8.
+bool find_by_name(iskra::HeadlessHost & host, const char * name,
+                  iskra::CatalogEntry & e)
+{
+    std::string koi8;
+    iskra::utf8_to_koi8(name, koi8);
+
+    iskra::Catalog cat(host, 0);
+    uint8_t nm[iskra::NAME_LEN];
+    iskra::Catalog::make_name(koi8, nm);
+
+    std::string err;
+    if (!cat.find(nm, e, err)) {
+        std::printf("%s\n", err.c_str());
+        return false;
+    }
+    if (!e.alive()) {
+        std::printf("файла «%s» нет в каталоге\n", name);
+        return false;
+    }
+    return true;
+}
+
+int cmd_cat(const char * path, const char * name)
+{
+    iskra::HeadlessHost host;
+    if (!mount_disk(host, path)) return 1;
+
+    iskra::CatalogEntry e;
+    if (!find_by_name(host, name, e)) return 1;
+
+    std::vector<uint8_t> data;
+    if (!read_disk_file(host, e, data)) {
+        std::printf("не читается файл\n");
+        return 1;
+    }
+    std::string utf8;
+    if (!listing_of(data, utf8)) return 1;
+    out(utf8);
+    return 0;
+}
+
+// Исполнение программы на хосте без окна. Строки ввода подаются аргументами
+// командной строки — прогон получается воспроизводимым.
+int run_program(iskra::ProgramImage & img, iskra::HeadlessHost & host,
+                char ** input, int inputs)
+{
     for (int i = 0; i < inputs; ++i) {
         std::string koi8;
         iskra::utf8_to_koi8(input[i], koi8);
@@ -233,19 +348,21 @@ int cmd_run_file(const char * path, char ** input, int inputs)
         std::printf("разбор: %s\n", error.c_str());
         return 1;
     }
-    return run_program(img, input, inputs);
+    iskra::HeadlessHost host;
+    return run_program(img, host, input, inputs);
 }
 
 int cmd_run(const char * path, const char * name, char ** input, int inputs)
 {
-    iskra::DiskImage disk;
-    if (!disk.open(path)) {
-        std::printf("%s\n", disk.error().c_str());
-        return 1;
-    }
+    iskra::HeadlessHost host;
+    if (!mount_disk(host, path)) return 1;
+
+    iskra::CatalogEntry e;
+    if (!find_by_name(host, name, e)) return 1;
+
     std::vector<uint8_t> data;
-    if (!disk.read_file(name, data)) {
-        std::printf("%s\n", disk.error().c_str());
+    if (!read_disk_file(host, e, data)) {
+        std::printf("не читается файл\n");
         return 1;
     }
 
@@ -255,7 +372,9 @@ int cmd_run(const char * path, const char * name, char ** input, int inputs)
         std::printf("разбор: %s\n", error.c_str());
         return 1;
     }
-    return run_program(img, input, inputs);
+    // Образ смонтирован копией в памяти: SAVE DC во время прогона на файл
+    // не попадёт. Так и задумано — корпус портить нельзя.
+    return run_program(img, host, input, inputs);
 }
 
 // Тот же прогон, но из текстового листинга. Файлы корпуса лежат в UTF-8,
@@ -278,27 +397,127 @@ int cmd_run_text(const char * path, char ** input, int inputs)
         std::printf("трансляция: %s\n", error.c_str());
         return 1;
     }
-    return run_program(img, input, inputs);
+    iskra::HeadlessHost host;
+    return run_program(img, host, input, inputs);
 }
 
-int cmd_cat(const char * path, const char * name)
+// Диалоговый режим в терминале — временная замена окну. Настоящий экран
+// придёт с хостом на SDL2 (docs/DECISIONS.md, разд. 1); здесь же строки
+// читаются со стандартного ввода, а на стандартный вывод уходят те строки
+// экрана, которые с прошлого раза изменились. Прокрутка при этом
+// перепечатывает весь экран — так и должно быть, ведь изменились все строки.
+class TermHost : public iskra::HeadlessHost
 {
-    iskra::DiskImage img;
-    if (!img.open(path)) {
-        std::printf("%s\n", img.error().c_str());
-        return 1;
+public:
+    TermHost() : shown_(iskra::SCREEN_ROWS), pos_(0), open_(NONE),
+                 interactive_(stdin_is_terminal()), printed_(false) {}
+
+    bool wait_key(uint8_t & code)
+    {
+        while (pos_ >= pending_.size())
+            if (!next_line()) return false;
+        code = static_cast<uint8_t>(pending_[pos_++]);
+        return true;
     }
 
-    std::string text;
-    if (!img.listing(name, text)) {
-        std::printf("%s\n", img.error().c_str());
+    bool present()
+    {
+        if (screen().take_cleared()) {
+            // Стереть уже напечатанное терминал не даст; отбиваем пустой
+            // строкой и печатаем всё заново.
+            if (open_ != NONE) { out("\n"); open_ = NONE; }
+            shown_.assign(iskra::SCREEN_ROWS, std::string());
+            if (printed_) out("\n");
+        }
+        const std::string all = dump();
+        std::size_t p = 0;
+        for (unsigned r = 0; r < iskra::SCREEN_ROWS && p <= all.size(); ++r) {
+            std::size_t e = all.find('\n', p);
+            if (e == std::string::npos) e = all.size();
+            const std::string row = all.substr(p, e - p);
+            p = e + 1;
+            if (row == shown_[r]) continue;
+
+            // Строка с приглашением остаётся незакрытой: набранное ляжет
+            // сразу за двоеточием, как на машине. Дописанное к ней печатаем
+            // хвостом — а если ввод шёл с клавиатуры, не печатаем вовсе:
+            // терминал уже показал набранное сам.
+            if (r == open_ && !shown_[r].empty() &&
+                row.compare(0, shown_[r].size(), shown_[r]) == 0) {
+                if (!interactive_) out(row.substr(shown_[r].size()));
+                shown_[r] = row;
+                if (r + 1 == screen().row()) { std::fflush(stdout); continue; }
+                out("\n");
+                open_ = NONE;
+                continue;
+            }
+
+            if (open_ != NONE) { out("\n"); open_ = NONE; }
+            shown_[r] = row;
+            if (row.empty()) continue;      // опустевшей строке печатать нечего
+
+            out(row);
+            printed_ = true;
+            if (r + 1 == screen().row()) { open_ = r; std::fflush(stdout); }
+            else out("\n");
+        }
+        screen().clear_dirty();
+        return true;
+    }
+
+private:
+    // Терминал отдаёт ввод строками; машине они нужны нажатиями, и строку
+    // завершает ВК — тот же код, что даёт клавиша CR/LF.
+    bool next_line()
+    {
+        char buf[512];
+        if (!std::fgets(buf, sizeof(buf), stdin)) return false;
+        std::string utf8 = buf;
+        while (!utf8.empty() &&
+               (utf8[utf8.size() - 1] == '\n' || utf8[utf8.size() - 1] == '\r'))
+            utf8.resize(utf8.size() - 1);
+        pending_.clear();
+        iskra::utf8_to_koi8(utf8, pending_);
+        pending_ += '\r';
+        pos_ = 0;
+        return true;
+    }
+
+    // Набранное с клавиатуры терминал показывает сам, а из файла или конвейера
+    // — нет, и тогда строку печатаем мы.
+    static bool stdin_is_terminal()
+    {
+#ifdef _WIN32
+        return _isatty(_fileno(stdin)) != 0;
+#else
+        return isatty(fileno(stdin)) != 0;
+#endif
+    }
+
+    static const unsigned NONE = 0xFFFFFFFFu;
+
+    std::vector<std::string> shown_;
+    std::string pending_;
+    std::size_t pos_;
+    unsigned open_;          // строка экрана, чья строка терминала не закрыта
+    bool interactive_;
+    bool printed_;           // было ли что печатать до сих пор
+};
+
+int cmd_console(const char * path)
+{
+    TermHost host;
+    if (path && !mount_disk(host, path)) return 1;
+
+    iskra::ProgramImage img;
+    iskra::Console con(img, host);
+    std::string error;
+    if (!con.run(error)) {
+        std::printf("%s\n", error.c_str());
         return 1;
     }
-    out(text);
     return 0;
 }
-
-#endif // ISKRA_WITH_DSK_TOOLS
 
 } // namespace
 
@@ -316,14 +535,13 @@ int main(int argc, char ** argv)
         return cmd_chart(h);
     }
 
-#ifdef ISKRA_WITH_DSK_TOOLS
     if (cmd == "--list" && argc > 2) return cmd_list(argv[2]);
     if (cmd == "--cat" && argc > 3) return cmd_cat(argv[2], argv[3]);
     if (cmd == "--detok" && argc > 2) return cmd_detok(argv[2]);
     if (cmd == "--run" && argc > 3) return cmd_run(argv[2], argv[3], argv + 4, argc - 4);
     if (cmd == "--run-file" && argc > 2) return cmd_run_file(argv[2], argv + 3, argc - 3);
     if (cmd == "--run-text" && argc > 2) return cmd_run_text(argv[2], argv + 3, argc - 3);
-#endif
+    if (cmd == "--console") return cmd_console(argc > 2 ? argv[2] : 0);
 
     return usage();
 }

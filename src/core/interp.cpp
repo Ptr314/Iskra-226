@@ -137,7 +137,7 @@ bool Interp::fail(const std::string & m)
 {
     if (error_.empty()) {
         error_ = m;
-        if (li_ < img_.line_count())
+        if (li_ != DIRECT && li_ < img_.line_count())
             error_ = "строка " + num_str(img_.line(li_).number) + ": " + m;
     }
     return false;
@@ -215,7 +215,7 @@ bool Interp::handle_error()
         // «В переменную 1 заносится код ошибки, в переменную 2 —
         // четырёхзначный номер программной строки» (руководство, разд. 11.6).
         char buf[16];
-        std::sprintf(buf, "%04u", li_ < img_.line_count()
+        std::sprintf(buf, "%04u", (li_ != DIRECT && li_ < img_.line_count())
                                       ? img_.line(li_).number : 0u);
         std::string err;
         VarStore::StrLoc a, b;
@@ -875,7 +875,7 @@ bool Interp::read_line(const std::string & prompt, bool has_prompt,
     out.clear();
     for (;;) {
         uint8_t code = 0;
-        if (!host_.poll_key(code)) return fail("нет данных на клавиатуре");
+        if (!host_.wait_key(code)) return fail("нет данных на клавиатуре");
         if (code == 0x0D || code == 0x0A) break;
         if (code == 0x08) {                       // ВШ — забой
             if (!out.empty()) {
@@ -1503,12 +1503,23 @@ bool Interp::do_load_dc(Stream & st)
 
     // Номеров строк в операторе нет, поэтому стирается вся программа
     // целиком, а с ней — циклы и адреса возвратов.
+    const bool direct = li_ == DIRECT;
     img_ = next;
+    labels_.clear();
+    labels_ready_ = false;
+
+    if (direct) {
+        // «В режиме непосредственного счёта оператор LOAD DC (LOAD DA) только
+        // загружает программу в оперативную память без её предварительной
+        // очистки» (руководство, разд. 19.1): ни CLEAR N, ни запуска.
+        // Переменные при этом достаются новой программе чужими — потому книга
+        // и советует перед загрузкой набирать CLEAR.
+        return true;
+    }
+
     store_.clear_non_common();
     loops_.clear();
     calls_.clear();
-    labels_.clear();
-    labels_ready_ = false;
 
     if (!img_.line_count()) return fail("загруженный сегмент пуст");
     li_ = 0;
@@ -1608,23 +1619,40 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
                 + " ещё не исполняется");
 }
 
-bool Interp::run(std::string & error)
+const std::vector<uint8_t> & Interp::body_at(unsigned li) const
 {
-    error_.clear();
-    li_ = 0;
-    off_ = 0;
-    stopped_ = false;
+    return (li == DIRECT) ? direct_ : img_.line(li).body;
+}
 
+void Interp::clear_all()
+{
+    store_.clear();
+    loops_.clear();
+    calls_.clear();
+    labels_.clear();
+    labels_ready_ = false;
+    trap_ = ErrorTrap();
+    err_code_.clear();
+}
+
+bool Interp::loop(std::string & error)
+{
     unsigned long steps = 0;
 
     while (!stopped_) {
-        if (li_ >= img_.line_count()) break;
-        const std::vector<uint8_t> & b = img_.line(li_).body;
-        if (off_ >= b.size()) { ++li_; off_ = 0; continue; }
+        if (li_ != DIRECT && li_ >= img_.line_count()) break;
+        const std::vector<uint8_t> & b = body_at(li_);
+        if (off_ >= b.size()) {
+            // Прямая строка кончилась — возвращаемся к приглашению.
+            if (li_ == DIRECT) break;
+            ++li_;
+            off_ = 0;
+            continue;
+        }
 
         unsigned verb = 0, ops_at = 0, len = 0;
         if (!stmt_head(b, off_, verb, ops_at, len)) {
-            error = "строка " + num_str(img_.line(li_).number) + ": оператор оборван";
+            error = "оператор оборван";
             return false;
         }
         next_off_ = ops_at + len;
@@ -1648,5 +1676,41 @@ bool Interp::run(std::string & error)
     return true;
 }
 
-} // namespace iskra
+bool Interp::run(std::string & error)
+{
+    error_.clear();
+    // Без номера строки RUN обнуляет переменные (разд. 4.1, пример 4.2).
+    clear_all();
+    li_ = 0;
+    off_ = 0;
+    stopped_ = false;
+    return loop(error);
+}
 
+bool Interp::run_from(unsigned line_number, std::string & error)
+{
+    error_.clear();
+    err_code_.clear();
+    unsigned idx = 0;
+    if (!img_.find(line_number, idx)) {
+        error = "нет строки " + num_str(line_number);
+        return false;
+    }
+    li_ = idx;
+    off_ = 0;
+    stopped_ = false;
+    return loop(error);
+}
+
+bool Interp::execute(const uint8_t * body, unsigned len, std::string & error)
+{
+    error_.clear();
+    err_code_.clear();
+    direct_.assign(body, body + len);
+    li_ = DIRECT;
+    off_ = 0;
+    stopped_ = false;
+    return loop(error);
+}
+
+} // namespace iskra

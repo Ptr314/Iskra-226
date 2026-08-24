@@ -26,6 +26,7 @@ void Screen::clear()
     col_ = 1;
     attr_ = ATTR_POSITIVE;
     dirty_ = true;
+    cleared_ = true;
     bells_ = 0;
 }
 

@@ -1,27 +1,20 @@
 # Сборка
 
-Нужны CMake 3.16+, Ninja и компилятор C++11. Сторонних библиотек нет:
-`dsk_tools` подключён подмодулем, всё остальное — стандартная библиотека.
+Нужны CMake 3.16+, Ninja и компилятор C++11. **Сторонних библиотек нет
+вовсе** — только стандартная.
 
 ```
-git clone --recurse-submodules https://github.com/Ptr314/Iskra-226.git
+git clone https://github.com/Ptr314/Iskra-226.git
 cd Iskra-226
 cmake -S . -B build/cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/cmake
 ctest --test-dir build/cmake --output-on-failure
 ```
 
-Если репозиторий выкачан без `--recurse-submodules`:
-
-```
-git submodule update --init --recursive
-```
-
 ## Параметры
 
 | Параметр | По умолчанию | Что делает |
 |---|---|---|
-| `ISKRA_WITH_DSK_TOOLS` | `ON` | работа с образами дискет; без него собирается только ядро |
 | `ISKRA_HOST_SDL2` | `OFF` | хост с окном (ещё не написан) |
 | `ISKRA_BUILD_TESTS` | `ON` | автотесты |
 
@@ -51,8 +44,8 @@ cmake --build build/cmake-xp
 рантайма.
 
 Проверять сборку этой цепочкой стоит регулярно: GCC 4.9.2 ловит то, чего
-не заметит GCC 13. Так, например, обнаружился лишний `#include <charconv>`
-в `dsk_tools`.
+не заметит GCC 13. Так, например, обнаружилась кириллическая буква в имени
+переменной — GCC 13 её проглотил.
 
 ## Знакогенератор
 

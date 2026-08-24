@@ -37,8 +37,34 @@ public:
     // в автотестах. Ноль снимает ограничение.
     void set_max_steps(unsigned long n) { max_steps_ = n; }
 
-    // Исполняет программу до STOP, END или конца текста.
+    // Исполняет программу с наименьшей строки. «При запуске программ с
+    // помощью оператора RUN без указания номера строки числовым переменным
+    // автоматически присваивается значение 0, а символьным — пробел»
+    // (руководство, разд. 4.1).
     bool run(std::string & error);
+
+    // RUN с номером строки: «переменные сохраняют значения, присвоенные им
+    // ранее» (там же, пример 4.2).
+    bool run_from(unsigned line_number, std::string & error);
+
+    // Исполнить строку, которой в программе нет, — режим непосредственного
+    // счёта. Если она передаст управление, исполнение продолжится в
+    // программе, как на машине.
+    bool execute(const uint8_t * body, unsigned len, std::string & error);
+
+    // Состояние между командами диалога: переменные, таблица устройств,
+    // циклы и возвраты живут в исполнителе и переживают правку текста.
+    VarStore & vars() { return store_; }
+    void clear_all();
+
+    // Таблицу устройств стирает только CLEAR: «выбор устройства справедлив до
+    // тех пор, пока не будет выполнен следующий оператор SELECT … или
+    // оператор CLEAR» (руководство, разд. 6.1). RUN её не трогает.
+    void clear_devices() { dev_ = DeviceTable(); }
+
+    // Код последней ошибки машины, если она была машинной. У ограничения
+    // эмулятора кода нет — и выдумывать его нельзя.
+    const std::string & error_code() const { return err_code_; }
 
     // Значение переменной после прогона — для проверок.
     bool variable(unsigned index, Number & out) const;
@@ -129,6 +155,12 @@ private:
 
     bool jump(unsigned line_number);
     bool fail(const std::string & m);
+    bool loop(std::string & error);
+    const std::vector<uint8_t> & body_at(unsigned li) const;
+
+    // Строка вне программы: её тело живёт здесь, а li_ равен DIRECT.
+    static const unsigned DIRECT = 0xFFFFFFFFu;
+    std::vector<uint8_t> direct_;
 
     ProgramImage & img_;
     Host & host_;

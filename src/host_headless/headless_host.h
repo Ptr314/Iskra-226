@@ -24,6 +24,9 @@ public:
     bool present() { screen_.clear_dirty(); return true; }
 
     bool poll_key(uint8_t & code);
+    // Ждать тут нечего: очередь задана заранее, и пустая очередь — это конец
+    // сценария, а не «пока не нажали».
+    bool wait_key(uint8_t & code) { return poll_key(code); }
     unsigned disk_sectors(unsigned drive) const;
     bool disk_read(unsigned drive, unsigned sector, uint8_t * buf);
     bool disk_write(unsigned drive, unsigned sector, const uint8_t * buf);

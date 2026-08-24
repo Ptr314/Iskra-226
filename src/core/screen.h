@@ -73,6 +73,15 @@ public:
     bool dirty() const { return dirty_; }
     void clear_dirty() { dirty_ = false; }
 
+    // Очистка КТ: хосту, который повторяет экран построчно, надо знать, что
+    // экран стёрли целиком, — иначе он не заметит, что старое исчезло.
+    bool take_cleared()
+    {
+        const bool c = cleared_;
+        cleared_ = false;
+        return c;
+    }
+
     // Звонок ЗВ: счётчик неотработанных сигналов для хоста.
     unsigned take_bells();
 
@@ -86,6 +95,7 @@ private:
     unsigned col_;
     uint8_t attr_;
     bool dirty_;
+    bool cleared_;
     unsigned bells_;
 };
 
