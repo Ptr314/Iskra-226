@@ -49,6 +49,10 @@ add_library(iskra_core STATIC
     src/core/host.h
     src/core/koi8.h             src/core/koi8.cpp
     src/core/number.h           src/core/number.cpp
+    src/core/value.h
+    src/core/disk_record.h      src/core/disk_record.cpp
+    src/core/catalog.h          src/core/catalog.cpp
+    src/core/devtable.h         src/core/devtable.cpp
     src/core/ir.h
     src/core/expr.h             src/core/expr.cpp
     src/core/front_text.h       src/core/front_text.cpp

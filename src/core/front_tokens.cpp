@@ -325,6 +325,10 @@ public:
 
 private:
     bool print_items(Stmt & s);
+    // Приставка дисковых операторов: буква устройства, `/адрес`, `#строка`.
+    bool disk_ref(Stmt & s, unsigned & p, bool with_device);
+    // Список приёмников без разделителей — как у INPUT.
+    bool receiver_list(Stmt & s, unsigned from);
     bool expect_end(const char * what);
     bool err(const std::string & m) { error_ = m; return false; }
 
@@ -343,6 +347,59 @@ private:
 bool StmtParser::expect_end(const char * what)
 {
     if (!src_.at_end()) return err(std::string("лишние байты в операторе ") + what);
+    return true;
+}
+
+// Первый байт операндов дисковых операторов — код устройства, а не ссылка
+// на переменную: 00 = F, 01 = R, 02 = T (устройство из таблицы устройств).
+// Дальше может идти явный адрес `/1C` и номер строки `#n`
+// (docs/format.md, разд. 4).
+bool StmtParser::disk_ref(Stmt & s, unsigned & p, bool with_device)
+{
+    if (with_device) {
+        if (p >= len_) return err("дисковый оператор без устройства");
+        if (ops_[p] > 0x02) return err("непонятный код устройства в дисковом операторе");
+        s.disk.has_device = true;
+        s.disk.device = ops_[p++];
+    }
+    if (p + 2 < len_ && ops_[p] == 0xDC && ops_[p + 1] == 0xDE) {
+        s.disk.has_addr = true;
+        s.disk.addr = ops_[p + 2];
+        p += 3;
+        if (p < len_ && ops_[p] == 0xDE) ++p;
+    }
+    if (p < len_ && ops_[p] == 0xDB) {
+        ++p;
+        src_.set_pos(p);
+        if (!ex_.parse(s.disk.row)) return err(ex_.error());
+        p = src_.pos();
+        s.disk.has_row = true;
+        if (p < len_ && ops_[p] == 0xDE) ++p;
+    }
+    return true;
+}
+
+bool StmtParser::receiver_list(Stmt & s, unsigned from)
+{
+    ByteSource rest(ops_ + from, len_ - from, vars_);
+    rest.set_list_context();
+    ExprParser p(rest);
+    // У источника сообщение точнее, чем у разборщика выражений: тот про
+    // любую беду говорит «не удалось прочитать лексему».
+    for (;;) {
+        Tok t;
+        if (!p.peek(t, true))
+            return err(rest.error().empty() ? p.error() : rest.error());
+        if (t.t == Tok::END) break;
+        if (t.t == Tok::COMMA) { p.consume(); continue; }
+        Expr target;
+        // Разделителей между приёмниками нет, поэтому за символьной
+        // переменной всегда стоит что-то похожее на индекс. Решает признак
+        // массива из таблиц, а не заглядывание (docs/format.md, разд. 7).
+        if (!p.parse_lvalue(target, true))
+            return err(rest.error().empty() ? p.error() : rest.error());
+        s.targets.push_back(target);
+    }
     return true;
 }
 
@@ -387,6 +444,142 @@ bool StmtParser::parse(unsigned verb, Stmt & s, std::string & error)
         case 0x4C:                                  // PRINT
             ok = print_items(s);
             break;
+
+        case 0x54: {                                // SELECT
+            // Операнды — сырые байты, выражений тут нет вовсе. Записи
+            // разделяются DE (docs/format.md, разд. 4). Разбирается любой код
+            // группы, даже неопознанный: иначе оператор рассинхронизируется.
+            s.kind = ST_SELECT;
+            unsigned p = 0;
+            while (ok && p < len_) {
+                SelectItem it;
+                it.code = ops_[p++];
+                switch (it.code) {
+                    case 0x00:                      // #n <адрес> [F|R]
+                        if (p + 1 >= len_) { ok = err("SELECT #n без адреса"); break; }
+                        it.row = ops_[p++];
+                        it.addr = ops_[p++];
+                        it.has_addr = true;
+                        if (p < len_ && ops_[p] != 0xDE) {
+                            it.removable = (ops_[p++] != 0);
+                            it.has_drive = true;
+                        }
+                        break;
+                    case 0x0A:                      // DISK <адрес> F|R
+                        if (p + 1 > len_) { ok = err("SELECT DISK без адреса"); break; }
+                        it.addr = ops_[p++];
+                        it.has_addr = true;
+                        if (p < len_ && ops_[p] != 0xDE) {
+                            it.removable = (ops_[p++] != 0);
+                            it.has_drive = true;
+                        }
+                        break;
+                    case 0x05:                      // P[<цифра>]
+                        if (p < len_ && ops_[p] != 0xDE) {
+                            it.addr = ops_[p++];
+                            it.has_addr = true;
+                        }
+                        break;
+                    case 0x01:                      // без параметров
+                        break;
+                    default:                        // <адрес> [EB <ширина>]
+                        if (p >= len_) { ok = err("SELECT без адреса устройства"); break; }
+                        it.addr = ops_[p++];
+                        it.has_addr = true;
+                        if (p < len_ && ops_[p] == 0xEB) {
+                            if (p + 2 >= len_) { ok = err("SELECT: обрезана ширина"); break; }
+                            it.width = (static_cast<unsigned>(ops_[p + 1]) << 8) | ops_[p + 2];
+                            p += 3;
+                        }
+                        break;
+                }
+                if (!ok) break;
+                s.selects.push_back(it);
+                if (p < len_) {
+                    if (ops_[p] != 0xDE) { ok = err("SELECT: мусор между записями"); break; }
+                    ++p;
+                    if (p >= len_) { ok = err("SELECT: запятая в конце"); break; }
+                }
+            }
+            if (ok && s.selects.empty()) ok = err("SELECT без параметров");
+            src_.set_pos(len_);
+            break;
+        }
+
+        case 0x75: {                                // DATA LOAD DC OPEN
+            s.kind = ST_OPEN;
+            unsigned p = 0;
+            if (!disk_ref(s, p, true)) { ok = false; break; }
+            src_.set_pos(p);
+            if (!ex_.parse(s.e)) { ok = err(ex_.error()); break; }
+            ok = expect_end("DATA LOAD DC OPEN");
+            break;
+        }
+
+        case 0x74: {                                // DATA LOAD DC
+            // Устройства тут нет: оператор работает с уже открытым файлом.
+            s.kind = ST_DLOAD;
+            unsigned p = 0;
+            if (!disk_ref(s, p, false)) { ok = false; break; }
+            if (!receiver_list(s, p)) { ok = false; break; }
+            if (s.targets.empty()) ok = err("DATA LOAD DC без приёмников");
+            break;
+        }
+
+        case 0x79:                                  // DBACKSPACE
+        case 0x7A: {                                // DSKIP
+            s.kind = ST_DSKIP;
+            s.backwards = (verb == 0x79);
+            unsigned p = 0;
+            if (!disk_ref(s, p, false)) { ok = false; break; }
+            if (p >= len_) { ok = err("DSKIP/DBACKSPACE без параметра"); break; }
+            if (ops_[p] == 0xD6) { s.mode = SK_BEG; ++p; }
+            else if (ops_[p] == 0xD7) { s.mode = SK_END; ++p; }
+            else {
+                s.mode = SK_COUNT;
+                src_.set_pos(p);
+                if (!ex_.parse(s.e)) { ok = err(ex_.error()); break; }
+                p = src_.pos();
+                // Признак «в секторах» — байт 05 за разобранным выражением.
+                if (p < len_ && ops_[p] == 0x05) { s.sectors = true; ++p; }
+            }
+            if (ok && p != len_) ok = err("лишние байты в операторе DSKIP/DBACKSPACE");
+            src_.set_pos(len_);
+            break;
+        }
+
+        case 0x7B: {                                // LIMITS
+            s.kind = ST_LIMITS;
+            unsigned p = 0;
+            if (!disk_ref(s, p, true)) { ok = false; break; }
+            // Форма 1 начинается с имени файла, форма 2 — сразу с приёмников
+            // (руководство, разд. 18.8.3). Различаются по типу первого
+            // операнда: имя символьное, приёмники числовые.
+            {
+                ByteSource look(ops_ + p, len_ - p, vars_);
+                ExprParser lp(look);
+                Tok t;
+                if (!lp.peek(t, true)) {
+                    ok = err(look.error().empty() ? lp.error() : look.error());
+                    break;
+                }
+                const bool named =
+                    (t.t == Tok::STR) ||
+                    ((t.t == Tok::VAR || t.t == Tok::ARRAY) && vars_
+                     && t.var < vars_->size() && (*vars_)[t.var].is_string);
+                if (named) {
+                    src_.set_pos(p);
+                    if (!ex_.parse(s.e)) { ok = err(ex_.error()); break; }
+                    s.has_prompt = true;            // форма 1: имя задано
+                    p = src_.pos();
+                    if (p < len_ && ops_[p] == 0xDE) ++p;
+                }
+            }
+            if (!receiver_list(s, p)) { ok = false; break; }
+            if (s.targets.size() < 3 || s.targets.size() > 4)
+                ok = err("LIMITS: приёмников должно быть три или четыре");
+            break;
+        }
 
         case 0x21:                                  // GOTO
         case 0x22: {                                // GOSUB
@@ -784,7 +977,9 @@ bool StmtParser::parse(unsigned verb, Stmt & s, std::string & error)
             break;
     }
 
-    if (!ok) error = error_;
+    // У источника лексем сообщение точнее, чем у разборщика выражений: тот
+    // про любую беду говорит «не удалось прочитать лексему».
+    if (!ok) error = src_.error().empty() ? error_ : src_.error();
     return ok;
 }
 

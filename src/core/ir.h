@@ -99,8 +99,48 @@ struct DimEntry {
     std::vector<Expr> sizes;
 };
 
+// Одна запись оператора SELECT: группа устройств и её параметры. Записи
+// в операторе перечисляются через запятую (руководство, разд. 6.1).
+struct SelectItem {
+    SelectItem() : code(0), row(0), addr(0), width(0),
+                   removable(false), has_addr(false), has_drive(false) {}
+
+    unsigned code;       // код группы, см. SelectCode в core/devtable.h
+    unsigned row;        // номер строки таблицы у `#n`
+    unsigned addr;       // ФАУ устройства; у `P` — цифра паузы
+    unsigned width;      // ширина строки; 0 — не задана
+    bool removable;      // диск R, а не F
+    bool has_addr;       // у `P` — была ли цифра
+    bool has_drive;      // был ли указан F или R
+};
+
+// Приставка дисковых операторов: буква устройства и номер строки таблицы.
+// `DATA LOAD DC OPEN T#2,"АНКЕТА"` — устройство T, строка 2. У операторов,
+// работающих с уже открытым файлом, буквы нет вовсе, только `#n`.
+struct DiskRef {
+    DiskRef() : has_device(false), device(0), has_row(false),
+                has_addr(false), addr(0) {}
+
+    bool has_device;
+    unsigned device;     // 0 = F, 1 = R, 2 = T (устройство из таблицы)
+    bool has_row;
+    Expr row;            // номер строки таблицы устройств
+    // Явный адрес устройства: `LOAD DC F/1C,"М2"`.
+    bool has_addr;
+    unsigned addr;
+};
+
+// Куда двигать текущий сектор: на столько-то записей (или секторов),
+// к началу файла, к концевой записи.
+enum SkipMode { SK_COUNT, SK_BEG, SK_END };
+
 enum StmtKind {
     ST_PRINT,
+    ST_SELECT,       // выбор устройств и режимов
+    ST_OPEN,         // DATA LOAD DC OPEN — открыть существующий файл
+    ST_DLOAD,        // DATA LOAD DC — прочитать одну запись
+    ST_DSKIP,        // DSKIP и DBACKSPACE — сдвиг текущего сектора
+    ST_LIMITS,       // LIMITS — адресные параметры файла в переменные
     ST_DIM,
     ST_REDIM,        // MAT REDIM — размерности вычисляются на ходу
     ST_LINPUT,       // ввод строки целиком, без разбора на поля
@@ -125,12 +165,14 @@ enum StmtKind {
 
 struct Stmt {
     Stmt() : kind(ST_REM), var(0), line(0), label(0), bytes(1),
+             mode(SK_COUNT), sectors(false), backwards(false),
              is_gosub(false), has_prompt(false), has_step(false),
              newline(true) {}
 
     StmtKind kind;
 
     std::vector<PrintItem> items;    // PRINT
+    std::vector<SelectItem> selects; // SELECT
     std::vector<DimEntry> dims;      // DIM
     std::vector<Expr> targets;       // LET — цели слева; INPUT — приёмники
     Expr e;                          // LET — правая часть; IF — условие; FOR — начало
@@ -150,6 +192,12 @@ struct Stmt {
     // число байтов, содержащих преобразованное арифметическое выражение»
     // (руководство, разд. 14.2); других значений там нет.
     unsigned bytes;
+
+    // Дисковые операторы
+    DiskRef disk;                    // устройство и строка таблицы
+    unsigned mode;                   // DSKIP/DBACKSPACE: SkipMode
+    bool sectors;                    // DSKIP/DBACKSPACE: параметр S
+    bool backwards;                  // DBACKSPACE, а не DSKIP
 
     bool is_gosub;                   // ON: переход с возвратом
     // INPUT — подсказка; CONVERT — образ; DEFFN' — текст клавиши спецфункции

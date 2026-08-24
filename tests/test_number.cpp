@@ -144,6 +144,102 @@ void test_int_conversion()
 // 255 — это 2.55 x 10^2, в двоичной плавающей точке 254.99999999999997,
 // и INT(255) выходил 254. Список ниже — те значения, где round-trip через
 // double врал, плюс оба примера книги.
+// --- представление числа в записи файла данных ---------------------------
+
+// "00 10 00 00 00 00 00 00" -> восемь байт
+void hex8(const char * s, uint8_t out[8])
+{
+    unsigned n = 0;
+    for (const char * p = s; *p && n < 8; ) {
+        while (*p == ' ') ++p;
+        if (!*p) break;
+        unsigned v = 0;
+        for (unsigned k = 0; k < 2 && *p; ++k, ++p)
+            v = v * 16 + (*p <= '9' ? *p - '0' : (*p | 32) - 'a' + 10);
+        out[n++] = static_cast<uint8_t>(v);
+    }
+}
+
+std::string hexs8(const uint8_t b[8])
+{
+    static const char * D = "0123456789ABCDEF";
+    std::string r;
+    for (unsigned i = 0; i < 8; ++i) {
+        if (i) r += ' ';
+        r += D[b[i] >> 4];
+        r += D[b[i] & 15];
+    }
+    return r;
+}
+
+// Байты -> десятичная запись через to_display().
+std::string from8(const char * hex)
+{
+    uint8_t b[8];
+    hex8(hex, b);
+    Number n;
+    if (!Number::from_disk8(b, n)) return "ОШИБКА";
+    return n.to_display();
+}
+
+// Десятичная запись -> байты.
+std::string to8(const char * dec)
+{
+    uint8_t b[8];
+    num(dec).to_disk8(b);
+    return hexs8(b);
+}
+
+void test_disk8()
+{
+    // Значения взяты с реальных образов и сверены с tools/probes/disk.py.
+    CHECK_STR(from8("00 10 00 00 00 00 00 00"), " 1");
+    CHECK_STR(from8("00 80 00 00 00 00 00 00"), " 8");
+    CHECK_STR(from8("00 70 00 00 00 00 00 00"), " 7");        // klerk/D21
+    CHECK_STR(from8("00 21 00 00 00 00 01 00"), " 2100");
+    CHECK_STR(from8("00 99 00 00 00 00 01 00"), " 9900");
+    CHECK_STR(from8("00 75 00 00 00 00 FF 00"), " .0075");
+    CHECK_STR(from8("40 11 75 53 43 58 02 40"), " 401175534.3584");
+    CHECK_STR(from8("35 11 77 78 61 42 03 91"), "-351177786142.9");
+    CHECK_STR(from8("44 15 46 99 22 95 00 01"), "-441.546992295");
+    CHECK_STR(from8("00 00 00 00 00 00 00 00"), " 0");
+
+    // Обратно — те же байты.
+    CHECK_STR(to8("1"),                "00 10 00 00 00 00 00 00");
+    CHECK_STR(to8("7"),                "00 70 00 00 00 00 00 00");
+    CHECK_STR(to8("2100"),             "00 21 00 00 00 00 01 00");
+    CHECK_STR(to8(".0075"),            "00 75 00 00 00 00 FF 00");
+    CHECK_STR(to8("9.7E-9"),           "00 97 00 00 00 00 FD 00");
+    CHECK_STR(to8("401175534.3584"),   "40 11 75 53 43 58 02 40");
+    CHECK_STR(to8("-351177786142.9"),  "35 11 77 78 61 42 03 91");
+    CHECK_STR(to8("-441.546992295"),   "44 15 46 99 22 95 00 01");
+    CHECK_STR(to8("0"),                "00 00 00 00 00 00 00 00");
+
+    // Порядок — степень 1000, поэтому соседние десятичные порядки лежат в
+    // одном байте порядка, а мантисса съезжает на разряд.
+    CHECK_STR(to8("1"),    "00 10 00 00 00 00 00 00");
+    CHECK_STR(to8("10"),   "01 00 00 00 00 00 00 00");
+    CHECK_STR(to8("100"),  "10 00 00 00 00 00 00 00");
+    CHECK_STR(to8("1000"), "00 10 00 00 00 00 01 00");
+
+    // Когда старшая цифра встаёт на третью позицию, в поле остаётся только
+    // 11 значащих разрядов, и два младших теряются.
+    CHECK_STR(to8("1.234567890123"), "00 12 34 56 78 90 00 10");
+    CHECK_STR(from8("00 12 34 56 78 90 00 10"), " 1.2345678901");
+    // А при старшей цифре на первой позиции сохраняются все тринадцать.
+    CHECK_STR(to8("123.4567890123"), "12 34 56 78 90 12 00 30");
+    CHECK_STR(from8("12 34 56 78 90 12 00 30"), " 123.4567890123");
+
+    Number n;
+    uint8_t b[8];
+    hex8("00 1A 00 00 00 00 00 00", b);
+    CHECK(!Number::from_disk8(b, n));           // не BCD
+    hex8("00 10 00 00 00 00 00 02", b);
+    CHECK(!Number::from_disk8(b, n));           // недопустимый знак
+    hex8("00 10 00 00 00 00 7F 00", b);
+    CHECK(!Number::from_disk8(b, n));           // порядок вне Number
+}
+
 void test_floor()
 {
     long v = -1;
@@ -196,6 +292,7 @@ int main()
     test_compare();
     test_int_conversion();
     test_floor();
+    test_disk8();
     test_for_loop_accumulation();
     return test::summary("десятичная арифметика");
 }

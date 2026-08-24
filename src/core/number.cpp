@@ -383,6 +383,51 @@ bool Number::floor_to_int(long & out) const
     return floor().to_int(out);
 }
 
+void Number::to_disk8(uint8_t out[8]) const
+{
+    for (unsigned i = 0; i < 8; ++i) out[i] = 0;
+    if (is_zero()) return;                      // нуль — восемь нулевых байт
+
+    // Внутри значение равно D0.D1…D12 * 10^exp_, на диске — мантисса с
+    // точкой после третьей цифры и порядок степенями 1000. Значит
+    // порядок = floor(exp_ / 3), а старшая цифра встаёт на позицию
+    // 3 - (exp_ - 3*порядок), то есть 1, 2 или 3.
+    int e3 = exp_ / 3;
+    if (exp_ % 3 < 0) --e3;                     // деление с округлением вниз
+    const unsigned lead = 3 - static_cast<unsigned>(exp_ - 3 * e3);
+
+    uint8_t dig[DIGITS];
+    for (unsigned i = 0; i < DIGITS; ++i) dig[i] = 0;
+    for (unsigned i = 0; i + lead <= DIGITS; ++i) dig[lead - 1 + i] = d_[i];
+
+    for (unsigned i = 0; i < 6; ++i)
+        out[i] = static_cast<uint8_t>((dig[2 * i] << 4) | dig[2 * i + 1]);
+    out[6] = static_cast<uint8_t>(e3 & 0xFF);
+    out[7] = static_cast<uint8_t>((dig[12] << 4) | (neg_ ? 1 : 0));
+}
+
+bool Number::from_disk8(const uint8_t in[8], Number & out)
+{
+    int dig[DIGITS];
+    for (unsigned i = 0; i < 6; ++i) {
+        const unsigned hi = in[i] >> 4, lo = in[i] & 0x0F;
+        if (hi > 9 || lo > 9) return false;
+        dig[2 * i]     = static_cast<int>(hi);
+        dig[2 * i + 1] = static_cast<int>(lo);
+    }
+    const unsigned last = in[7] >> 4;
+    const unsigned sign = in[7] & 0x0F;
+    // Младшая тетрада байта 7 во всём корпусе только 0 или 1.
+    if (last > 9 || sign > 1) return false;
+    dig[DIGITS - 1] = static_cast<int>(last);
+
+    const int e3 = static_cast<int>(static_cast<int8_t>(in[6]));
+    // d1.d2…d13 * 10^(2 + 3*порядок) — та же величина, что d1d2d3.d4…d13
+    // умноженная на 1000^порядок.
+    out = Number();
+    return out.set_from(dig, DIGITS, 2 + 3 * e3, sign != 0);
+}
+
 double Number::to_double() const
 {
     if (is_zero()) return 0.0;

@@ -5,6 +5,9 @@
 
 #include "core/interp.h"
 
+#include "core/catalog.h"
+#include "core/disk_record.h"
+
 #include <cmath>
 #include <cstdio>
 
@@ -758,6 +761,274 @@ bool Interp::eval(const Expr & e, Value & v)
     return true;
 }
 
+// --- дисковые операторы ----------------------------------------------------
+
+bool Interp::resolve_disk(const DiskRef & ref, unsigned & row, unsigned & drive)
+{
+    row = 0;                                    // без `#n` работает строка #0
+    if (ref.has_row) {
+        Number n;
+        if (!eval_num(ref.row, n)) return false;
+        long v = 0;
+        if (!n.floor_to_int(v) || v < 0 || v >= static_cast<long>(DeviceTable::ROWS))
+            return fail("номер строки таблицы устройств вне 0…7");
+        row = static_cast<unsigned>(v);
+    }
+
+    DeviceRow & r = dev_.row(row);
+    unsigned addr = ref.has_addr ? ref.addr : r.addr;
+    if (!addr) addr = dev_.row(0).addr;         // строка не настроена — как #0
+    bool removable = r.removable;
+    // «Если в операторе открытия файла указан тип диска, отличный от того,
+    // который был назначен по оператору SELECT, то тип диска берётся из
+    // оператора открытия файла» (руководство, разд. 18.10). Буква T значит
+    // «взять из таблицы устройств», её тип не меняет.
+    if (ref.has_device && ref.device < 2) removable = (ref.device == 1);
+
+    if (!DeviceTable::drive_index(static_cast<uint8_t>(addr), removable, drive))
+        return fail("неизвестный адрес дискового устройства");
+    if (!host_.disk_sectors(drive)) return fail("дисковода нет");
+
+    r.addr = static_cast<uint8_t>(addr);
+    r.removable = removable;
+    return true;
+}
+
+bool Interp::do_open(const Stmt & s)
+{
+    unsigned row = 0, drive = 0;
+    if (!resolve_disk(s.disk, row, drive)) return false;
+
+    std::string name;
+    if (!eval_str(s.e, name)) return false;
+
+    uint8_t nm[NAME_LEN];
+    Catalog::make_name(name, nm);
+
+    Catalog cat(host_, drive);
+    CatalogEntry e;
+    std::string err;
+    if (!cat.find(nm, e, err)) return fail(err);
+    if (!e.exists() || e.scratched()) return fail("файла нет в каталоге");
+
+    DeviceRow & r = dev_.row(row);
+    r.bound = true;
+    r.first = e.first;
+    r.current = e.first;
+    r.last = e.last;
+    return true;
+}
+
+bool Interp::store_value(const Expr & target, const std::vector<Value> & vals,
+                         std::size_t & used)
+{
+    // Массив целиком — столько значений, сколько в нём элементов: «элементы
+    // массива записываются построчно» (руководство, разд. 18.6).
+    if (target.kind == EX_ARRAY) {
+        if (is_string_expr(target)) {
+            const VarInfo & vi = prog_.vars[target.var];
+            const unsigned n = vi.dim1 ? vi.dim1 : 1;
+            std::string & field = str_field(target.var);
+            for (unsigned i = 0; i < n; ++i) {
+                if (used >= vals.size()) return fail("в записи меньше значений, чем приёмников");
+                const Value & v = vals[used++];
+                if (!v.is_str) return fail("числу в записи соответствует символьный приёмник");
+                const unsigned off = i * vi.str_len;
+                if (off + vi.str_len > field.size()) break;
+                for (unsigned k = 0; k < vi.str_len; ++k)
+                    field[off + k] = (k < v.str.size()) ? v.str[k] : ' ';
+            }
+            return true;
+        }
+        std::map<unsigned, Array>::iterator it = arrays_.find(target.var);
+        if (it == arrays_.end()) return fail("массив не описан");
+        for (std::size_t i = 0; i < it->second.cells.size(); ++i) {
+            if (used >= vals.size()) return fail("в записи меньше значений, чем приёмников");
+            const Value & v = vals[used++];
+            if (v.is_str) return fail("строке в записи соответствует числовой приёмник");
+            it->second.cells[i] = v.num;
+        }
+        return true;
+    }
+
+    if (used >= vals.size()) return fail("в записи меньше значений, чем приёмников");
+    const Value & v = vals[used++];
+    if (is_string_expr(target)) {
+        if (!v.is_str) return fail("числу в записи соответствует символьный приёмник");
+        return assign_string(target, v.str);
+    }
+    if (v.is_str) return fail("строке в записи соответствует числовой приёмник");
+    Number * cell = 0;
+    if (!slot(target, cell)) return false;
+    *cell = v.num;
+    return true;
+}
+
+bool Interp::do_dload(const Stmt & s)
+{
+    unsigned row = 0, drive = 0;
+    if (!resolve_disk(s.disk, row, drive)) return false;
+    DeviceRow & r = dev_.row(row);
+    if (!r.bound) return fail("файл не открыт");
+
+    std::vector<Value> vals;
+    unsigned next = 0;
+    std::string err;
+    if (!read_record(host_, drive, r.current, vals, next, err)) return fail(err);
+
+    std::size_t used = 0;
+    for (std::size_t i = 0; i < s.targets.size(); ++i)
+        if (!store_value(s.targets[i], vals, used)) return false;
+
+    // «По окончании операции загрузки адрес текущего сектора устанавливается
+    // на первый сектор следующей записи» (руководство, разд. 18.4).
+    r.current = (next <= r.last) ? next : r.last;
+    return true;
+}
+
+bool Interp::do_dskip(const Stmt & s)
+{
+    unsigned row = 0, drive = 0;
+    if (!resolve_disk(s.disk, row, drive)) return false;
+    DeviceRow & r = dev_.row(row);
+    if (!r.bound) return fail("файл не открыт");
+
+    std::string err;
+    if (s.mode == SK_BEG) { r.current = r.first; return true; }
+    if (s.mode == SK_END) {
+        unsigned sector = 0, used = 0;
+        if (!find_end_record(host_, drive, r.first, r.last, sector, used))
+            return fail("в файле нет концевой записи");
+        r.current = sector;
+        return true;
+    }
+
+    Number n;
+    if (!eval_num(s.e, n)) return false;
+    long count = 0;
+    if (!n.floor_to_int(count)) return fail("DSKIP/DBACKSPACE: не целое число");
+    if (count < 0) return fail("DSKIP/DBACKSPACE: отрицательное число");
+
+    unsigned cur = r.current;
+    if (s.sectors) {
+        // «Целая часть указанного выражения прибавляется к адресу текущего
+        // сектора» (руководство, разд. 18.7) — без разбора записей.
+        if (s.backwards)
+            cur = (static_cast<unsigned long>(count) > cur - r.first)
+                      ? r.first : cur - static_cast<unsigned>(count);
+        else
+            cur = (cur + static_cast<unsigned>(count) > r.last)
+                      ? r.last : cur + static_cast<unsigned>(count);
+    } else {
+        for (long i = 0; i < count; ++i) {
+            if (s.backwards) {
+                if (cur <= r.first) { cur = r.first; break; }
+                unsigned start = cur - 1;
+                if (!record_start(host_, drive, r.first, cur - 1, start))
+                    return fail("не читается сектор при DBACKSPACE");
+                cur = start;
+            } else {
+                unsigned next = cur;
+                if (!record_end(host_, drive, cur, next, err)) return fail(err);
+                if (next > r.last) { cur = r.last; break; }
+                cur = next;
+            }
+        }
+    }
+    // «Пользуясь операторами DSKIP и DBACKSPACE, невозможно выйти за
+    // границы файла» (руководство, разд. 18.7).
+    if (cur < r.first) cur = r.first;
+    if (cur > r.last) cur = r.last;
+    r.current = cur;
+    return true;
+}
+
+bool Interp::do_limits(const Stmt & s)
+{
+    unsigned row = 0, drive = 0;
+    if (!resolve_disk(s.disk, row, drive)) return false;
+    DeviceRow & r = dev_.row(row);
+
+    unsigned code = 0;
+    if (s.has_prompt) {
+        // Форма 1: найти файл по имени и переписать его параметры в строку
+        // таблицы устройств (руководство, разд. 18.8.3).
+        std::string name;
+        if (!eval_str(s.e, name)) return false;
+        uint8_t nm[NAME_LEN];
+        Catalog::make_name(name, nm);
+
+        Catalog cat(host_, drive);
+        CatalogEntry e;
+        std::string err;
+        if (!cat.find(nm, e, err)) return fail(err);
+        code = limits_code(e);
+        if (e.exists()) {
+            r.bound = true;
+            r.first = e.first;
+            r.current = e.first;
+            r.last = e.last;
+        } else {
+            r.bound = false;
+            r.first = r.current = r.last = 0;
+        }
+    } else {
+        // Форма 2: обращений к диску нет вовсе, всё берётся из строки.
+        code = r.bound ? 2u : 0u;
+    }
+
+    unsigned sector = 0, used = 0;
+    if (!r.bound || !find_end_record(host_, drive, r.first, r.last, sector, used))
+        used = 0;
+
+    const unsigned vals[4] = { r.first, r.last, used, code };
+    for (std::size_t i = 0; i < s.targets.size() && i < 4; ++i) {
+        Number * cell = 0;
+        if (is_string_expr(s.targets[i]))
+            return fail("LIMITS: приёмники числовые");
+        if (!slot(s.targets[i], cell)) return false;
+        *cell = Number::from_int(static_cast<long>(vals[i]));
+    }
+    return true;
+}
+
+bool Interp::do_select(const Stmt & s)
+{
+    for (std::size_t i = 0; i < s.selects.size(); ++i) {
+        const SelectItem & it = s.selects[i];
+        switch (it.code) {
+            case SC_ROW:
+                if (!DeviceTable::valid_row(it.row))
+                    return fail("SELECT #: строки " + num_str(it.row) + " нет");
+                dev_.select_row(it.row, static_cast<uint8_t>(it.addr), it.removable);
+                break;
+
+            case SC_DISK:
+                dev_.select_disk(static_cast<uint8_t>(it.addr), it.removable);
+                break;
+
+            case SC_PAUSE:
+                // `SELECT P` без цифры снимает паузу (руководство, разд. 11.4).
+                dev_.set_pause(it.has_addr ? it.addr : 0);
+                break;
+
+            case SC_TRIG:
+                dev_.set_angle(static_cast<AngleMode>(it.addr));
+                break;
+
+            default: {
+                DeviceGroup g;
+                if (!group_of_code(it.code, g))
+                    return fail("SELECT: неизвестная группа устройств, код "
+                                + num_str(it.code));
+                dev_.select(g, static_cast<uint8_t>(it.addr), it.width);
+                break;
+            }
+        }
+    }
+    return true;
+}
+
 bool Interp::do_print(const Stmt & s)
 {
     bool last_was_at = false;
@@ -1097,6 +1368,21 @@ bool Interp::exec(const Stmt & s)
 
         case ST_PRINT:
             return do_print(s);
+
+        case ST_SELECT:
+            return do_select(s);
+
+        case ST_OPEN:
+            return do_open(s);
+
+        case ST_DLOAD:
+            return do_dload(s);
+
+        case ST_DSKIP:
+            return do_dskip(s);
+
+        case ST_LIMITS:
+            return do_limits(s);
 
         case ST_INPUT:
             return do_input(s);

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "core/devtable.h"
 #include "core/expr.h"
 
 namespace iskra {
@@ -109,6 +110,16 @@ public:
     // число 2 и имя E, а «FF» стало бы именем переменной.
     bool take_hex_byte(unsigned & out);
 
+    // ФАУ устройства в SELECT: ровно две шестнадцатеричные цифры, без
+    // скобки за ними. `SELECT PRINT0C`, `SELECT TAPE27`.
+    bool take_hex2(unsigned & out);
+
+    // Одна цифра — номер строки таблицы устройств в `SELECT #n`.
+    bool take_digit(unsigned & out);
+
+    // Одиночный знак, если он тут стоит.
+    bool take_char(char c);
+
     // Образ CONVERT — не выражение, а набор знаков в скобках: (##.##),
     // (-#.#^^^^). Забираем его сырым текстом.
     bool take_image(std::string & out);
@@ -183,6 +194,41 @@ bool TextLexer::take_hex_byte(unsigned & out)
     skip_spaces();
     if (p_ >= end_ || s_[p_] != ')') { p_ = save; return false; }
     out = v;
+    return true;
+}
+
+bool TextLexer::take_hex2(unsigned & out)
+{
+    skip_spaces();
+    const unsigned save = p_;
+    unsigned v = 0;
+    for (unsigned k = 0; k < 2; ++k) {
+        if (p_ >= end_) { p_ = save; return false; }
+        const char c = s_[p_];
+        int d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else { p_ = save; return false; }
+        v = v * 16 + static_cast<unsigned>(d);
+        ++p_;
+    }
+    out = v;
+    return true;
+}
+
+bool TextLexer::take_digit(unsigned & out)
+{
+    skip_spaces();
+    if (p_ >= end_ || !is_digit(s_[p_])) return false;
+    out = static_cast<unsigned>(s_[p_++] - '0');
+    return true;
+}
+
+bool TextLexer::take_char(char c)
+{
+    skip_spaces();
+    if (p_ >= end_ || s_[p_] != c) return false;
+    ++p_;
     return true;
 }
 
@@ -380,6 +426,8 @@ private:
     bool parse_stmt(Stmt & s);
     bool print_items(Stmt & s, ExprParser & ex);
     bool var_list(std::vector<Expr> & out, ExprParser & ex);
+    // Приставка дисковых операторов: буква устройства, `/адрес`, `#строка`.
+    bool disk_prefix(Stmt & s, bool with_device);
     bool dim_list(Stmt & s, ExprParser & ex);
     bool err(const std::string & m) { if (error_.empty()) error_ = m; return false; }
 
@@ -387,6 +435,31 @@ private:
     NameTable & names_;
     std::string error_;
 };
+
+bool LineParser::disk_prefix(Stmt & s, bool with_device)
+{
+    if (with_device) {
+        // Буква устройства — одна: имя переменной из двух букв не бывает,
+        // так что `TA¤` читается как T и A¤.
+        if (lex_.take_word("F"))      { s.disk.has_device = true; s.disk.device = 0; }
+        else if (lex_.take_word("R")) { s.disk.has_device = true; s.disk.device = 1; }
+        else if (lex_.take_word("T")) { s.disk.has_device = true; s.disk.device = 2; }
+    }
+    if (lex_.take_char('/')) {
+        unsigned a = 0;
+        if (!lex_.take_hex2(a)) return err("нет адреса устройства после «/»");
+        s.disk.has_addr = true;
+        s.disk.addr = a;
+        lex_.take_char(',');
+    }
+    if (lex_.take_char('#')) {
+        ExprParser ex(lex_);
+        if (!ex.parse(s.disk.row)) return err(ex.error());
+        s.disk.has_row = true;
+        lex_.take_char(',');
+    }
+    return true;
+}
 
 bool LineParser::print_items(Stmt & s, ExprParser & ex)
 {
@@ -785,6 +858,134 @@ bool LineParser::parse_stmt(Stmt & s)
         s.var = t.var;
         return true;
     }
+    // Дисковые операторы. Длинные слова раньше коротких: «DATA LOAD DC OPEN»
+    // перед «DATA LOAD DC».
+    if (lex_.take_word("DATA LOAD DC OPEN")) {
+        s.kind = ST_OPEN;
+        if (!disk_prefix(s, true)) return false;
+        ExprParser ex(lex_);
+        if (!ex.parse(s.e)) return err(ex.error());
+        return true;
+    }
+    if (lex_.take_word("DATA LOAD DC")) {
+        s.kind = ST_DLOAD;
+        if (!disk_prefix(s, false)) return false;
+        ExprParser ex(lex_);
+        if (!var_list(s.targets, ex)) return false;
+        if (s.targets.empty()) return err("DATA LOAD DC без приёмников");
+        return true;
+    }
+    if (lex_.take_word("DSKIP") || lex_.take_word("DBACKSPACE")) {
+        // Какое из двух слов съедено, видно по последнему знаку.
+        s.kind = ST_DSKIP;
+        s.backwards = (lex_.text()[lex_.pos() - 1] == 'E');
+        if (!disk_prefix(s, false)) return false;
+        if (lex_.take_word("BEG")) s.mode = SK_BEG;
+        else if (lex_.take_word("END")) s.mode = SK_END;
+        else {
+            s.mode = SK_COUNT;
+            ExprParser ex(lex_);
+            if (!ex.parse(s.e)) return err(ex.error());
+            if (lex_.take_word("S")) s.sectors = true;
+        }
+        return true;
+    }
+    if (lex_.take_word("LIMITS")) {
+        s.kind = ST_LIMITS;
+        if (!disk_prefix(s, true)) return false;
+        // Форма 1 начинается с имени файла, форма 2 — сразу с приёмников
+        // (руководство, разд. 18.8.3).
+        {
+            const unsigned save = lex_.pos();
+            ExprParser ex(lex_);
+            Expr first;
+            if (!ex.parse(first)) return err(ex.error());
+            if (first.kind == EX_STR ||
+                (first.var < names_.vars().size() &&
+                 names_.vars()[first.var].is_string &&
+                 (first.kind == EX_VAR || first.kind == EX_ELEM ||
+                  first.kind == EX_ARRAY))) {
+                s.e = first;
+                s.has_prompt = true;
+                lex_.take_char(',');
+            } else {
+                lex_.set_pos(save);
+            }
+        }
+        ExprParser ex(lex_);
+        if (!var_list(s.targets, ex)) return false;
+        if (s.targets.size() < 3 || s.targets.size() > 4)
+            return err("LIMITS: приёмников должно быть три или четыре");
+        return true;
+    }
+
+    if (lex_.take_word("SELECT")) {
+        s.kind = ST_SELECT;
+        // Порядок проверок важен: длинные слова раньше коротких, иначе
+        // DISK разберётся как D, а PRINT и PLOT — как P.
+        for (;;) {
+            SelectItem it;
+            unsigned v = 0;
+            if (lex_.take_char('#')) {
+                it.code = SC_ROW;
+                if (!lex_.take_digit(it.row)) return err("SELECT #: нет номера строки");
+                if (it.row > 7) return err("SELECT #: номер строки 0…7");
+                if (!lex_.take_hex2(it.addr)) return err("SELECT #: нет адреса устройства");
+                it.has_addr = true;
+            } else if (lex_.take_word("DISK")) {
+                it.code = SC_DISK;
+                if (!lex_.take_hex2(it.addr)) return err("SELECT DISK: нет адреса");
+                it.has_addr = true;
+            } else {
+                static const struct { const char * word; unsigned code; } GROUPS[] = {
+                    { "PRINT", SC_PRINT }, { "PLOT", SC_PLOT }, { "LIST", SC_LIST },
+                    { "TAPE",  SC_TAPE  }, { "CO",   SC_CO   }
+                };
+                bool named = false;
+                for (unsigned k = 0; k < sizeof(GROUPS) / sizeof(GROUPS[0]); ++k)
+                    if (lex_.take_word(GROUPS[k].word)) {
+                        it.code = GROUPS[k].code;
+                        if (!lex_.take_hex2(it.addr))
+                            return err("SELECT: нет адреса устройства");
+                        it.has_addr = true;
+                        named = true;
+                        break;
+                    }
+                if (!named) {
+                    if (lex_.take_word("P")) {
+                        it.code = SC_PAUSE;
+                        if (lex_.take_digit(v)) { it.addr = v; it.has_addr = true; }
+                    } else if (lex_.take_word("D") || lex_.take_word("R")
+                               || lex_.take_word("G")) {
+                        // Единицы измерения углов. Какая именно — по букве,
+                        // которую только что съели.
+                        it.code = SC_TRIG;
+                        const char letter = lex_.text()[lex_.pos() - 1];
+                        it.addr = (letter == 'D') ? ANG_DEG
+                                : (letter == 'G') ? ANG_GRAD : ANG_RAD;
+                        it.has_addr = true;
+                    } else {
+                        return err("SELECT: неизвестная группа устройств");
+                    }
+                }
+            }
+            // Дисковод F или R — только у дисковых форм.
+            if (it.code == SC_ROW || it.code == SC_DISK) {
+                if (lex_.take_word("F")) { it.removable = false; it.has_drive = true; }
+                else if (lex_.take_word("R")) { it.removable = true; it.has_drive = true; }
+            }
+            // Ширина строки в скобках.
+            if (it.code != SC_ROW && it.code != SC_DISK && it.code != SC_TRIG
+                && lex_.take_char('(')) {
+                if (!lex_.take_uint(it.width)) return err("SELECT: нет ширины строки");
+                if (!lex_.take_char(')')) return err("SELECT: не закрыта скобка");
+            }
+            s.selects.push_back(it);
+            if (!lex_.take_char(',')) break;
+        }
+        return true;
+    }
+
     if (lex_.take_word("STOP")) { s.kind = ST_STOP; return true; }
     if (lex_.take_word("END"))  { s.kind = ST_END;  return true; }
 

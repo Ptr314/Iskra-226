@@ -9,18 +9,12 @@
 #include <string>
 #include <vector>
 
+#include "core/devtable.h"
 #include "core/host.h"
 #include "core/ir.h"
+#include "core/value.h"
 
 namespace iskra {
-
-// Значение выражения: число либо строка символов в КОИ-8.
-struct Value {
-    Value() : is_str(false) {}
-    bool is_str;
-    Number num;
-    std::string str;
-};
 
 // Исполнитель. Одинаково работает с представлением, построенным из текста,
 // и с построенным из токенов, — в этом весь смысл общего IR.
@@ -39,6 +33,9 @@ public:
     // Значение переменной после прогона — для проверок.
     bool variable(unsigned index, Number & out) const;
 
+    // Таблица устройств — её состояние программа видит сама (LIST%, LIMITS).
+    const DeviceTable & devices() const { return dev_; }
+
 private:
     struct Frame {
         unsigned var;
@@ -54,6 +51,19 @@ private:
     bool eval_str(const Expr & e, std::string & out);
 
     bool do_print(const Stmt & s);
+    bool do_select(const Stmt & s);
+
+    // Дисковые операторы. Приставка `<устройство>[/адрес][#строка]`
+    // разрешается в номер строки таблицы устройств и номер дисковода хоста.
+    bool resolve_disk(const DiskRef & ref, unsigned & row, unsigned & drive);
+    bool do_open(const Stmt & s);
+    bool do_dload(const Stmt & s);
+    bool do_dskip(const Stmt & s);
+    bool do_limits(const Stmt & s);
+    // Присвоить приёмнику очередное значение записи; used — сколько значений
+    // из vals уже разобрано.
+    bool store_value(const Expr & target, const std::vector<Value> & vals,
+                     std::size_t & used);
     bool do_dim(const Stmt & s);
     // Ячейка переменной или элемента массива — и для чтения, и для записи.
     bool slot(const Expr & e, Number *& out);
@@ -107,6 +117,7 @@ private:
     std::map<unsigned, Number> vars_;
     std::map<unsigned, Array> arrays_;
     std::map<unsigned, std::string> strs_;
+    DeviceTable dev_;
     std::vector<Frame> loops_;
     std::vector<std::pair<unsigned, unsigned> > calls_;   // GOSUB: куда вернуться
 
