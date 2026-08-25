@@ -265,6 +265,87 @@ void test_load_clears_variables()
     CHECK_STR(line_of(screen, 1), " 5  0");
 }
 
+// «Стирается программный текст, начиная со строки с номером 900 до строки с
+// номером 1600 включительно… Программа будет выполняться, начиная со строки
+// 1200» (руководство, разд. 19.1). Строки вне диапазона остаются на месте.
+void test_load_segment_range()
+{
+    HeadlessHost host;
+    if (!fresh_disk(host)) { CHECK(false); return; }
+
+    std::string error;
+    if (!put_program(host, "SEG2", "1000 PRINT \"СЕГМЕНТ\"\n1010 GOTO 60\n")) {
+        CHECK(false);
+        return;
+    }
+
+    ProgramImage main_prog;
+    if (!tokenize_text("10 COM C\n"
+                       "20 C=5\n"
+                       "30 LOAD DC F\"SEG2\"1000,,1000\n"
+                       "60 PRINT \"ВЕРНУЛИСЬ\";C\n"
+                       "70 STOP\n"
+                       "1000 PRINT \"СТАРОЕ\"\n",
+                       main_prog, error)) {
+        std::printf("  трансляция: %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    std::string screen;
+    if (!run(main_prog, host, screen, error))
+        { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // Строка 1000 заменилась сегментом, а 60 и 70 остались на месте.
+    CHECK_STR(line_of(screen, 1), "СЕГМЕНТ");
+    CHECK_STR(line_of(screen, 2), "ВЕРНУЛИСЬ 5");
+}
+
+// `LOAD DA` — то же, но программа ищется не по имени, а по абсолютному адресу
+// сектора (руководство, разд. 19.1). Приёмник в скобках получает «адрес
+// первого сектора, не занятого загружаемой программой».
+void test_load_da()
+{
+    HeadlessHost host;
+    if (!fresh_disk(host)) { CHECK(false); return; }
+
+    std::string error;
+    if (!put_program(host, "SEG3", "1000 PRINT \"ПО АДРЕСУ\"\n1010 GOTO 60\n")) {
+        CHECK(false);
+        return;
+    }
+    // Узнаём, куда каталог его положил: LOAD DA имени не знает.
+    Catalog cat(host, 0);
+    uint8_t nm[NAME_LEN];
+    Catalog::make_name("SEG3", nm);
+    CatalogEntry e;
+    std::string err;
+    if (!cat.find(nm, e, err))
+        { std::printf("  %s\n", err.c_str()); CHECK(false); return; }
+
+    char src[512];
+    std::sprintf(src,
+                 "10 COM C,S\n"
+                 "20 C=5\n"
+                 "30 LOAD DA F(%u,S)1000,,1000\n"
+                 "60 PRINT \"ВЕРНУЛИСЬ\";C;S\n"
+                 "70 STOP\n"
+                 "1000 PRINT \"СТАРОЕ\"\n", e.first);
+
+    ProgramImage main_prog;
+    if (!tokenize_text(src, main_prog, error)) {
+        std::printf("  трансляция: %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    std::string screen;
+    if (!run(main_prog, host, screen, error))
+        { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "ПО АДРЕСУ");
+    // Приёмник получил адрес сектора за концом сегмента.
+    char want[64];
+    std::sprintf(want, "ВЕРНУЛИСЬ 5  %u", e.first + e.sectors());
+    CHECK_STR(line_of(screen, 2), want);
+}
+
 // Файла нет — ошибка машины с кодом 73.
 void test_load_missing()
 {
@@ -330,6 +411,8 @@ int main()
     test_save_error_is_catchable();
     test_save_over_scratched();
     test_load_clears_variables();
+    test_load_segment_range();
+    test_load_da();
     test_load_missing();
     test_tables_round_trip();
     return test::summary("запись и загрузка программ");

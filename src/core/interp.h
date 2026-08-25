@@ -228,6 +228,10 @@ private:
     bool do_gosubq(Stream & st);
     bool do_save_dc(Stream & st);
     bool do_load_dc(Stream & st);
+    // Загрузка программы по абсолютному адресу сектора (разд. 19.1).
+    bool do_load_da(Stream & st);
+    // Общий хвост обоих: до трёх номеров строк и сама замена текста.
+    bool load_segment(Stream & st, const std::vector<uint8_t> & file);
     bool do_list_dc(Stream & st);
     // Команды диалога, встреченные внутри программы (разд. 3 и 8.3).
     bool do_return_clear(Stream & st, unsigned len);

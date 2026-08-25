@@ -3510,6 +3510,134 @@ bool Interp::do_save_dc(Stream & st)
 // оттуда же: остановить исполнение, стереть строки (CLEAR P), стереть
 // необщие переменные (CLEAR N), загрузить сегмент, начать со строки 3,
 // иначе со строки 1, иначе с наименьшей.
+// «Стирается программный текст, начиная со строки с номером 900 до строки с
+// номером 1600 включительно, стираются все необщие переменные, и программа
+// (сегмент программы) загружается с диска… Программа будет выполняться,
+// начиная со строки 1200» (руководство, разд. 19.1). Пропущенный номер значит
+// «с начала» либо «до конца»; в потоке он виден двумя `DE` подряд
+// (`LL` 51 = `… 10 00 DE DE 00 53`, то есть `1000,,53`).
+//
+// Номера идут сырыми парами BCD — читать их можно только у источника, и
+// только там, где разборщик ничего не держит.
+bool Interp::load_segment(Stream & st, const std::vector<uint8_t> & file)
+{
+    unsigned n[3] = { 0, 0, 0 };
+    bool has[3] = { false, false, false };
+    unsigned k = 0;
+    while (!st.src.at_end()) {
+        uint8_t b = 0;
+        if (!st.src.peek_raw_byte(b)) break;
+        if (b == 0xDE) {
+            st.src.skip(1);
+            if (++k > 2) return fail("LOAD: больше трёх номеров строк");
+            continue;
+        }
+        uint8_t hi = 0, lo = 0;
+        if (!st.src.take_raw_byte(hi) || !st.src.take_raw_byte(lo))
+            return fail("LOAD: оборван номер строки");
+        n[k] = bcd2(hi) * 100 + bcd2(lo);
+        has[k] = true;
+    }
+
+    ProgramImage next;
+    std::string err;
+    if (!next.load_file(file, err)) return machine_error(err::UNKNOWN, err);
+
+    const bool direct = (li_ == DIRECT);
+    if (!has[0] && !has[1]) {
+        // Номеров нет — стирается вся программа целиком.
+        img_ = next;
+    } else {
+        img_.erase_range(has[0] ? n[0] : 0, has[1] ? n[1] : 0);
+        // «Если в загружаемом сегменте есть строки с номерами, совпадающими
+        // с номерами строк, находящимися в памяти, то строки последней
+        // замещаются соответствующими строками загружаемого сегмента».
+        for (unsigned i = 0; i < next.line_count(); ++i)
+            img_.put_line(next.line(i));
+
+        // Таблицы переменных приходят от сегмента, но область не усекается:
+        // строки, которых не стирали, продолжают ссылаться на свои индексы
+        // (CLAUDE.md, «Допущения»).
+        std::vector<VarInfo> & dst = img_.vars();
+        const std::vector<VarInfo> & src = next.vars();
+        if (dst.size() < src.size()) dst.resize(src.size());
+        for (unsigned i = 0; i < src.size(); ++i) dst[i] = src[i];
+        img_.rebuild_tables();
+    }
+    rescan();
+
+    // «В режиме непосредственного счёта оператор LOAD DC (LOAD DA) только
+    // загружает программу в оперативную память без её предварительной
+    // очистки» (руководство, разд. 19.1): ни CLEAR N, ни запуска.
+    if (direct) return true;
+
+    store_.clear_non_common();
+    loops_.clear();
+    calls_.clear();
+
+    if (has[2]) return jump(n[2]);
+    if (!img_.line_count()) return fail("загруженный сегмент пуст");
+    li_ = 0;
+    off_ = 0;
+    jumped_ = true;
+    return true;
+}
+
+// «LOAD DA <тип диска> <устройство>, (<адрес> [,<переменная>])» — загрузка
+// сегмента по абсолютному адресу сектора (руководство, разд. 19.1). Длина
+// программы на диске нигде не записана: секторы читаются, пока их служебный
+// байт говорит «продолжение».
+bool Interp::do_load_da(Stream & st)
+{
+    Disk d;
+    if (!disk_prefix(st, true, d)) return false;
+
+    Tok t;
+    if (!st.ev.parser().take(t, true) || t.t != Tok::LPAR)
+        return fail("LOAD DA без адреса сектора");
+    Number a;
+    if (!st.ev.number(a)) return fail(st.ev.error());
+    long v = 0;
+    if (!a.floor_to_int(v) || v < 0)
+        return fail("LOAD DA: адрес сектора не целый неотрицательный");
+    const unsigned start = static_cast<unsigned>(v);
+
+    bool has_target = false;
+    Evaluator::Target target;
+    if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+    if (t.t == Tok::COMMA) {
+        st.ev.parser().consume();
+        if (!st.ev.target(target)) return fail(st.ev.error());
+        has_target = true;
+    } else {
+        st.ev.parser().unpeek();
+    }
+    if (!st.ev.parser().take(t, false) || t.t != Tok::RPAR)
+        return fail("LOAD DA: скобка не закрыта");
+
+    const unsigned total = host_.disk_sectors(d.drive);
+    if (start >= total)
+        return machine_error(err::UNKNOWN, "LOAD DA: сектор за концом диска");
+
+    std::vector<uint8_t> file;
+    unsigned s = start;
+    while (s < total) {
+        uint8_t sec[Host::SECTOR_SIZE];
+        if (!host_.disk_read(d.drive, s, sec))
+            return machine_error(err::UNKNOWN,
+                                 "LOAD DA: не читается сектор " + num_str(s));
+        file.insert(file.end(), sec, sec + Host::SECTOR_SIZE);
+        ++s;
+        // Первый сектор — заголовочный, его второй байт часть имени.
+        if (file.size() > Host::SECTOR_SIZE && sec[1] != 0x80) break;
+    }
+
+    // «Адрес первого сектора, не занятого загружаемой программой». Записать
+    // его надо до загрузки: индексы переменных у сегмента свои.
+    if (!store_next(st, has_target, target, s)) return false;
+    return load_segment(st, file);
+}
+
 bool Interp::do_load_dc(Stream & st)
 {
     Disk d;
@@ -3518,8 +3646,6 @@ bool Interp::do_load_dc(Stream & st)
     std::string name;
     if (!st.ev.text(name)) return fail(st.ev.error());
     st.ev.parser().unpeek();
-    if (!st.src.at_end())
-        return fail("LOAD DC с номерами строк ещё не исполняется");
 
     uint8_t nm[NAME_LEN];
     Catalog::make_name(name, nm);
@@ -3538,33 +3664,7 @@ bool Interp::do_load_dc(Stream & st)
         if (!host_.disk_read(d.drive, e.first + i, &file[i * Host::SECTOR_SIZE]))
             return machine_error(err::UNKNOWN, "сбой чтения с диска");
 
-    ProgramImage next;
-    if (!next.load_file(file, err)) return machine_error(err::UNKNOWN, err);
-
-    // Номеров строк в операторе нет, поэтому стирается вся программа
-    // целиком, а с ней — циклы и адреса возвратов.
-    const bool direct = li_ == DIRECT;
-    img_ = next;
-    rescan();
-
-    if (direct) {
-        // «В режиме непосредственного счёта оператор LOAD DC (LOAD DA) только
-        // загружает программу в оперативную память без её предварительной
-        // очистки» (руководство, разд. 19.1): ни CLEAR N, ни запуска.
-        // Переменные при этом достаются новой программе чужими — потому книга
-        // и советует перед загрузкой набирать CLEAR.
-        return true;
-    }
-
-    store_.clear_non_common();
-    loops_.clear();
-    calls_.clear();
-
-    if (!img_.line_count()) return fail("загруженный сегмент пуст");
-    li_ = 0;
-    off_ = 0;
-    jumped_ = true;
-    return true;
+    return load_segment(st, file);
 }
 
 bool Interp::jump(unsigned line_number)
@@ -3632,6 +3732,7 @@ bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
         case 0x4A: return do_add(st, false);
         case 0x63: return do_add(st, true);
         case 0x37: return do_com_clear(st);
+        case 0x72: return do_load_da(st);
         case 0x4D: return do_rotate(st);
         case 0x54: return do_select(st);
         case 0x6D: return do_copy(st);

@@ -1187,6 +1187,36 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         return line_tail(enc, out);
     }
 
+    // `SAVE DA` книга описывает (разд. 18.9.2), но в корпусе его нет ни разу,
+    // и байта у него нет. Выдумывать нельзя — он уехал бы на дискету.
+    if (lex_.take_word("SAVE DA"))
+        return err("SAVE DA: байт глагола неизвестен, в корпусе не встречается");
+
+    if (lex_.take_word("LOAD DA")) {
+        // «LOAD DA <тип диска> <устройство>, (<адрес> [,<переменная>])
+        // [<номер строки 1>] [,[<номер строки 2>]] [<номер строки 3>]»
+        // (руководство, разд. 19.1). `LL` 51 = `72 02 DB 0C DE EB 2D D0
+        // 10 00 DE DE 00 53`, то есть `LOAD DA T#K¤,(S)1000,,53`.
+        verb = 0x72;
+        Encoder enc(lex_, out);
+        lex_.skip_spaces();
+        const char c = (lex_.pos() < lex_.end()) ? lex_.text()[lex_.pos()] : ' ';
+        if (!disk_prefix(enc, out, c == 'F' || c == 'R' || c == 'T'))
+            return false;
+        if (!lex_.take_char('(')) return err("LOAD DA без адреса сектора");
+        out.push_back(0xEB);
+        if (!enc.expr()) return err(enc.error());
+        // Приёмник — «адрес первого сектора, не занятого загружаемой
+        // программой».
+        if (take_sep(enc, Tok::COMMA)) {
+            out.push_back(0xDE);
+            if (!enc.lvalue()) return err(enc.error());
+        }
+        if (!take_sep(enc, Tok::RPAR)) return err("LOAD DA: скобка не закрыта");
+        out.push_back(0xD0);
+        return line_tail(enc, out);
+    }
+
     if (lex_.take_word("SAVE DC")) {
         // `SAVE DC R¤T("VIC")"VIC"` = 80 0F 01 D6 D2 EB … D0 E3 03 …
         // (VICT 45): D2 — ключевое слово T, за ним диапазон в скобках.

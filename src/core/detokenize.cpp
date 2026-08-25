@@ -1453,6 +1453,29 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             return true;
         }
 
+        case 0x72: {                                   // LOAD DA
+            d.emit("LOAD DA ");
+            if (!disk_prefix(d, src, true)) { error = "приставка устройства"; return false; }
+            Tok t;
+            if (!d.parser().take(t, true) || t.t != Tok::LPAR) {
+                error = "LOAD DA без адреса сектора";
+                return false;
+            }
+            d.emit("(");
+            if (!d.expr()) { error = d.error(); return false; }
+            if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+            if (t.t == Tok::COMMA) {
+                d.parser().consume();
+                d.emit(",");
+                if (!d.lvalue()) { error = d.error(); return false; }
+                if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+            }
+            if (t.t != Tok::RPAR) { error = "LOAD DA: скобка не закрыта"; return false; }
+            d.parser().consume();
+            d.emit(")");
+            return line_tail(d, src);
+        }
+
         case 0x7D: {                                   // LOAD DC
             d.emit("LOAD DC ");
             if (!disk_prefix(d, src, true)) { error = "приставка устройства"; return false; }
