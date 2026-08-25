@@ -59,6 +59,9 @@ int usage()
         "  iskra --run ОБРАЗ ИМЯ [ВВОД…]  исполнить программу с образа\n"
         "  iskra --run-text ФАЙЛ [ВВОД…]  исполнить текстовый листинг\n"
         "  iskra --console [ОБРАЗ]   диалоговый режим в терминале\n"
+        "\nКлючи:\n"
+        "  -i                        пропускать машинозависимые операторы\n"
+        "                            (ASMB, $GIO) вместо остановки\n"
         "\nКлючи диалогового режима:\n");
     out(iskra::DiskArgs::help());
     out("\n\nЗапись на дискету в диалоговом режиме идёт прямо в файл образа.\n");
@@ -315,6 +318,10 @@ int cmd_cat(const char * path, const char * name)
 
 // Исполнение программы на хосте без окна. Строки ввода подаются аргументами
 // командной строки — прогон получается воспроизводимым.
+// Ключ `-i`: машинозависимые операторы (`ASMB`, `$GIO`) пропускать, а не
+// останавливаться на них. Живёт глобально — его понимают все команды.
+bool g_skip_machine = false;
+
 int run_program(iskra::ProgramImage & img, iskra::HeadlessHost & host,
                 char ** input, int inputs)
 {
@@ -327,6 +334,7 @@ int run_program(iskra::ProgramImage & img, iskra::HeadlessHost & host,
     }
 
     iskra::Interp interp(img, host);
+    interp.set_skip_machine(g_skip_machine);
     // Прогон пакетный: очередь нажатий задана заранее и не пополнится, а
     // `KEYIN` при пустой клавиатуре крутится вечно — это правильно для
     // машины, но здесь ждать некому. В окне и в диалоге ограничения нет.
@@ -538,6 +546,7 @@ int cmd_console(const iskra::DiskArgs & mounts)
 
     iskra::ProgramImage img;
     iskra::Console con(img, host);
+    con.interp().set_skip_machine(g_skip_machine);
     if (!con.run(error)) {
         std::printf("%s\n", error.c_str());
         return 1;
@@ -549,6 +558,17 @@ int cmd_console(const iskra::DiskArgs & mounts)
 
 int main(int argc, char ** argv)
 {
+    // `-i` может стоять где угодно: выбираем его до разбора команды,
+    // остальные аргументы остаются на своих местах.
+    std::vector<char *> rest;
+    rest.push_back(argv[0]);
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "-i") { g_skip_machine = true; continue; }
+        rest.push_back(argv[i]);
+    }
+    argv = &rest[0];
+    argc = static_cast<int>(rest.size());
+
     if (argc < 2) return usage();
 
     const std::string cmd = argv[1];

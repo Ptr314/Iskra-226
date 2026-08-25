@@ -288,6 +288,64 @@ void test_buffer_range()
     CHECK_STR(line_of(screen, 1), "[100 A0=1]");
 }
 
+// --- машинозависимые операторы ----------------------------------------------
+
+const char * ASMB_PROG =
+    "10 PRINT \"DO\"\n"
+    "20 DIM A\xC2\xA4""4\n"
+    "30 ASMB ,76200,A\xC2\xA4\n"
+    "40 PRINT \"POSLE\"\n";
+
+// `ASMB` и `$GIO` требуют эмуляции машины на уровне процессора и
+// аппаратуры — этого здесь нет и не планируется. По умолчанию такой
+// оператор останавливает программу: молчаливый пропуск сделал бы прогон
+// неправдоподобным незаметно для человека.
+void test_machine_verb_stops()
+{
+    std::string koi8, error;
+    utf8_to_koi8(ASMB_PROG, koi8);
+    NameTable names;
+    ProgramImage img;
+    if (!tokenize(koi8, img, names, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+
+    HeadlessHost host;
+    Interp interp(img, host);
+    CHECK(!interp.run(error));
+    CHECK(error.find("машинозависим") != std::string::npos);
+    // Это ограничение эмулятора, а не ошибка машины: кода у неё нет.
+    CHECK(interp.error_code().empty());
+    CHECK_STR(line_of(host.dump(), 1), "DO");
+}
+
+// С признаком «пропускать» оператор просто не делает ничего, и программа
+// идёт дальше. Длина оператора известна из его шапки, поэтому пропуск не
+// сбивает разбор следующих.
+void test_machine_verb_skipped()
+{
+    std::string koi8, error;
+    utf8_to_koi8(ASMB_PROG, koi8);
+    NameTable names;
+    ProgramImage img;
+    if (!tokenize(koi8, img, names, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+
+    HeadlessHost host;
+    Interp interp(img, host);
+    interp.set_skip_machine(true);
+    if (!interp.run(error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(host.dump(), 1), "DO");
+    CHECK_STR(line_of(host.dump(), 2), "POSLE");
+}
+
+// Пропуск не распространяется на прочие нереализованные операторы: там
+// сообщение другое, и программа останавливается всегда.
+void test_skip_is_narrow()
+{
+    CHECK(Interp::machine_verb(0x0625));      // ASMB
+    CHECK(Interp::machine_verb(0x40));        // $GIO
+    CHECK(!Interp::machine_verb(0x0619));     // NPLOT — это графика
+    CHECK(!Interp::machine_verb(0x25));       // KEYIN
+}
+
 // --- оттранслированная форма ------------------------------------------------
 
 // Коды видов `CLEAR` взяты из корпуса: `14` это `P` (за ним диапазон строк,
@@ -368,6 +426,9 @@ int main()
     test_return_clear_all();
     test_buffer_roundtrip();
     test_buffer_range();
+    test_machine_verb_stops();
+    test_machine_verb_skipped();
+    test_skip_is_narrow();
     test_tokenized();
     return test::summary("команды диалога внутри программы");
 }

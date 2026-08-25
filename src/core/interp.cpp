@@ -73,7 +73,7 @@ Interp::Interp(ProgramImage & img, Host & host)
     : img_(img), host_(host), store_(img.vars()), labels_ready_(false),
       data_ready_(false), data_i_(0), data_off_(0), end_seen_(false),
       li_(0), off_(0), next_off_(0), jumped_(false), stopped_(false),
-      max_steps_(0)
+      max_steps_(0), skip_machine_(false)
 {
 }
 
@@ -3258,8 +3258,16 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
 
     char b[16];
     std::sprintf(b, "%02X", verb & 0xFF);
-    return fail(std::string("оператор ") + ((verb > 0xFF) ? "06 " : "") + b
-                + " ещё не исполняется");
+    const std::string name = std::string((verb > 0xFF) ? "06 " : "") + b;
+
+    // Машинозависимые операторы — отдельный разговор: они не «ещё не
+    // исполняются», а не будут исполняться здесь вовсе.
+    if (machine_verb(verb)) {
+        if (skip_machine_) return true;
+        return fail("оператор " + name + " машинозависим: нужна эмуляция "
+                    "процессора. Ключ -i велит такие пропускать");
+    }
+    return fail("оператор " + name + " ещё не исполняется");
 }
 
 const std::vector<uint8_t> & Interp::body_at(unsigned li) const
