@@ -2296,6 +2296,32 @@ bool Interp::do_mat_search(Stream & st)
     return true;
 }
 
+// «Если оператор COM CLEAR используется в программе без указания переменной,
+// все общие переменные становятся необщими… Если в операторе COM CLEAR указать
+// одну из общих переменных, то эта переменная и все переменные, объявленные
+// вслед за указанной, становятся необщими» (руководство, разд. 19.3). Обратное
+// тоже верно: с необщей переменной общими становятся все объявленные раньше.
+//
+// Оба случая — одно правило: граница общих переменных встаёт на названную.
+// Общие лежат подряд с начала области, а индексы раздаются по объявлению,
+// поэтому граница это просто индекс.
+//
+// Переменных оператор не стирает: «оператор COM CLEAR не стирает переменные
+// из памяти».
+bool Interp::do_com_clear(Stream & st)
+{
+    if (st.src.at_end()) {
+        store_.set_common_boundary(0);
+        return true;
+    }
+    Tok t;
+    if (!st.ev.parser().take(t, true)) return fail(st.ev.error());
+    if (t.t != Tok::VAR && t.t != Tok::ARRAY)
+        return fail("COM CLEAR: ждали переменную либо массив");
+    store_.set_common_boundary(t.var);
+    return true;
+}
+
 bool Interp::do_redim(Stream & st)
 {
     for (;;) {
@@ -3605,6 +3631,7 @@ bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
         case 0x45: return do_bitop(st, 0, true);      // BOOL
         case 0x4A: return do_add(st, false);
         case 0x63: return do_add(st, true);
+        case 0x37: return do_com_clear(st);
         case 0x4D: return do_rotate(st);
         case 0x54: return do_select(st);
         case 0x6D: return do_copy(st);

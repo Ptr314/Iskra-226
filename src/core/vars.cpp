@@ -107,17 +107,17 @@ void VarStore::clear_non_common()
 {
     for (std::map<unsigned, Number>::iterator it = nums_.begin();
          it != nums_.end(); ) {
-        if (it->first < vars_.size() && vars_[it->first].is_common) ++it;
+        if (is_common(it->first)) ++it;
         else nums_.erase(it++);
     }
     for (std::map<unsigned, Array>::iterator it = arrays_.begin();
          it != arrays_.end(); ) {
-        if (it->first < vars_.size() && vars_[it->first].is_common) ++it;
+        if (is_common(it->first)) ++it;
         else arrays_.erase(it++);
     }
     for (std::map<unsigned, std::string>::iterator it = strs_.begin();
          it != strs_.end(); ) {
-        if (it->first < vars_.size() && vars_[it->first].is_common) ++it;
+        if (is_common(it->first)) ++it;
         else strs_.erase(it++);
     }
 }

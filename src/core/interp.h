@@ -194,6 +194,8 @@ private:
     bool do_scratch(Stream & st);
     bool do_scratch_disk(Stream & st);
     bool do_dim(Stream & st, unsigned len, const uint8_t * ops, bool common);
+    // `COM CLEAR` — граница общих переменных (руководство, разд. 19.3).
+    bool do_com_clear(Stream & st);
     bool do_redim(Stream & st);
     bool do_mat(Stream & st);
     bool do_mat_copy(Stream & st);

@@ -259,6 +259,36 @@ void test_limit_is_not_a_machine_error()
     CHECK(error.find("машинозависим") != std::string::npos);
 }
 
+// --- граница общих переменных -----------------------------------------------
+
+// «Если оператор COM CLEAR используется без указания переменной, все общие
+// переменные становятся необщими… Если указать одну из общих переменных, то
+// эта переменная и все переменные, объявленные вслед за указанной, становятся
+// необщими» (руководство, разд. 19.3). Обратное тоже верно, и оба случая —
+// одно правило: граница встаёт на названную переменную. Проверяется тем, что
+// после этого стирает `CLEAR N`.
+void test_com_clear()
+{
+    const char * src =
+        "10 COM A,B\n"
+        "20 DIM C(2)\n"
+        "30 A=1:B=2:C(1)=3\n"
+        "40 COM CLEAR B\n"
+        "50 CLEAR N\n"
+        "60 PRINT A;B;C(1)\n"
+        "70 A=1:B=2:C(1)=3:COM CLEAR C()\n"
+        "80 CLEAR N:PRINT A;B;C(1)\n"
+        "90 A=1:B=2:COM CLEAR\n"
+        "100 CLEAR N:PRINT A;B\n";
+    const std::string s = run(src, "COM CLEAR");
+    // Граница на B: общей осталась только A.
+    CHECK_STR(line_of(s, 1), " 1  0  0");
+    // Граница на C: A и B стали общими, хотя C объявлена в DIM.
+    CHECK_STR(line_of(s, 2), " 1  2  0");
+    // Без операнда общих не остаётся вовсе.
+    CHECK_STR(line_of(s, 3), " 0  0");
+}
+
 // --- вложенность до предела -------------------------------------------------
 
 void test_deep_nesting()
@@ -291,6 +321,7 @@ int main()
     test_bytes_and_print();
     test_math_error_is_caught();
     test_limit_is_not_a_machine_error();
+    test_com_clear();
     test_deep_nesting();
     return test::summary("сложные сочетания");
 }

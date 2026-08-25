@@ -909,6 +909,27 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             return true;
         }
 
+        case 0x37: {                                   // COM CLEAR
+            d.emit("COM CLEAR");
+            if (src.at_end()) return true;
+            d.emit(" ");
+            Tok t;
+            if (!d.parser().take(t, true)) { error = d.error(); return false; }
+            std::string nm;
+            if (t.t == Tok::ARRAY) {
+                if (!d.name(t.var, nm)) { error = "нет имени для индекса"; return false; }
+                d.emit(nm + "()");
+                return true;
+            }
+            if (t.t == Tok::VAR) {
+                if (!d.name(t.var, nm)) { error = "нет имени для индекса"; return false; }
+                d.emit(nm);
+                return true;
+            }
+            error = "COM CLEAR: ждали переменную либо массив";
+            return false;
+        }
+
         case 0x34: {                                   // ON ERROR
             d.emit("ON ERROR ");
             if (!len) return true;

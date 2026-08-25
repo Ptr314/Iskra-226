@@ -30,7 +30,8 @@ unsigned str_num_value(const std::string & s);
 class VarStore
 {
 public:
-    explicit VarStore(const std::vector<VarInfo> & vars) : vars_(vars) {}
+    explicit VarStore(const std::vector<VarInfo> & vars)
+        : vars_(vars), boundary_(0), has_boundary_(false) {}
 
     const std::vector<VarInfo> & vars() const { return vars_; }
     bool is_string(unsigned var) const
@@ -94,6 +95,22 @@ public:
     // без изменения» (руководство, разд. 19.1).
     void clear_non_common();
 
+    // `COM CLEAR` двигает границу общих переменных: «эта переменная и все
+    // переменные, объявленные вслед за указанной, становятся необщими»
+    // (руководство, разд. 19.3). Общие лежат подряд с начала области, так
+    // что граница — это один индекс. Без него берётся признак из таблиц
+    // образа.
+    void set_common_boundary(unsigned first_non_common)
+    {
+        boundary_ = first_non_common;
+        has_boundary_ = true;
+    }
+    bool is_common(unsigned var) const
+    {
+        if (has_boundary_) return var < boundary_;
+        return var < vars_.size() && vars_[var].is_common;
+    }
+
 private:
     struct Array {
         Array() : dim1(0), dim2(0) {}
@@ -106,6 +123,8 @@ private:
     std::map<unsigned, Number> nums_;
     std::map<unsigned, Array> arrays_;
     std::map<unsigned, std::string> strs_;
+    unsigned boundary_;          // первая необщая переменная после COM CLEAR
+    bool has_boundary_;
 };
 
 } // namespace iskra

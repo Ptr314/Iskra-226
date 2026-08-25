@@ -802,6 +802,32 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         return true;
     }
 
+    {
+        // Пробелов между словами может быть сколько угодно, а может не быть
+        // вовсе, поэтому берём их по отдельности и откатываемся, если это
+        // обычный `COM`.
+        const unsigned save = lex_.pos();
+        if (!(lex_.take_word("COM") && lex_.take_word("CLEAR")))
+            lex_.set_pos(save);
+        else {
+        verb = 0x37;
+        if (lex_.at_end() || lex_.at_colon()) return true;
+        Encoder enc(lex_, out);
+        Tok t;
+        if (!enc.parser().take(t, true)) return err(enc.error());
+        if (t.t == Tok::ARRAY) {
+            out.push_back(0xE0);
+            out.push_back(static_cast<uint8_t>(t.var));
+            return true;
+        }
+        if (t.t == Tok::VAR && !t.indexed) {
+            out.push_back(static_cast<uint8_t>(t.var));
+            return true;
+        }
+        return err("COM CLEAR: ждали переменную либо массив");
+        }
+    }
+
     if (lex_.take_word("DIM") || lex_.take_word("COM")) {
         // В потоке только индексы переменных: размеры лежат в таблицах
         // (docs/format.md, разд. 6). Но прочитать их надо — иначе таблицы
@@ -907,6 +933,8 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         return true;
     }
 
+    // `COM CLEAR` — не форма `COM`, а свой глагол `37` (docs/format.md,
+    // разд. 5). Проверяется раньше `COM`: длинные слова прежде коротких.
     // Помеченные подпрограммы: метка — двоичное число, а не BCD.
     if (lex_.take_word("DEFFN")) {
         // Без апострофа это определение числовой функции (разд. 4.8) —
