@@ -141,6 +141,8 @@ private:
     bool do_input(Stream & st);
     bool do_linput(Stream & st);
     bool do_convert(Stream & st);
+    // Упаковка чисел в десятично-упакованный формат (разд. 13.7).
+    bool do_pack(Stream & st, bool unpack);
     bool do_bin(Stream & st);
     bool do_init(Stream & st);
     // Операции над байтами (гл. 14). `AND`, `OR` и `XOR` — частные

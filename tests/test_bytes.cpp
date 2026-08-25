@@ -363,6 +363,79 @@ void test_tokenized()
     CHECK_STR(line_of(screen, 2), "0105");
 }
 
+// --- десятично-упакованный формат (разд. 13.7) ------------------------------
+
+// Цифровая часть подтверждена живыми данными: файлы `TEST`, `FF` и `CHROM1`
+// на образах `w009` записаны программой `GC121` по образу `####` и содержат
+// по 20 000 байт чистого BCD — две цифры на байт, старшая тетрада первой.
+// Первые значения `TEST` — 1013, 1013, 1014: след хроматографа.
+void test_pack_corpus()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM A\xC2\xA4""6,X(3)\n"
+        "20 X(1)=1013:X(2)=1013:X(3)=1014\n"
+        "30 PACK(####)A\xC2\xA4 FROM X()\n"
+        "40 HEXPRINT A\xC2\xA4\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "101310131014");
+}
+
+// «Каждые два разряда упаковываются в один байт», и «упакованные значения
+// записываются вплотную друг к другу» (разд. 13.7).
+void test_pack_roundtrip()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM B\xC2\xA4(3)2,X(3),Y(3)\n"
+        "20 X(1)=1020:X(2)=1021:X(3)=533\n"
+        "30 PACK(####)B\xC2\xA4() FROM X()\n"
+        "40 HEXPRINT B\xC2\xA4()\n"
+        "50 UNPACK(####)B\xC2\xA4() TO Y()\n"
+        "60 PRINT Y(1);Y(2);Y(3)\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "102010210533");
+    CHECK_STR(line_of(screen, 2), " 1020  1021  533");
+}
+
+// Образ `+#.#####^^^^` из `STAT001`: там `G¤` описан длиной элемента 5, и
+// упаковывается по одному числу на элемент. Знак и шесть разрядов — семь
+// тетрад, то есть четыре байта с округлением вверх, плюс байт порядка.
+void test_pack_size()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM C\xC2\xA4""10\n"
+        "20 INIT(FF)C\xC2\xA4\n"
+        "30 PACK(+#.#####^^^^)C\xC2\xA4 FROM -1.234567\n"
+        "40 HEXPRINT C\xC2\xA4\n"
+        "50 UNPACK(+#.#####^^^^)C\xC2\xA4 TO W\n"
+        "60 PRINT W\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // Пять байт: тетрада знака (1 — минус), шесть разрядов, хвостовая
+    // тетрада нулём, байт порядка. Остальные пять байт поля не тронуты.
+    CHECK_STR(line_of(screen, 1), "1123456000FFFFFFFFFF");
+    // «Младшие разряды, выходящие за пределы формата, отбрасываются».
+    CHECK_STR(line_of(screen, 2), "-1.23456");
+}
+
+// «Если в формате задан знак числа, то он упаковывается в половину байта»:
+// `+###` занимает те же два байта, что и `###`. Так считает и пример 13.9
+// книги — 80 чисел этого формата укладываются ровно в 160 байт `A¤(10)`.
+void test_pack_sign_nibble()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM C\xC2\xA4""2\n"
+        "20 PACK(+###)C\xC2\xA4 FROM -5:HEXPRINT C\xC2\xA4\n"
+        "30 PACK(+###)C\xC2\xA4 FROM 5:HEXPRINT C\xC2\xA4\n"
+        "40 UNPACK(+###)C\xC2\xA4 TO W:PRINT W\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "1005");
+    CHECK_STR(line_of(screen, 2), "0005");
+    CHECK_STR(line_of(screen, 3), " 5");
+}
+
 } // namespace
 
 int main()
@@ -377,6 +450,14 @@ int main()
     test_rotate_divide();
     test_rotate_insert();
     test_shorter_second();
+    test_pack_corpus();
+    test_pack_roundtrip();
+    test_pack_size();
+    test_pack_sign_nibble();
+    test_pack_corpus();
+    test_pack_roundtrip();
+    test_pack_size();
+    test_pack_sign_nibble();
     test_tokenized();
     return test::summary("операции над байтами");
 }

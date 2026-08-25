@@ -53,4 +53,28 @@ bool image_number(const Number & value, const ImageField & f, bool pad_zero,
 // остальные символы не печатаются» (разд. 16.2).
 void image_string(const std::string & s, const ImageField & f, std::string & out);
 
+// Разложение значения по описанию: цифры целой и дробной частей уже
+// дополнены до нужной длины, показатель степени вычислен. false — целая
+// часть в описание не помещается.
+bool image_digits(const Number & value, const ImageField & f, bool pad_zero,
+                  bool & negative, std::string & whole, std::string & frac,
+                  int & exponent);
+
+// --- десятично-упакованный формат (руководство, разд. 13.7) ----------------
+//
+// «Каждые два разряда числа упаковываются в один байт… если в формате задан
+// знак числа, то он упаковывается в половину байта; десятичная точка не
+// включается в представление; если задана экспоненциальная форма, для записи
+// порядка используется один байт».
+//
+// Цифровая часть подтверждена живыми данными: файлы `TEST`, `FF` и `CHROM1`
+// на образах `w009` записаны программой `GC121` по образу `####` и содержат
+// по 20 000 байт чистого BCD, две цифры на байт (docs/format.md, разд. 10).
+// Тетрада знака и байт порядка в корпусе не встречаются ни разу — они взяты
+// по домашним правилам формата (`0` плюс, `1` минус; порядок — байт со
+// знаком), см. «Допущения» в CLAUDE.md.
+unsigned image_packed_size(const ImageField & f);
+bool image_pack(const Number & value, const ImageField & f, std::string & out);
+bool image_unpack(const std::string & in, const ImageField & f, Number & out);
+
 } // namespace iskra

@@ -1808,6 +1808,86 @@ bool Interp::do_input(Stream & st)
     return true;
 }
 
+// --- упаковка чисел (руководство, разд. 13.7) -------------------------------
+
+// `PACK(<образ>)<приёмник>FROM<список>` и
+// `UNPACK(<образ>)<источник>TO<приёмники>`. В потоке образ — обычный
+// литерал, `CA` это `FROM`, `D1` — `TO` (EDITOR 344, 378).
+//
+// «С помощью одного оператора можно задать упаковку и распаковку сразу для
+// всех числовых переменных и массивов, перечисленных в списке. При этом
+// упакованные значения записываются вплотную друг к другу».
+bool Interp::do_pack(Stream & st, bool unpack)
+{
+    Tok t;
+    if (!st.ev.parser().take(t, true) || t.t != Tok::STR)
+        return fail(unpack ? "UNPACK без образа" : "PACK без образа");
+
+    ImageField f;
+    if (!image_single_field(t.s, f))
+        return fail("непонятный образ упаковки: " + t.s);
+    if (!f.ip && !f.fp) return fail("в образе упаковки нет ни одного знака #");
+    const unsigned size = image_packed_size(f);
+
+    if (unpack) {
+        Value from;
+        if (!st.ev.expr(from)) return fail(st.ev.error());
+        if (!from.is_str) return fail("UNPACK: источник не символьный");
+        if (!st.ev.parser().take(t, false) || t.t != Tok::KW_TO)
+            return fail("UNPACK без TO");
+
+        // Значений ровно столько, сколько групп помещается в источник, но
+        // не дальше первой неупакованной: хвост поля обычно занят чем
+        // придётся, а сколько чисел нужно — решают приёмники.
+        std::vector<Value> vals;
+        for (std::size_t at = 0; at + size <= from.str.size(); at += size) {
+            Value v;
+            if (!image_unpack(from.str.substr(at, size), f, v.num)) break;
+            vals.push_back(v);
+        }
+        if (vals.empty()) return fail("UNPACK: в источнике не упакованное число");
+
+        std::size_t used = 0;
+        while (!st.src.at_end()) {
+            Evaluator::Target target;
+            if (!st.ev.target(target, true)) return fail(st.ev.error());
+            if (target.is_str) return fail("UNPACK: приёмник не числовой");
+            if (!store_value(target, st, vals, used)) return false;
+            uint8_t b = 0;
+            if (st.src.peek_raw_byte(b) && b == 0xDE) st.src.skip(1);
+        }
+        return true;
+    }
+
+    Evaluator::Target target;
+    if (!st.ev.target(target, true)) return fail(st.ev.error());
+    if (!target.is_str || !target.data) return fail("PACK: приёмник не символьный");
+
+    uint8_t b = 0;
+    if (!st.src.take_raw_byte(b) || b != 0xCA) return fail("PACK без FROM");
+
+    // Массивы разворачиваются в элементы тем же кодом, что у DATA SAVE DC.
+    std::vector<Value> vals;
+    if (!save_values(st, vals)) return false;
+    if (vals.empty()) return fail("PACK без значений");
+
+    std::string out;
+    for (std::size_t i = 0; i < vals.size(); ++i) {
+        if (vals[i].is_str) return fail("PACK: упаковывать можно только числа");
+        std::string one;
+        if (!image_pack(vals[i].num, f, one))
+            return fail("PACK: число не помещается в образ");
+        out += one;
+    }
+    if (out.size() > target.len)
+        return fail("PACK: упакованное не помещается в приёмник");
+
+    std::string & field = *target.data;
+    for (std::size_t i = 0; i < out.size(); ++i)
+        field[target.off + i] = out[i];
+    return true;
+}
+
 bool Interp::do_convert(Stream & st)
 {
     // `CONVERT <а.в.> TO <приёмник>[,<образ>]`; знак равенства и скобки
@@ -2758,6 +2838,8 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x0606: return do_mat_copy(st);
         case 0x060A: return do_mat_search(st);
         case 0x47: return do_convert(st);
+        case 0x48: return do_pack(st, false);
+        case 0x5D: return do_pack(st, true);
         case 0x4B: return do_bin(st);
         case 0x64: return do_init(st);
         case 0x43: return do_bitop(st, 0x8, false);   // AND
