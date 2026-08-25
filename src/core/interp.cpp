@@ -1782,6 +1782,138 @@ bool Interp::do_dim(Stream & st, unsigned len, const uint8_t * ops, bool common)
 
 // MAT REDIM меняет размерности уже существующего массива; содержимое
 // памяти при этом сохраняется.
+// --- замена и перекодировка символьных данных (руководство, разд. 15.3) -----
+
+// «Оператор REPLACE позволяет находить и заменять определённые цепочки
+// символов на другие в содержимом символьной переменной и подсчитывать
+// количество совершённых замен. При замене в содержимом символьного массива
+// массив рассматривается как одна строка символов без границ между
+// элементами» (разд. 15.3).
+//
+// В потоке: `<счётчик> DE <переменная> DE <искомая> [DE <заменяющая>]`
+// (EDITOR 462).
+bool Interp::do_replace(Stream & st)
+{
+    Evaluator::Target counter;
+    if (!st.ev.target(counter)) return fail(st.ev.error());
+    if (counter.is_str) return fail("REPLACE: счётчик не числовой");
+
+    Tok t;
+    if (!st.ev.parser().take(t, false) || t.t != Tok::COMMA)
+        return fail("REPLACE без запятой");
+
+    Evaluator::Target where;
+    if (!st.ev.target(where)) return fail(st.ev.error());
+    if (!where.is_str || !where.data) return fail("REPLACE: где менять — не строка");
+
+    if (!st.ev.parser().take(t, false) || t.t != Tok::COMMA)
+        return fail("REPLACE без запятой");
+
+    Value what;
+    if (!st.ev.expr(what)) return fail(st.ev.error());
+    if (!what.is_str) return fail("REPLACE: искомая строка не символьная");
+
+    // «Этот параметр необязателен. Если его нет, то искомая строка удаляется
+    // из содержимого символьной переменной».
+    std::string with;
+    if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+    if (t.t == Tok::COMMA) {
+        st.ev.parser().consume();
+        Value v;
+        if (!st.ev.expr(v)) return fail(st.ev.error());
+        if (!v.is_str) return fail("REPLACE: заменяющая строка не символьная");
+        with = v.str;
+    } else {
+        st.ev.parser().unpeek();
+    }
+
+    if (what.str.empty()) return fail("REPLACE: искомая строка пуста");
+
+    // Концевые пробелы поля в замене не участвуют: иначе пример 15.6
+    // (`REPLACE K,E¤(),HEX(2020),HEX(20)` в цикле, пока K<>0) не сошёлся бы
+    // никогда — хвост поля давал бы пары пробелов без конца.
+    std::string & field = *where.data;
+    std::string work = field.substr(where.off, where.len);
+    work.resize(str_len_value(work));
+
+    unsigned count = 0;
+    std::size_t at = 0;
+    for (;;) {
+        const std::size_t p = work.find(what.str, at);
+        if (p == std::string::npos) break;
+        work.replace(p, what.str.size(), with);
+        at = p + with.size();            // на подставленное заново не смотрим
+        ++count;
+    }
+
+    // «Содержимое переменной дополняется необходимым количеством символов
+    // пробела»; выросшее сверх поля обрезается — поле постоянной длины.
+    work.resize(where.len, ' ');
+    for (unsigned i = 0; i < where.len; ++i) field[where.off + i] = work[i];
+
+    Value n;
+    n.num = Number::from_int(static_cast<long>(count));
+    if (!st.ev.store(counter, n)) return fail(st.ev.error());
+    return true;
+}
+
+// «Оператор $TRAN позволяет производить быструю перекодировку всего
+// содержимого символьной переменной в соответствии с задаваемой таблицей
+// символов» (разд. 15.3). Форм две:
+//
+//   * табличная (без `R`): код байта — это номер байта в таблице, считая с
+//     единицы. Если таблица короче, байт остаётся как был;
+//   * списковая (с `R`): таблица это пары байтов, второй в паре — что
+//     заменять, первый — на что. Список кончается парой пробелов.
+//
+// В потоке: `<переменная> DE <таблица> D0 [DE 00]`, где хвост и означает
+// `R` (EDITOR 290 против EDITOR 4760). Маску `hh` книга описывает, но в
+// корпусе её нет, и как она кодируется — неизвестно.
+bool Interp::do_tran(Stream & st)
+{
+    Evaluator::Target where;
+    if (!st.ev.target(where)) return fail(st.ev.error());
+    if (!where.is_str || !where.data) return fail("$TRAN: не символьная переменная");
+
+    Tok t;
+    if (!st.ev.parser().take(t, false) || t.t != Tok::COMMA)
+        return fail("$TRAN без запятой");
+
+    Value table;
+    if (!st.ev.expr(table)) return fail(st.ev.error());
+    if (!table.is_str) return fail("$TRAN: таблица не символьная");
+
+    if (!st.ev.parser().take(t, false) || t.t != Tok::RPAR)
+        return fail("$TRAN: скобка не закрыта");
+
+    const bool list_form = !st.src.at_end();
+    if (list_form) {
+        uint8_t b = 0, mode = 0;
+        if (!st.src.take_raw_byte(b) || b != 0xDE || !st.src.take_raw_byte(mode))
+            return fail("$TRAN: непонятный хвост");
+    }
+
+    std::string & field = *where.data;
+    for (unsigned i = 0; i < where.len; ++i) {
+        const unsigned char src = static_cast<unsigned char>(field[where.off + i]);
+        unsigned char out = src;
+        if (list_form) {
+            for (std::size_t p = 0; p + 1 < table.str.size(); p += 2) {
+                const unsigned char to = static_cast<unsigned char>(table.str[p]);
+                const unsigned char from = static_cast<unsigned char>(table.str[p + 1]);
+                if (to == ' ' && from == ' ') break;      // конец списка
+                if (from == src) { out = to; break; }
+            }
+        } else if (src < table.str.size()) {
+            // «Код преобразуется в число, к которому прибавляется единица.
+            // Этот результат определяет номер байта в таблице».
+            out = static_cast<unsigned char>(table.str[src]);
+        }
+        field[where.off + i] = static_cast<char>(out);
+    }
+    return true;
+}
+
 // --- матричные операторы ----------------------------------------------------
 
 // `MAT <массив>=ZER` и `MAT <массив>=<массив>`: `E0 <индекс> D9 <EF | E0
@@ -3177,6 +3309,8 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x0601: return do_mat(st);
         case 0x0606: return do_mat_copy(st);
         case 0x060A: return do_mat_search(st);
+        case 0x0626: return do_replace(st);
+        case 0x060C: return do_tran(st);
         case 0x47: return do_convert(st);
         case 0x48: return do_pack(st, false);
         case 0x5D: return do_pack(st, true);

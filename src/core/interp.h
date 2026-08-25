@@ -149,6 +149,9 @@ private:
     bool do_mat(Stream & st);
     bool do_mat_copy(Stream & st);
     bool do_mat_search(Stream & st);
+    // Замена и перекодировка символьных данных (разд. 15.3).
+    bool do_replace(Stream & st);
+    bool do_tran(Stream & st);
     // Место символьного значения со знаком «в обратном порядке»
     // (руководство, разд. 15.2).
     bool str_place(Stream & st, bool & reverse, Evaluator::Target & out);

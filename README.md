@@ -45,7 +45,8 @@ iskra -i --run-file EDITOR.bin         пропуская ASMB и $GIO
 формах `RESTORE`, матричные операторы (`MAT =ZER`, присваивание массива,
 `MAT COPY`, `MAT SEARCH`, `MAT REDIM`), операции над байтами (`AND`, `OR`,
 `XOR`, `BOOL`, `ADD`, `ROTATE`, `HEXPRINT`), упаковку чисел
-(`PACK`/`UNPACK`), `LINPUT`,
+(`PACK`/`UNPACK`), поиск и замену в символьных данных (`REPLACE`, `$TRAN(`),
+`LINPUT`,
 помеченные подпрограммы `DEFFN'`/`GOSUB'`, `SELECT` с таблицей устройств,
 `ON ERROR`, выдачу каталога `LIST DC` и `LIMITS`.
 

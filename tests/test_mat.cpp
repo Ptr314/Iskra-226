@@ -233,6 +233,122 @@ void test_hexprint_separators()
     CHECK_STR(line_of(screen, 3), "5859");
 }
 
+// --- REPLACE (разд. 15.3) ---------------------------------------------------
+
+// Примеры книги: замена фамилии на фамилию с инициалами и подсчёт вхождений
+// одной и той же строкой в обоих аргументах.
+void test_replace_book()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM A\xC2\xA4(2)16,B\xC2\xA4""40\n"
+        "20 A\xC2\xA4()=\"TUT IVANOV I IVANOV\"\n"
+        "30 REPLACE K,A\xC2\xA4(),\"IVANOV\",\"IVANOV V. I.\"\n"
+        "40 PRINT K:PRINT \"[\";A\xC2\xA4();\"]\"\n"
+        "50 B\xC2\xA4=\"TUT SHIFR I SHIFR TOZE\"\n"
+        "60 REPLACE A,B\xC2\xA4,\"SHIFR\",\"SHIFR\":PRINT A\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), " 2");
+    // «Массив рассматривается как одна строка символов без границ между
+    // элементами»: замена перешла через границу элемента.
+    CHECK_STR(line_of(screen, 2), "[TUT IVANOV V. I. I IVANOV V. I. ]");
+    CHECK_STR(line_of(screen, 3), " 2");
+}
+
+// Пример 15.6: `REPLACE K,E¤(),HEX(2020),HEX(20)` в цикле, пока K<>0.
+// Цикл обязан сойтись — значит, концевые пробелы поля в замене не
+// участвуют, иначе они давали бы пары пробелов без конца.
+void test_replace_loop()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM E\xC2\xA4""20\n"
+        "20 E\xC2\xA4=\"A   B  C\"\n"
+        "30 REPLACE M,E\xC2\xA4,HEX(2020),HEX(20)\n"
+        "40 IF M<>0THEN30\n"
+        "50 PRINT \"[\";E\xC2\xA4;\"]\"\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // Поле постоянной длины: освободившееся место стало концевыми
+    // пробелами, «содержимое дополняется необходимым их количеством».
+    CHECK_STR(line_of(screen, 1), "[A B C               ]");
+}
+
+// «Если последнего параметра нет, то искомая строка удаляется». Пример
+// книги: удалить все пробелы, кроме концевых.
+void test_replace_delete()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM B\xC2\xA4""10\n"
+        "20 B\xC2\xA4=\"A B C\"\n"
+        "30 REPLACE M,B\xC2\xA4,HEX(20)\n"
+        "40 PRINT M;\"[\";B\xC2\xA4;\"]\"\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // «Останутся только концевые пробелы».
+    CHECK_STR(line_of(screen, 1), " 2 [ABC       ]");
+}
+
+// --- $TRAN( (разд. 15.3) ----------------------------------------------------
+
+// Пример 15.8: в списковой форме пара байтов это «на что» и «что»,
+// `C¤="?*"` меняет звёздочки на вопросительные знаки.
+void test_tran_list()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM A\xC2\xA4(2)5,C\xC2\xA4""4\n"
+        "20 A\xC2\xA4()=\"AB*CD*EFGH\"\n"
+        "30 C\xC2\xA4=\"?*\"\n"
+        "40 \xC2\xA4TRAN(A\xC2\xA4(),C\xC2\xA4)R\n"
+        "50 PRINT \"[\";A\xC2\xA4();\"]\"\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "[AB?CD?EFGH]");
+}
+
+// Пример 15.9: `B¤=HEX(850A)` меняет HEX(0A) на HEX(85).
+void test_tran_list_hex()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM B\xC2\xA4""4,D\xC2\xA4""4\n"
+        "20 B\xC2\xA4=HEX(850A)\n"
+        "30 D\xC2\xA4=HEX(0A0A0A0A)\n"
+        "40 \xC2\xA4TRAN(D\xC2\xA4,B\xC2\xA4)R:HEXPRINT D\xC2\xA4\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "85858585");
+}
+
+// Табличная форма (без `R`): «код преобразуется в число, к которому
+// прибавляется единица; этот результат определяет номер байта в таблице».
+// Пример 15.10 берёт `T¤="0123456789ABCDEF"`; маска `hh` в потоке не
+// кодируется, поэтому проверяются коды, которые и так меньше длины таблицы.
+void test_tran_table()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM T\xC2\xA4""16,D\xC2\xA4""4\n"
+        "20 T\xC2\xA4=\"0123456789ABCDEF\"\n"
+        "30 D\xC2\xA4=HEX(00010F03)\n"
+        "40 \xC2\xA4TRAN(D\xC2\xA4,T\xC2\xA4):PRINT \"[\";D\xC2\xA4;\"]\"\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "[01F3]");
+}
+
+// «Если в таблице содержится меньше байтов, чем полученный номер, то байт
+// не изменяется» (при незаданной маске).
+void test_tran_short_table()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM T\xC2\xA4""2,D\xC2\xA4""2\n"
+        "20 T\xC2\xA4=HEX(4142)\n"
+        "30 D\xC2\xA4=HEX(0099)\n"
+        "40 \xC2\xA4TRAN(D\xC2\xA4,T\xC2\xA4):HEXPRINT D\xC2\xA4\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // 00 попало в таблицу и стало 41, 99 длиннее таблицы и осталось как был.
+    CHECK_STR(line_of(screen, 1), "4199");
+}
+
 // --- оттранслированная форма ------------------------------------------------
 
 // `MAT` — двухбайтовый глагол `06 01`; массив назван байтом `E0 <индекс>`
@@ -351,6 +467,13 @@ int main()
     test_mat_search_relations();
     test_hexprint_book();
     test_hexprint_separators();
+    test_replace_book();
+    test_replace_loop();
+    test_replace_delete();
+    test_tran_list();
+    test_tran_list_hex();
+    test_tran_table();
+    test_tran_short_table();
     test_tokenized();
     return test::summary("матричные операторы");
 }
