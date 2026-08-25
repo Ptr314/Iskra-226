@@ -197,6 +197,8 @@ private:
     // `COM CLEAR` — граница общих переменных (руководство, разд. 19.3).
     bool do_com_clear(Stream & st);
     bool do_redim(Stream & st);
+    // MAT READ и MAT INPUT: подкоды 06 03 и 06 04 (разд. 12.2.2 и 12.2.3).
+    bool do_mat_read(Stream & st, bool from_keyboard);
     bool do_mat(Stream & st);
     bool do_mat_copy(Stream & st);
     bool do_mat_search(Stream & st);

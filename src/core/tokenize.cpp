@@ -1360,6 +1360,53 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         return true;
     }
 
+    {
+        // `MAT READ` и `MAT INPUT` — подкоды `06 03` и `06 04`
+        // (docs/format.md, разд. 5, «Подкоды 06 03 и 06 04»). Грамматика у
+        // них одна: массив, необязательные новые размерности в скобках и
+        // необязательная длина элемента, записи через `DE`.
+        const bool mread = lex_.take_word("MAT READ");
+        const bool minput = !mread && lex_.take_word("MAT INPUT");
+        if (mread || minput) {
+            verb = mread ? 0x0603u : 0x0604u;
+            Encoder enc(lex_, out);
+            for (;;) {
+                Tok t;
+                // Имя может стоять и без скобок (`MAT READ G¤`, ROM 26), а
+                // ключ переменной всё равно массивный.
+                lex_.expect_array();
+                if (!enc.parser().take(t, true)) return err(enc.error());
+                if (t.t != Tok::VAR && t.t != Tok::ARRAY)
+                    return err("MAT READ/INPUT: ждали массив");
+                out.push_back(0xE0);
+                out.push_back(static_cast<uint8_t>(t.var));
+
+                // «<а.в.1>, <а.в.2> — выражения, определяющие новые
+                // размерности» (разд. 12.2.2). Их может не быть вовсе.
+                if (t.t == Tok::VAR && t.indexed) {
+                    out.push_back(0xEB);
+                    for (;;) {
+                        if (!enc.expr()) return err(enc.error());
+                        if (!take_sep(enc, Tok::COMMA)) break;
+                        out.push_back(0xDE);
+                    }
+                    if (!take_sep(enc, Tok::RPAR))
+                        return err("MAT READ/INPUT: скобка не закрыта");
+                    out.push_back(0xD0);
+                    // «<а.в.3> — выражение, определяющее максимальную длину
+                    // элемента символьного массива».
+                    if (!lex_.at_end() && !lex_.at_colon()) {
+                        if (!enc.parser().peek(t, true)) return err(enc.error());
+                        if (t.t != Tok::COMMA && !enc.expr()) return err(enc.error());
+                    }
+                }
+                if (!take_sep(enc, Tok::COMMA)) break;
+                out.push_back(0xDE);
+            }
+            return true;
+        }
+    }
+
     if (lex_.take_word("MAT SEARCH")) {
         // `<где> DE <знак> <что> D1 <куда> [D2 <шаг>]` (EDITOR 346).
         verb = 0x060A;

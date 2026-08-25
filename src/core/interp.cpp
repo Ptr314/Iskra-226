@@ -2382,6 +2382,159 @@ bool Interp::do_redim(Stream & st)
     return true;
 }
 
+// «Оператор предназначен для присваивания элементам указанных массивов
+// значений из списка аргументов оператора DATA. Массивы, указанные в
+// операторе MAT READ, заполняются последовательно строка за строкой»
+// (руководство, разд. 12.2.3). `MAT INPUT` — то же самое, но значения
+// приходят с клавиатуры (разд. 12.2.2): «на экран выводится знак вопроса, и
+// машина ожидает ввод данных… Отсутствие данных во входной строке даёт
+// машине указание прекратить ввод, остальные элементы массивов в списке
+// аргументов не учитываются».
+//
+// Грамматика у обоих одна: массив, необязательные новые размерности в
+// скобках и необязательная длина элемента символьного массива.
+bool Interp::do_mat_read(Stream & st, bool from_keyboard)
+{
+    std::string line;
+    unsigned lp = 0;
+    bool have_line = false;
+    bool done = false;              // пустая строка при MAT INPUT
+
+    for (;;) {
+        Tok t;
+        if (!st.ev.parser().take(t, true)) return fail(st.ev.error());
+        if (t.t != Tok::ARRAY && t.t != Tok::VAR)
+            return fail("MAT READ/INPUT: ждали массив");
+        const unsigned var = t.var;
+
+        // «<а.в.1>, <а.в.2> — выражения, определяющие новые размерности».
+        // Их может не быть вовсе; в потоке они видны открывающей скобкой.
+        unsigned dim[2] = { 0, 0 };
+        unsigned str_len = 0;
+        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+        if (t.t == Tok::LPAR) {
+            st.ev.parser().consume();
+            unsigned n = 0;
+            for (;;) {
+                Number v;
+                if (!st.ev.number(v)) return fail(st.ev.error());
+                long k = 0;
+                if (!v.floor_to_int(k) || k < 1)
+                    return fail("MAT READ/INPUT: размерность не положительна");
+                if (n < 2) dim[n] = static_cast<unsigned>(k);
+                ++n;
+                if (!st.ev.parser().take(t, false)) return fail(st.ev.error());
+                if (t.t == Tok::COMMA) continue;
+                if (t.t != Tok::RPAR)
+                    return fail("MAT READ/INPUT: скобка не закрыта");
+                break;
+            }
+            // За скобкой может стоять длина элемента. Заглядываем в позиции
+            // операции: там же стоит запятая между записями.
+            if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+            if (t.t != Tok::END && t.t != Tok::COMMA) {
+                st.ev.parser().unpeek();
+                Number v;
+                if (!st.ev.number(v)) return fail(st.ev.error());
+                long k = 0;
+                if (!v.floor_to_int(k) || k < 1)
+                    return fail("MAT READ/INPUT: длина элемента не положительна");
+                str_len = static_cast<unsigned>(k);
+            } else {
+                st.ev.parser().unpeek();
+            }
+
+            std::string err;
+            if (store_.is_string(var)) {
+                const unsigned len = str_len ? str_len : store_.str_len(var);
+                const std::size_t total = static_cast<std::size_t>(len) * dim[0] *
+                                          (dim[1] ? dim[1] : 1);
+                if (total > 64u * 1024u)
+                    return fail("MAT READ/INPUT: слишком большой массив");
+                store_.str_field(var).resize(total, ' ');
+            } else {
+                if (!store_.array_grow(var, dim[0], dim[1], err)) return fail(err);
+            }
+        } else {
+            st.ev.parser().unpeek();
+        }
+
+        // Сколько элементов заполнять.
+        unsigned d1 = 0, d2 = 0, count = 0;
+        std::string err;
+        if (store_.is_string(var)) {
+            const unsigned len = store_.str_len(var);
+            if (!len) return fail("MAT READ/INPUT: нулевая длина элемента");
+            count = static_cast<unsigned>(store_.str_field(var).size() / len);
+            d1 = count;
+        } else {
+            if (!store_.array_dims(var, d1, d2, err)) return fail(err);
+            count = d1 * (d2 ? d2 : 1);
+        }
+
+        for (unsigned i = 0; i < count && !done; ++i) {
+            Value v;
+            if (from_keyboard) {
+                // Строка кончилась — просим следующую.
+                while (!have_line || lp > line.size()) {
+                    if (!read_line(std::string(), false, line)) return false;
+                    lp = 0;
+                    have_line = true;
+                    if (line.empty()) { done = true; break; }
+                }
+                if (done) break;
+                std::string field;
+                while (lp < line.size() && line[lp] != ',') field += line[lp++];
+                if (lp < line.size()) ++lp; else lp = static_cast<unsigned>(line.size()) + 1;
+                if (store_.is_string(var)) {
+                    v.is_str = true;
+                    v.str = field;
+                } else if (!Number::parse(field, v.num)) {
+                    return machine_error(err::MATH,
+                                         "MAT INPUT: не число «" + field + "»");
+                }
+            } else {
+                bool exhausted = false;
+                if (!next_data(v, exhausted)) {
+                    if (!exhausted) return false;
+                    return machine_error(err::DATA_END,
+                                         "MAT READ: в операторах DATA больше нет значений");
+                }
+            }
+
+            // «Заполняются последовательно строка за строкой».
+            if (store_.is_string(var)) {
+                const long idx = static_cast<long>(i) + 1;
+                VarStore::StrLoc loc;
+                if (!store_.str_element(var, &idx, 1, loc, err)) return fail(err);
+                if (!v.is_str) return fail("MAT READ/INPUT: значение не символьное");
+                for (unsigned k = 0; k < loc.len; ++k)
+                    (*loc.data)[loc.off + k] =
+                        (k < v.str.size()) ? v.str[k] : ' ';
+            } else {
+                long idx[2];
+                unsigned n = 1;
+                if (d2) {
+                    idx[0] = static_cast<long>(i / d2) + 1;
+                    idx[1] = static_cast<long>(i % d2) + 1;
+                    n = 2;
+                } else {
+                    idx[0] = static_cast<long>(i) + 1;
+                }
+                Number * cell = 0;
+                if (!store_.slot(var, idx, n, cell, err)) return fail(err);
+                if (v.is_str) return fail("MAT READ/INPUT: значение символьное");
+                *cell = v.num;
+            }
+        }
+
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t != Tok::COMMA) { st.ev.parser().unpeek(); break; }
+        st.ev.parser().consume();
+    }
+    return true;
+}
+
 bool Interp::read_line(const std::string & prompt, bool has_prompt,
                        std::string & out)
 {
@@ -3715,6 +3868,8 @@ bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
         case 0x46: return do_dim(st, len, ops, false);
         case 0x4E: return do_dim(st, len, ops, true);
         case 0x0602: return do_redim(st);
+        case 0x0603: return do_mat_read(st, false);
+        case 0x0604: return do_mat_read(st, true);
         case 0x0601: return do_mat(st);
         case 0x0606: return do_mat_copy(st);
         case 0x060A: return do_mat_search(st);

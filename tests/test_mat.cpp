@@ -38,6 +38,32 @@ bool run_text(const char * utf8, std::string & screen, std::string & error)
     return run_program(img, screen, error);
 }
 
+bool run_text_input(const char * utf8, const char ** lines, unsigned n,
+                    std::string & screen, std::string & error)
+{
+    std::string koi8;
+    utf8_to_koi8(utf8, koi8);
+
+    NameTable names;
+    ProgramImage img;
+    if (!tokenize(koi8, img, names, error)) return false;
+
+    HeadlessHost host;
+    for (unsigned i = 0; i < n; ++i) {
+        std::string k;
+        utf8_to_koi8(lines[i], k);
+        if (!k.empty())
+            host.feed_keys(reinterpret_cast<const uint8_t *>(k.data()),
+                           static_cast<unsigned>(k.size()));
+        const uint8_t cr = 0x0D;
+        host.feed_keys(&cr, 1);
+    }
+    Interp interp(img, host);
+    if (!interp.run(error)) return false;
+    screen = host.dump();
+    return true;
+}
+
 std::string line_of(const std::string & text, unsigned n)
 {
     std::size_t p = 0;
@@ -453,6 +479,83 @@ void test_tokenized()
     CHECK_STR(line_of(screen, 2), " 0");
 }
 
+// --- MAT READ и MAT INPUT ---------------------------------------------------
+
+// Пример 12.3 книги. Печатная выдача там сохранилась, а строка `DATA` —
+// нет: в скане потеряны точка у `-.3` и один нуль. Восстановлено по
+// напечатанному результату, который сходится байт в байт.
+void test_mat_read()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM A(2),B(3,3)\n"
+        "20 MAT READ A,B(2,3)\n"
+        "50 PRINT A(1);A(2)\n"
+        "60 PRINT B(1,1);B(1,2);B(1,3)\n"
+        "70 PRINT B(2,1);B(2,2);B(2,3)\n"
+        "100 DATA 1,-2.3,-.3,6.2,0,0,1,-5\n";
+    if (!run_text(src, screen, error))
+        { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // «а) значения массива А».
+    CHECK_STR(line_of(screen, 1), " 1 -2.3");
+    // «б) значения массива В, преобразованного к новой размерности 2*3».
+    CHECK_STR(line_of(screen, 2), "-.3  6.2  0");
+    CHECK_STR(line_of(screen, 3), " 0  1 -5");
+}
+
+// «Данные выбираются из списка значений операторов DATA в порядке возрастания
+// номеров строк… Если данных недостаточно… происходит останов по ошибке»
+// (разд. 12.2.3). Код тот же, что у READ, — 27.
+void test_mat_read_runs_out()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM A(4)\n"
+        "20 ON ERROR E\xC2\xA4,K\xC2\xA4 GOTO 100\n"
+        "30 MAT READ A\n"
+        "40 STOP\n"
+        "100 PRINT \"КОД=\";E\xC2\xA4\n";
+    if (!run_text(src, screen, error))
+        { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "КОД=27");
+}
+
+// Символьный массив — «одна непрерывная строка», и MAT READ заполняет его
+// элемент за элементом.
+void test_mat_read_strings()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM A\xC2\xA4(3)4\n"
+        "20 MAT READ A\xC2\xA4\n"
+        "30 PRINT STR(A\xC2\xA4(),1,12)\n"
+        "40 DATA \"AAAA\",\"BB\",\"CCCC\"\n";
+    if (!run_text(src, screen, error))
+        { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // Короткое значение добивается пробелами до длины элемента.
+    CHECK_STR(line_of(screen, 1), "AAAABB  CCCC");
+}
+
+// Пример 12.2 книги слово в слово: три строки ввода, последняя пустая.
+void test_mat_input()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM A(2),B(3),C(3,4)\n"
+        "20 MAT INPUT A,B(2),C(2,4)\n"
+        "30 PRINT A(1);A(2);B(1);B(2)\n"
+        "40 PRINT C(1,1);C(1,2);C(1,3);C(1,4)\n"
+        "50 PRINT C(2,1);C(2,2)\n";
+    const char * keys[] = { "1,2,3", "4,5,-6", "" };
+    if (!run_text_input(src, keys, 3, screen, error))
+        { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // «вводятся элементы А(1), А(2), В(1)», затем «В(2), С(1,1), С(1,2)».
+    CHECK_STR(line_of(screen, 4), " 1  2  3  4");
+    CHECK_STR(line_of(screen, 5), " 5 -6  0  0");
+    // «оставшиеся элементы массива С не изменяются».
+    CHECK_STR(line_of(screen, 6), " 0  0");
+}
+
 } // namespace
 
 int main()
@@ -475,5 +578,9 @@ int main()
     test_tran_table();
     test_tran_short_table();
     test_tokenized();
+    test_mat_read();
+    test_mat_read_runs_out();
+    test_mat_read_strings();
+    test_mat_input();
     return test::summary("матричные операторы");
 }

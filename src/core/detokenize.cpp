@@ -1090,6 +1090,51 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             return true;
         }
 
+        case 0x0603:                                   // MAT READ
+        case 0x0604: {                                 // MAT INPUT
+            d.emit(verb == 0x0603 ? "MAT READ " : "MAT INPUT ");
+            for (bool first = true; ; first = false) {
+                if (!first) d.emit(",");
+                Tok t;
+                if (!d.parser().take(t, true)) { error = d.error(); return false; }
+                if (t.t != Tok::ARRAY && t.t != Tok::VAR) {
+                    error = "MAT READ/INPUT: ждали массив";
+                    return false;
+                }
+                std::string nm;
+                if (!d.name(t.var, nm)) { error = "нет имени для индекса"; return false; }
+                d.emit(nm);
+                // Новые размерности необязательны: в потоке они видны
+                // открывающей скобкой `EB`.
+                uint8_t b = 0;
+                if (src.peek_raw_byte(b) && b == 0xEB) {
+                    src.skip(1);
+                    d.emit("(");
+                    if (!expr_list(d, src, error)) return false;
+                    if (!d.parser().take(t, false) || t.t != Tok::RPAR) {
+                        error = "MAT READ/INPUT: скобка не закрыта";
+                        return false;
+                    }
+                    d.emit(")");
+                    // Длина элемента необязательна, а за ней может сразу
+                    // стоять запятая между записями. Заглядывать надо в
+                    // позиции операции: `DE` в позиции операнда — не
+                    // запятая, а однобайтовый литерал (CLAUDE.md, ловушка 2).
+                    if (!src.at_end()) {
+                        if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+                        d.parser().unpeek();
+                        if (t.t != Tok::COMMA && t.t != Tok::END) {
+                            if (!d.expr()) { error = d.error(); return false; }
+                        }
+                    }
+                }
+                if (src.at_end()) return true;
+                if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+                if (t.t != Tok::COMMA) { d.parser().unpeek(); return true; }
+                d.parser().consume();
+            }
+        }
+
         case 0x0602: {                                 // MAT REDIM
             d.emit("MAT REDIM ");
             for (bool first = true;; first = false) {
