@@ -137,6 +137,29 @@ bool VarStore::array_grow(unsigned var, unsigned dim1, unsigned dim2,
     return true;
 }
 
+bool VarStore::array_dims(unsigned var, unsigned & dim1, unsigned & dim2,
+                          std::string & error)
+{
+    std::map<unsigned, Array>::iterator it = arrays_.find(var);
+    if (it == arrays_.end()) {
+        unsigned d1 = 0, d2 = 0;
+        if (var < vars_.size()) { d1 = vars_[var].dim1; d2 = vars_[var].dim2; }
+        if (!array_alloc(var, d1, d2, error)) return false;
+        it = arrays_.find(var);
+    }
+    dim1 = it->second.dim1;
+    dim2 = it->second.dim2;
+    return true;
+}
+
+bool VarStore::array_count(unsigned var, unsigned & n, std::string & error)
+{
+    unsigned d1 = 0, d2 = 0;
+    if (!array_dims(var, d1, d2, error)) return false;
+    n = d1 * (d2 ? d2 : 1);
+    return true;
+}
+
 bool VarStore::slot(unsigned var, const long * idx, unsigned n, Number *& out,
                     std::string & error)
 {

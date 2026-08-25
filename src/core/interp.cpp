@@ -9,6 +9,7 @@
 #include "core/disk_record.h"
 #include "core/image.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -461,6 +462,55 @@ bool Interp::do_printusing(Stream & st)
     }
 
     if (!trailing_semi) emit_print_newline();
+    return true;
+}
+
+// «В Бейсике „Искры 226“ предусмотрен специальный оператор вывода
+// шестнадцатеричных кодов значений символьных переменных HEXPRINT»
+// (руководство, разд. 13.5): байты печатаются парами цифр вплотную.
+// Точка с запятой ничего не разделяет, запятая переводит строку.
+bool Interp::do_hexprint(Stream & st)
+{
+    static const char * HEXD = "0123456789ABCDEF";
+    bool newline = true;
+    while (!st.src.at_end()) {
+        Value v;
+        if (!st.ev.expr(v)) return fail(st.ev.error());
+        std::string out;
+        if (v.is_str) {
+            for (std::size_t i = 0; i < v.str.size(); ++i) {
+                const unsigned char b = static_cast<unsigned char>(v.str[i]);
+                out += HEXD[b >> 4];
+                out += HEXD[b & 15];
+            }
+        } else {
+            // Число в записи файла данных — восемь байт (разд. 2 формата).
+            uint8_t buf[8];
+            v.num.to_disk8(buf);
+            for (unsigned i = 0; i < 8; ++i) {
+                out += HEXD[buf[i] >> 4];
+                out += HEXD[buf[i] & 15];
+            }
+        }
+        emit_print(out);
+
+        Tok t;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t == Tok::COMMA) {
+            st.ev.parser().consume();
+            emit_print_newline();
+            newline = false;
+        } else if (t.t == Tok::SEMI) {
+            st.ev.parser().consume();
+            newline = false;
+        } else {
+            st.ev.parser().unpeek();
+            newline = true;
+            break;
+        }
+        if (!st.src.at_end()) newline = true;
+    }
+    if (newline) emit_print_newline();
     return true;
 }
 
@@ -1392,6 +1442,210 @@ bool Interp::do_dim(Stream & st, unsigned len, const uint8_t * ops, bool common)
 
 // MAT REDIM меняет размерности уже существующего массива; содержимое
 // памяти при этом сохраняется.
+// --- матричные операторы ----------------------------------------------------
+
+// `MAT <массив>=ZER` и `MAT <массив>=<массив>`: `E0 <индекс> D9 <EF | E0
+// <индекс>>` (STAT03 240). Других форм в корпусе нет вовсе — ни `CON`, ни
+// `IDN`, ни арифметики, ни `INV`/`TRN`: их байты не установлены, и
+// транслятор их кодировать отказывается.
+bool Interp::do_mat(Stream & st)
+{
+    uint8_t b = 0, dst = 0;
+    if (!st.src.take_raw_byte(b) || b != 0xE0) return fail("MAT без массива");
+    if (!st.src.take_raw_byte(dst)) return fail("MAT без массива");
+    if (!st.src.take_raw_byte(b) || b != 0xD9) return fail("MAT без знака равенства");
+    if (!st.src.take_raw_byte(b)) return fail("MAT: нечего присваивать");
+
+    std::string err;
+    if (b == 0xEF) {
+        // «MAT ZER — каждый элемент матрицы = 0» (руководство, разд. 12.1).
+        if (store_.is_string(dst)) return fail("MAT =ZER: массив не числовой");
+        unsigned d1 = 0, d2 = 0;
+        if (!store_.array_dims(dst, d1, d2, err)) return fail(err);
+        if (!store_.array_alloc(dst, d1, d2, err)) return fail(err);
+        return true;
+    }
+
+    if (b != 0xE0) return fail("MAT: справа не массив");
+    uint8_t src = 0;
+    if (!st.src.take_raw_byte(src)) return fail("MAT: справа не массив");
+
+    if (store_.is_string(dst) != store_.is_string(src))
+        return fail("MAT: массивы разного типа");
+    if (store_.is_string(dst)) {
+        // Массив строк — одно непрерывное поле (разд. 13.2), и копируется
+        // оно целиком.
+        store_.str_field(dst) = store_.str_field(src);
+        return true;
+    }
+
+    // «Размерность массива А изменяется в соответствии с размерностью
+    // массива В» (разд. 12.2.4).
+    unsigned d1 = 0, d2 = 0;
+    if (!store_.array_dims(src, d1, d2, err)) return fail(err);
+    if (!store_.array_grow(dst, d1, d2, err)) return fail(err);
+    const unsigned rows = d1, cols = d2 ? d2 : 1;
+    for (unsigned i = 1; i <= rows; ++i)
+        for (unsigned j = 1; j <= cols; ++j) {
+            long idx[2] = { static_cast<long>(i), static_cast<long>(j) };
+            const unsigned n = d2 ? 2u : 1u;
+            Number * from = 0;
+            if (!store_.slot(src, idx, n, from, err)) return fail(err);
+            const Number v = *from;
+            Number * to = 0;
+            if (!store_.slot(dst, idx, n, to, err)) return fail(err);
+            *to = v;
+        }
+    return true;
+}
+
+// Место символьного значения: сама переменная, элемент массива, массив
+// целиком или вырезка `STR(`. Знак минус перед ним значит «в обратном
+// порядке» (разд. 15.2), и вычислителю его показывать нельзя — он ругнётся
+// на минус перед строкой.
+bool Interp::str_place(Stream & st, bool & reverse, Evaluator::Target & out)
+{
+    reverse = false;
+    Tok t;
+    if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+    if (t.t == Tok::MINUS) { st.ev.parser().consume(); reverse = true; }
+    if (!st.ev.target(out, true)) return fail(st.ev.error());
+    if (!out.is_str || !out.data) return fail("ожидалось символьное значение");
+    return true;
+}
+
+// «Оператор MAT COPY переписывает данные из входной символьной переменной
+// или её части в выходную символьную переменную или её часть. Данные
+// переписываются последовательно по байтам. При переписи границы элементов
+// массива игнорируются» (руководство, разд. 15.2).
+bool Interp::do_mat_copy(Stream & st)
+{
+    bool rev_src = false;
+    Evaluator::Target src;
+    if (!str_place(st, rev_src, src)) return false;
+
+    Tok t;
+    if (!st.ev.parser().take(t, false) || t.t != Tok::KW_TO)
+        return fail("MAT COPY без TO");
+
+    bool rev_dst = false;
+    Evaluator::Target dst;
+    if (!str_place(st, rev_dst, dst)) return false;
+
+    // Байты источника снимаются заранее: вход и выход бывают одной и той же
+    // переменной, и подпрограммы вставки из примера 15.5 на этом стоят.
+    std::string bytes = src.data->substr(src.off, src.len);
+    if (rev_src) std::reverse(bytes.begin(), bytes.end());
+
+    // «Операция заканчивается, когда заполняется вся выходная переменная или
+    // её часть. Если переписываемых байтов недостаточно, в оставшиеся байты
+    // записываются символы пробела».
+    bytes.resize(dst.len, ' ');
+    if (rev_dst) std::reverse(bytes.begin(), bytes.end());
+
+    for (unsigned i = 0; i < dst.len; ++i)
+        (*dst.data)[dst.off + i] = bytes[i];
+    return true;
+}
+
+// «MAT SEARCH — оператор группового поиска данных, удовлетворяющих
+// заданному условию по всему содержимому поисковой переменной… Результатом
+// операции поиска является список порядковых номеров начальных байтов
+// найденных строк» (руководство, разд. 15.1).
+//
+// Поток: `<где> DE <знак> <что> D1 <куда> [D2 <шаг>]` (EDITOR 346).
+bool Interp::do_mat_search(Stream & st)
+{
+    Evaluator::Target where;
+    if (!st.ev.target(where, true)) return fail(st.ev.error());
+    if (!where.is_str || !where.data) return fail("MAT SEARCH: где искать — не строка");
+
+    Tok t;
+    if (!st.ev.parser().take(t, false) || t.t != Tok::COMMA)
+        return fail("MAT SEARCH без запятой");
+
+    uint8_t rel = 0;
+    if (!st.src.take_raw_byte(rel)) return fail("MAT SEARCH без знака");
+    // `*` (по маске), `%` (с отождествлением) и `#` (диапазон) книга
+    // описывает, но их байты в корпусе не встречаются и не установлены.
+    if (rel != 0xD9 && rel != 0xD5 && rel != 0xD6 && rel != 0xD7 &&
+        rel != 0xD8 && rel != 0xD4)
+        return fail("MAT SEARCH: знак условия не опознан");
+
+    Value what;
+    if (!st.ev.expr(what)) return fail(st.ev.error());
+    if (!what.is_str) return fail("MAT SEARCH: искомое значение не строка");
+    // «При сравнении концевые пробелы искомой величины не входят в
+    // сравниваемое значение».
+    std::string key = what.str;
+    while (!key.empty() && key[key.size() - 1] == ' ') key.resize(key.size() - 1);
+    if (key.empty()) return fail("MAT SEARCH: искомое значение пусто");
+
+    if (!st.ev.parser().take(t, false) || t.t != Tok::KW_TO)
+        return fail("MAT SEARCH без TO");
+
+    Evaluator::Target list;
+    if (!st.ev.target(list, true)) return fail(st.ev.error());
+    if (!list.is_str || !list.data) return fail("MAT SEARCH: список номеров не строка");
+
+    long step = 1;
+    if (!st.src.at_end()) {
+        uint8_t b = 0;
+        if (st.src.peek_raw_byte(b) && b == 0xD2) {
+            st.src.skip(1);
+            Number n;
+            if (!st.ev.number(n)) return fail(st.ev.error());
+            if (!n.floor_to_int(step) || step == 0)
+                return fail("MAT SEARCH: шаг не целое ненулевое число");
+            const long a = step < 0 ? -step : step;
+            if (a > 255) return fail("MAT SEARCH: шаг больше 255");
+        }
+    }
+
+    const std::string hay = where.data->substr(where.off, where.len);
+    const unsigned klen = static_cast<unsigned>(key.size());
+    const unsigned slots = list.len / 2;      // номер занимает два байта
+
+    std::vector<unsigned> found;
+    if (hay.size() >= klen) {
+        const long last = static_cast<long>(hay.size() - klen);   // 0-я позиция
+        const long k = step < 0 ? -step : step;
+        // «Если значение выражения положительно или параметр STEP опущен,
+        // поисковая переменная просматривается начиная с первого байта. Если
+        // значение отрицательно — начиная с её последнего байта».
+        for (long p = (step > 0 ? 0 : last); p >= 0 && p <= last; p += (step > 0 ? k : -k)) {
+            const int c = hay.compare(static_cast<std::size_t>(p), klen, key);
+            bool hit = false;
+            switch (rel) {
+                case 0xD9: hit = (c == 0); break;
+                case 0xD5: hit = (c != 0); break;
+                case 0xD6: hit = (c <= 0); break;
+                case 0xD7: hit = (c < 0);  break;
+                case 0xD8: hit = (c >= 0); break;
+                case 0xD4: hit = (c > 0);  break;
+                default: break;
+            }
+            if (!hit) continue;
+            found.push_back(static_cast<unsigned>(p) + 1);   // нумерация с единицы
+            if (found.size() >= slots) break;
+        }
+    }
+
+    // «Если операция закончилась потому, что проверены все строки, то в
+    // конец списка записываются два байта HEX(0000)».
+    std::string & out = *list.data;
+    unsigned at = 0;
+    for (std::size_t i = 0; i < found.size(); ++i, at += 2) {
+        out[list.off + at] = static_cast<char>((found[i] >> 8) & 0xFF);
+        out[list.off + at + 1] = static_cast<char>(found[i] & 0xFF);
+    }
+    if (found.size() < slots) {
+        out[list.off + at] = 0;
+        out[list.off + at + 1] = 0;
+    }
+    return true;
+}
+
 bool Interp::do_redim(Stream & st)
 {
     for (;;) {
@@ -2290,6 +2544,7 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x44: return do_read(st);
         case 0x51: return do_restore(st);
         case 0x4C: return do_print(st);
+        case 0x50: return do_hexprint(st);
         case 0x41: return do_input(st);
         case 0x0624: return do_linput(st);
         case 0x24: return do_if(st);
@@ -2300,6 +2555,9 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x46: return do_dim(st, len, ops, false);
         case 0x4E: return do_dim(st, len, ops, true);
         case 0x0602: return do_redim(st);
+        case 0x0601: return do_mat(st);
+        case 0x0606: return do_mat_copy(st);
+        case 0x060A: return do_mat_search(st);
         case 0x47: return do_convert(st);
         case 0x4B: return do_bin(st);
         case 0x64: return do_init(st);

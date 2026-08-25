@@ -102,6 +102,7 @@ private:
 
     bool do_print(Stream & st);
     bool do_printusing(Stream & st);
+    bool do_hexprint(Stream & st);
     bool do_read(Stream & st);
     bool do_restore(Stream & st);
     bool do_select(Stream & st);
@@ -131,6 +132,12 @@ private:
     bool do_scratch_disk(Stream & st);
     bool do_dim(Stream & st, unsigned len, const uint8_t * ops, bool common);
     bool do_redim(Stream & st);
+    bool do_mat(Stream & st);
+    bool do_mat_copy(Stream & st);
+    bool do_mat_search(Stream & st);
+    // Место символьного значения со знаком «в обратном порядке»
+    // (руководство, разд. 15.2).
+    bool str_place(Stream & st, bool & reverse, Evaluator::Target & out);
     bool do_input(Stream & st);
     bool do_linput(Stream & st);
     bool do_convert(Stream & st);

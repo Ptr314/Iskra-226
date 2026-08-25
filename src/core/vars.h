@@ -53,6 +53,14 @@ public:
     // MAT REDIM меняет размерности, сохраняя содержимое памяти.
     bool array_grow(unsigned var, unsigned dim1, unsigned dim2,
                     std::string & error);
+    // Действующие размерности числового массива: `MAT REDIM` меняет их, а
+    // в таблицах образа остаются исходные. Массив, к которому ещё не
+    // обращались, размещается по таблицам — как это делает slot().
+    bool array_dims(unsigned var, unsigned & dim1, unsigned & dim2,
+                    std::string & error);
+    // Число элементов массива: dim1 * dim2, у одномерного — dim1.
+    bool array_count(unsigned var, unsigned & n, std::string & error);
+
     // Повторное описание символьной переменной очищает её поле.
     void reset_string(unsigned var) { strs_.erase(var); }
 

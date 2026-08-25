@@ -1660,6 +1660,24 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         return true;
     }
 
+    if (lex_.take_word("HEXPRINT")) {
+        // Список тот же, что у PRINT: `DE` запятая, `DD` точка с запятой
+        // (DISSM 7584 = `50 04 1D 02 D0 DD`, 64 вхождения в корпусе).
+        verb = 0x50;
+        Encoder enc(lex_, out);
+        if (lex_.at_end() || lex_.at_colon()) return true;
+        for (;;) {
+            if (!enc.expr()) return err(enc.error());
+            Tok t;
+            if (!enc.parser().peek(t, false)) return err(enc.error());
+            if (t.t == Tok::COMMA) { enc.parser().consume(); out.push_back(0xDE); }
+            else if (t.t == Tok::SEMI) { enc.parser().consume(); out.push_back(0xDD); }
+            else { enc.parser().unpeek(); break; }
+            if (lex_.at_end() || lex_.at_colon()) break;
+        }
+        return true;
+    }
+
     // PRINTUSING раньше PRINT: иначе «USING» разберётся как выражение и
     // наберёт лишних имён — вся нумерация переменных уедет.
     if (lex_.take_word("PRINTUSING")) {

@@ -823,6 +823,21 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             return true;
         }
 
+        case 0x50: {                                   // HEXPRINT
+            d.emit("HEXPRINT ");
+            if (src.at_end()) return true;
+            for (;;) {
+                if (!d.expr()) { error = d.error(); return false; }
+                Tok t;
+                if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+                if (t.t == Tok::COMMA) { d.parser().consume(); d.emit(","); }
+                else if (t.t == Tok::SEMI) { d.parser().consume(); d.emit(";"); }
+                else { d.parser().unpeek(); break; }
+                if (src.at_end()) break;
+            }
+            return true;
+        }
+
         case 0x28: {                                   // PRINTUSING
             d.emit("PRINTUSING ");
             if (!d.expr()) { error = d.error(); return false; }
