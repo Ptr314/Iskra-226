@@ -41,6 +41,9 @@ public:
     unsigned tell() const { return i_; }
     void seek(unsigned p) { i_ = (p < n_) ? p : n_; }
     bool at_end() const { return i_ >= n_; }
+    // Сколько байт осталось. Нужно там, где читают сырые пары BCD и должны
+    // остановиться на неполной паре.
+    unsigned left() const { return (i_ < n_) ? n_ - i_ : 0u; }
 
     // Перескочить «шапку» оператора — байты, которые не лексемы выражения:
     // метку GOSUB'/DEFFN', адрес возврата и тому подобное.

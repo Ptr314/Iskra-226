@@ -285,11 +285,20 @@ bool Interp::do_print(Stream & st)
 
     for (;;) {
         Tok t;
-        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+        // Разделитель читается в позиции операции: `DE` там запятая, а в
+        // позиции операнда — однобайтовый литерал, и `PRINT "A",,"B"`
+        // (`E3 01 41 DE DE E3 01 42`) печатал бы число 227 вместо `B`
+        // (CLAUDE.md, ловушка 2).
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
         if (t.t == Tok::END) break;
-
         if (t.t == Tok::COMMA) { st.ev.parser().consume(); emit_zone(); newline = false; continue; }
         if (t.t == Tok::SEMI)  { st.ev.parser().consume(); newline = false; continue; }
+
+        // Не разделитель — значит очередной элемент, а его надо читать в
+        // позиции операнда: возвращаем источник и заглядываем заново.
+        st.ev.parser().unpeek();
+        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+        if (t.t == Tok::END) break;
 
         if (t.t == Tok::FN_TAB) {
             // «позиции строки нумеруются с нуля» (разд. 4.4), и курсор
@@ -3553,7 +3562,18 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
     if (verb == 0x56 || verb == 0x3F || verb == 0x29) return true;
 
     Stream st(ops, len, &img_.vars(), store_, &fnres_);
+    const bool ok = dispatch(verb, st, ops, len);
+    // «Если ошибка математическая, то выполняется оператор возврата RETURN»
+    // (пример 11.11) — значит у неё есть код и её ловит ON ERROR. Вычислитель
+    // помечает такие причины сам, а превращаем мы.
+    if (!ok && err_code_.empty() && st.ev.error_code())
+        err_code_ = st.ev.error_code();
+    return ok;
+}
 
+bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
+                      unsigned len)
+{
     switch (verb) {
         case 0x36: return do_let(st);
         case 0x28: return do_printusing(st);

@@ -123,7 +123,7 @@ bool Evaluator::sum(Value & out)
         Number r;
         const bool ok = (t.t == Tok::PLUS) ? Number::add(out.num, b.num, r)
                                            : Number::sub(out.num, b.num, r);
-        if (!ok) return fail("переполнение");
+        if (!ok) return math_fail("переполнение");
         out.num = r;
     }
 }
@@ -145,10 +145,10 @@ bool Evaluator::product(Value & out)
         if (t.t == Tok::STAR) {
             ok = Number::mul(out.num, b.num, r);
         } else {
-            if (b.num.is_zero()) return fail("деление на ноль");
+            if (b.num.is_zero()) return math_fail("деление на ноль");
             ok = Number::div(out.num, b.num, r);
         }
-        if (!ok) return fail("переполнение");
+        if (!ok) return math_fail("переполнение");
         out.num = r;
     }
 }
@@ -199,7 +199,7 @@ bool Evaluator::power(Value & out)
     if (!unary(b)) return false;               // возведение правоассоциативно
     if (out.is_str || b.is_str) return fail("степень строки не определена");
     Number r;
-    if (!Number::pow(out.num, b.num, r)) return fail("ошибка возведения в степень");
+    if (!Number::pow(out.num, b.num, r)) return math_fail("ошибка возведения в степень");
     out.num = r;
     return true;
 }
@@ -415,10 +415,10 @@ bool Evaluator::call(Value & out, Tok::Type fn)
             return true;
         }
         case Tok::FN_SQR:
-            if (!Number::sqrt(a, out.num)) return fail("корень из отрицательного числа");
+            if (!Number::sqrt(a, out.num)) return math_fail("корень из отрицательного числа");
             return true;
         case Tok::FN_LOG:
-            if (a.compare(Number()) <= 0) return fail("логарифм неположительного числа");
+            if (a.compare(Number()) <= 0) return math_fail("логарифм неположительного числа");
             out.num = Number::from_double(std::log(a.to_double()));
             return true;
         case Tok::FN_EXP:

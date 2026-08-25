@@ -56,6 +56,8 @@ int usage()
         "  iskra --list ОБРАЗ        каталог образа дискеты\n"
         "  iskra --cat ОБРАЗ ИМЯ     листинг программы с образа\n"
         "  iskra --detok ФАЙЛ        листинг ранее извлечённого файла\n"
+        "  iskra --tok ФАЙЛ          трансляция текстового листинга\n"
+        "  iskra --roundtrip ФАЙЛ    токены → текст → токены, сверка байтов\n"
         "  iskra --run ОБРАЗ ИМЯ [ВВОД…]  исполнить программу с образа\n"
         "  iskra --run-text ФАЙЛ [ВВОД…]  исполнить текстовый листинг\n"
         "  iskra --console [ОБРАЗ]   диалоговый режим в терминале\n"
@@ -271,6 +273,119 @@ int cmd_detok(const char * path)
     std::string utf8;
     if (!listing_of(std::vector<uint8_t>(raw.begin(), raw.end()), utf8)) return 1;
     out(utf8);
+    return 0;
+}
+
+// Трансляция текстового листинга — зеркало --detok. Построчно: одна строка,
+// которую транслятор ещё не умеет, не должна прятать остальные. Нужно для
+// разбора корпуса: так видно, чего в языке не хватает и в каких строках.
+int cmd_tok(const char * path, bool show_bytes)
+{
+    std::string utf8;
+    if (!read_file_bytes(path, utf8)) {
+        std::printf("не удалось открыть %s\n", path);
+        return 1;
+    }
+    std::string koi8;
+    iskra::utf8_to_koi8(utf8, koi8);
+
+    // Имена раздаются по первому появлению, поэтому таблица общая на всю
+    // программу: неразобранная строка её откатывает (core/tokenize.*).
+    iskra::NameTable names;
+    unsigned total = 0, ok = 0;
+    std::string line;
+    for (std::size_t i = 0; i <= koi8.size(); ++i) {
+        const bool eol = (i == koi8.size()) || koi8[i] == 0x0A ||
+                         koi8[i] == 0x0D ||
+                         static_cast<uint8_t>(koi8[i]) == 0x85;
+        if (!eol) { line += koi8[i]; continue; }
+        if (line.empty()) continue;
+
+        ++total;
+        unsigned number = 0;
+        std::vector<uint8_t> body;
+        std::string error;
+        if (iskra::tokenize_line(line, names, number, body, error)) {
+            ++ok;
+            if (show_bytes) {
+                char b[16];
+                std::sprintf(b, "%u", number);
+                std::string hex;
+                for (unsigned k = 0; k < body.size(); ++k) {
+                    char h[4];
+                    std::sprintf(h, "%02X", body[k]);
+                    if (k) hex += ' ';
+                    hex += h;
+                }
+                out(std::string(b) + " = " + hex + "\n");
+            }
+        } else {
+            char b[32];
+            std::sprintf(b, "%u", number);
+            out(std::string(b) + " ??? " + error + "\n");
+        }
+        line.clear();
+    }
+    std::printf("строк %u, оттранслировано %u\n", total, ok);
+    return 0;
+}
+
+// Круговая проверка «токены → текст → токены» на одном файле. Тот же обход,
+// что в tests/test_detokenize.cpp, но применимый к любому оттранслированному
+// файлу, а не только к корпусным парам: расхождение здесь значит, что одна из
+// двух сторон разбирает форму неправильно.
+int cmd_roundtrip(const char * path)
+{
+    std::string raw;
+    if (!read_file_bytes(path, raw)) {
+        std::printf("не удалось открыть %s\n", path);
+        return 1;
+    }
+    iskra::ProgramImage img;
+    std::string error;
+    if (!img.load_file(std::vector<uint8_t>(raw.begin(), raw.end()), error)) {
+        std::printf("разбор: %s\n", error.c_str());
+        return 1;
+    }
+
+    // Имена придумывает детокенизация; обратной трансляции нужна та же
+    // таблица, иначе индексы раздадутся заново.
+    iskra::NameTable names;
+    std::string whole;
+    iskra::detokenize(img, names, whole, error);
+
+    unsigned back_ok = 0, same = 0, differ = 0, shown = 0;
+    for (unsigned i = 0; i < img.line_count(); ++i) {
+        std::string line;
+        std::string err;
+        if (!iskra::detokenize_line(img.line(i), names, line, err)) continue;
+
+        iskra::NameTable copy = names;
+        unsigned number = 0;
+        std::vector<uint8_t> body;
+        if (!iskra::tokenize_line(line, copy, number, body, err)) {
+            std::printf("%u <<< %s\n", img.line(i).number, err.c_str());
+            continue;
+        }
+        ++back_ok;
+        if (number == img.line(i).number && body == img.line(i).body) {
+            ++same;
+            continue;
+        }
+        ++differ;
+        if (++shown <= 5) {
+            const std::vector<uint8_t> & w = img.line(i).body;
+            unsigned d = 0;
+            while (d < w.size() && d < body.size() && w[d] == body[d]) ++d;
+            std::printf("%u >>> %s\n", img.line(i).number,
+                        iskra::koi8_to_utf8(
+                            reinterpret_cast<const uint8_t *>(line.data()),
+                            static_cast<unsigned>(line.size())).c_str());
+            std::printf("      расходится с байта %u\n", d);
+        }
+    }
+    std::printf("строк %u, обратно %u, сошлось %u, разошлось %u\n",
+                img.line_count(), back_ok, same, differ);
     return 0;
 }
 
@@ -584,6 +699,9 @@ int main(int argc, char ** argv)
     if (cmd == "--list" && argc > 2) return cmd_list(argv[2]);
     if (cmd == "--cat" && argc > 3) return cmd_cat(argv[2], argv[3]);
     if (cmd == "--detok" && argc > 2) return cmd_detok(argv[2]);
+    if (cmd == "--tok" && argc > 2)
+        return cmd_tok(argv[2], argc > 3 && std::string(argv[3]) == "-b");
+    if (cmd == "--roundtrip" && argc > 2) return cmd_roundtrip(argv[2]);
     if (cmd == "--run" && argc > 3) return cmd_run(argv[2], argv[3], argv + 4, argc - 4);
     if (cmd == "--run-file" && argc > 2) return cmd_run_file(argv[2], argv + 3, argc - 3);
     if (cmd == "--run-text" && argc > 2) return cmd_run_text(argv[2], argv + 3, argc - 3);

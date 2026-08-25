@@ -456,6 +456,26 @@ bool disk_prefix(Decoder & d, ByteSource & src, bool with_device)
     return true;
 }
 
+// Хвост из номеров строк у SAVE DC и LOAD DC: сырые пары BCD через `DE`.
+// Читать его можно только после того, как разборщику вернули заглянутую
+// лексему: она уже вынута из источника (CLAUDE.md).
+bool line_tail(Decoder & d, ByteSource & src)
+{
+    d.parser().unpeek();
+    bool first = true;
+    for (;;) {
+        uint8_t b = 0;
+        if (!src.peek_raw_byte(b)) return true;
+        if (b == 0xDE) { src.skip(1); d.emit(","); first = false; continue; }
+        if (src.left() < 2) return true;
+        std::string n;
+        if (!line_number(src, n)) return false;
+        (void)first;
+        d.emit(n);
+        first = false;
+    }
+}
+
 // Список выражений через DE до конца операндов.
 bool expr_list(Decoder & d, ByteSource & src, std::string & error)
 {
@@ -620,10 +640,14 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             if (!len) return true;
             for (;;) {
                 Tok t;
-                if (!d.parser().peek(t, true)) { error = d.error(); return false; }
+                // Разделитель читается в позиции операции: `DE` там запятая,
+                // а в позиции операнда — однобайтовый литерал, и `PRINT ,F5%`
+                // (`4C 03 DE 3D DD`, SMAL2 262) разбирался как литерал 3D.
+                if (!d.parser().peek(t, false)) { error = d.error(); return false; }
                 if (t.t == Tok::END) break;
                 if (t.t == Tok::COMMA) { d.parser().consume(); d.emit(","); continue; }
                 if (t.t == Tok::SEMI) { d.parser().consume(); d.emit(";"); continue; }
+                d.parser().unpeek();
                 if (!d.expr()) { error = d.error(); return false; }
                 if (!d.parser().peek(t, false)) { error = d.error(); return false; }
                 if (t.t == Tok::COMMA) { d.parser().consume(); d.emit(","); }
@@ -875,9 +899,12 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             if (t.t == Tok::NUM) d.emit("INIT (" + t.s + ")");
             else if (t.t == Tok::STR) d.emit("INIT (\"" + t.s + "\")");
             else { error = "INIT без кода"; return false; }
+            // Разделителей между приёмниками нет вовсе, поэтому «скаляр или
+            // массив» решается строго по таблицам: заглядывание приняло бы
+            // индекс следующего приёмника за список индексов (ловушка 3).
             for (bool first = true; !src.at_end(); first = false) {
                 if (!first) d.emit(",");
-                if (!d.lvalue()) { error = d.error(); return false; }
+                if (!d.lvalue(true)) { error = d.error(); return false; }
             }
             return true;
         }
@@ -886,8 +913,14 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             d.emit("ON ERROR ");
             if (!len) return true;
             Tok t;
-            if (!d.parser().peek(t, true)) { error = d.error(); return false; }
-            if (t.t == Tok::VAR) {
+            // Приёмники кода и номера строки есть не всегда, а `CC`/`CD`/`D3`
+            // двузначны: в позиции операнда они значат не то. Смотрим сырой
+            // байт — это единственное состояние, в котором он однозначен.
+            uint8_t first_byte = 0;
+            const bool with_targets =
+                src.peek_raw_byte(first_byte) &&
+                first_byte != 0xCC && first_byte != 0xCD && first_byte != 0xD3;
+            if (with_targets) {
                 for (unsigned k = 0; k < 2; ++k) {
                     if (k) d.emit(",");
                     if (!d.parser().take(t, true) || t.t != Tok::VAR) {
@@ -1113,6 +1146,10 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
                     return false;
                 }
                 d.emit(",2");
+            } else {
+                // За приёмником сразу идёт значение, и заглянули мы в позиции
+                // операции: источник надо вернуть (CLAUDE.md, ловушка 2).
+                d.parser().unpeek();
             }
             d.emit(")=");
             if (!d.expr()) { error = d.error(); return false; }
@@ -1241,6 +1278,7 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
 
         case 0x76: case 0x77: {                        // DATA SAVE DC [CLOSE]
             d.emit("DATA SAVE DC ");
+            if (verb == 0x77) d.emit("CLOSE ");
             if (!disk_prefix(d, src, false)) { error = "приставка устройства"; return false; }
             if (src.at_end()) return true;
             uint8_t b = 0;
@@ -1254,7 +1292,11 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             const char * how = (verb == 0x66 || verb == 0x68) ? "BT"
                              : ((verb == 0x6E || verb == 0x70) ? "BA" : "DA");
             d.emit(std::string("DATA ") + (load ? "LOAD " : "SAVE ") + how + " ");
-            if (!disk_prefix(d, src, true)) { error = "приставка устройства"; return false; }
+            // У `BT` приставка это только `/адрес` или `#строка`: буквы
+            // устройства там не бывает, и байт `00`…`02` в начале — уже
+            // значение, а не `F`/`R`/`T`.
+            const bool block = (verb == 0x66 || verb == 0x68);
+            if (!disk_prefix(d, src, !block)) { error = "приставка устройства"; return false; }
             Tok t;
             if (!d.parser().peek(t, true)) { error = d.error(); return false; }
             if (t.t == Tok::END) return true;
@@ -1310,7 +1352,10 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
                 || ((t.t == Tok::VAR || t.t == Tok::ARRAY)
                     && t.var < names.vars().size() && names.vars()[t.var].is_string);
             if (named) {
-                if (!d.expr()) { error = d.error(); return false; }
+                // Имя — один операнд: за ним идут приёмники вплотную, без
+                // разделителей, и выражение приняло бы их индексы за своё
+                // продолжение.
+                if (!d.operand()) { error = d.error(); return false; }
                 d.emit(",");
             }
             return lvalue_list(d, src, error);
@@ -1378,9 +1423,11 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
         }
 
         case 0x7C: {                                   // LIST DC
-            d.emit("LIST DC");
-            uint8_t b = 0;
-            if (src.take_raw_byte(b)) d.emit(b == 0 ? "F" : (b == 1 ? "R" : "T"));
+            d.emit("LIST DC ");
+            if (!disk_prefix(d, src, true)) { error = "приставка устройства"; return false; }
+            if (src.at_end()) return true;
+            // За приставкой бывает имя файла: `LIST DC F"CHANAL"` (CHANAL 1).
+            if (!d.expr()) { error = d.error(); return false; }
             return true;
         }
 
@@ -1388,32 +1435,35 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             d.emit("LOAD DC ");
             if (!disk_prefix(d, src, true)) { error = "приставка устройства"; return false; }
             if (src.at_end()) return true;
-            if (!d.expr()) { error = d.error(); return false; }
-            return true;
+            // Имя — один операнд: за ним сразу идут сырые пары BCD, и полное
+            // выражение приняло бы их за продолжение.
+            if (!d.operand()) { error = d.error(); return false; }
+            return line_tail(d, src);
         }
 
         case 0x80: {                                   // SAVE DC
             d.emit("SAVE DC ");
             if (!disk_prefix(d, src, true)) { error = "приставка устройства"; return false; }
             uint8_t b = 0;
-            if (src.peek_raw_byte(b) && b == 0xD2) {
+            // `T` и скобка друг от друга не зависят: `CHANAL` 8000 =
+            // `00 D6 EB …` — есть скобка, а `T` нет.
+            if (src.peek_raw_byte(b) && b == 0xD2) { src.skip(1); d.emit("T"); }
+            if (src.peek_raw_byte(b) && b == 0xEB) {
                 src.skip(1);
-                d.emit("T");
-                if (src.peek_raw_byte(b) && b == 0xEB) {
-                    src.skip(1);
-                    d.emit("(");
-                    if (!expr_list(d, src, error)) return false;
-                    Tok t;
-                    if (!d.parser().take(t, false) || t.t != Tok::RPAR) {
-                        error = "SAVE DC: скобка не закрыта";
-                        return false;
-                    }
-                    d.emit(")");
+                d.emit("(");
+                if (!expr_list(d, src, error)) return false;
+                Tok t;
+                if (!d.parser().take(t, false) || t.t != Tok::RPAR) {
+                    error = "SAVE DC: скобка не закрыта";
+                    return false;
                 }
+                d.emit(")");
             }
             if (src.at_end()) return true;
-            if (!d.expr()) { error = d.error(); return false; }
-            return true;
+            // Имя — один операнд: за ним сразу идут сырые пары BCD, и полное
+            // выражение приняло бы их за продолжение.
+            if (!d.operand()) { error = d.error(); return false; }
+            return line_tail(d, src);
         }
 
         case 0x2A: case 0x2D: {                        // SAVE и LOAD через буфер

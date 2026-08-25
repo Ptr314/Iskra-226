@@ -17,7 +17,17 @@ namespace iskra {
 
 const Keyword KEYWORDS[] = {
     // Функции: за именем следует открывающая скобка, она входит в лексему.
+    // Тригонометрия: имена языка есть (разд. 4.7), а байты токенов не
+    // установлены — свободны `F9`–`FC`, и какое имя за каким, корпус не
+    // показывает (docs/format.md, разд. 5). Слова всё равно должны быть в
+    // таблице: без них `COS(X)` разбирается как переменная `C` и хвост
+    // `OS(X)`, то есть молча неправильно. Пусть лучше будет честный отказ.
     { "ARCTAN", Tok::UNKNOWN,  true  },
+    { "ARCSIN", Tok::UNKNOWN,  true  },
+    { "ARCCOS", Tok::UNKNOWN,  true  },
+    { "SIN",    Tok::UNKNOWN,  true  },
+    { "COS",    Tok::UNKNOWN,  true  },
+    { "TAN",    Tok::UNKNOWN,  true  },
     { "ROUND",  Tok::FN_ROUND, true  },
     { "RND",    Tok::FN_RND,   true  },
     { "XOR",    Tok::XOR,      false },   // связки условий
@@ -160,7 +170,7 @@ bool TextLexer::take_hex_byte(unsigned & out)
     return true;
 }
 
-bool TextLexer::take_hex2(unsigned & out)
+bool TextLexer::take_hex2(unsigned & out, bool strict)
 {
     skip_spaces();
     const unsigned save = p_;
@@ -174,6 +184,16 @@ bool TextLexer::take_hex2(unsigned & out)
         else { p_ = save; return false; }
         v = v * 16 + static_cast<unsigned>(d);
         ++p_;
+    }
+    // За двумя цифрами не должно стоять продолжение имени: `/A1¤` — это
+    // символьная переменная `A1¤`, а не адрес `A1` (`ROM` 3041). Адреса
+    // так и пишут — ровно две цифры и разделитель.
+    if (strict && p_ < end_) {
+        const char n = s_[p_];
+        if (n == '\x24' || n == '%' || is_letter(n) || is_digit(n)) {
+            p_ = save;
+            return false;
+        }
     }
     out = v;
     return true;

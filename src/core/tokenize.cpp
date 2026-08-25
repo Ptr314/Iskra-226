@@ -361,7 +361,7 @@ bool Encoder::primary()
 
         case Tok::SLASH: {
             unsigned a = 0;
-            if (!lex_.take_hex2(a)) return fail("после «/» нет адреса устройства");
+            if (!lex_.take_hex2(a, true)) return fail("после «/» нет адреса устройства");
             emit(0xDC);
             emit(0xDE);
             emit(static_cast<uint8_t>(a));
@@ -536,6 +536,8 @@ private:
     bool at_string_name();
     // Определение числовой функции пользователя (руководство, разд. 4.8).
     bool deffn(unsigned & verb, std::vector<uint8_t> & out);
+    // Хвост из номеров строк у SAVE DC и LOAD DC: сырые пары BCD через `DE`.
+    bool line_tail(Encoder & enc, std::vector<uint8_t> & out);
 
     TextLexer & lex_;
     std::string error_;
@@ -608,7 +610,7 @@ bool StmtEncoder::disk_prefix(Encoder & enc, std::vector<uint8_t> & out,
         // как «ноль» и имя.
         out.push_back(0xDC);
         unsigned a = 0;
-        if (lex_.take_hex2(a)) {
+        if (lex_.take_hex2(a, true)) {
             out.push_back(0xDE);
             out.push_back(static_cast<uint8_t>(a));
         } else if (!enc.expr()) {
@@ -711,6 +713,36 @@ bool StmtEncoder::line_number(std::vector<uint8_t> & out, unsigned n)
     out.push_back(to_bcd(n / 100));
     out.push_back(to_bcd(n % 100));
     return true;
+}
+
+// «В операторе SAVE DC после имени программного файла следует указать номер
+// начальной и через запятую номер конечной строки записываемого фрагмента»
+// (руководство, разд. 5.3). Номера идут сырыми парами BCD через `DE`:
+// `SAVE DC F("*ASMBBAS")"*ASMBBAS"9000,9090` = `… 90 00 DE 90 90`
+// (`ASMBBAS` 9090). У `LOAD DC` их бывает три (`ROM` 900).
+//
+// Разделителя между именем и первым номером нет ни в тексте, ни в потоке.
+bool StmtEncoder::line_tail(Encoder & enc, std::vector<uint8_t> & out)
+{
+    for (;;) {
+        Tok t;
+        if (!enc.parser().peek(t, false)) return err(enc.error());
+        if (t.t == Tok::NUM) {
+            enc.parser().consume();
+            long v = 0;
+            if (!t.num.floor_to_int(v) || v < 0)
+                return err("номер строки не целый неотрицательный");
+            if (!line_number(out, static_cast<unsigned>(v))) return false;
+            continue;
+        }
+        if (t.t == Tok::COMMA) {
+            enc.parser().consume();
+            out.push_back(0xDE);
+            continue;
+        }
+        enc.parser().unpeek();
+        return true;
+    }
 }
 
 bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & done)
@@ -1093,12 +1125,18 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
     }
 
     if (lex_.take_word("LIST DC")) {
-        // `LIST DC R` = 7C 01 01 (STAT03 120): только буква устройства.
+        // `LIST DC R` = `7C 01 01` (STAT03 120) — только буква устройства;
+        // но бывает и приставка с адресом, и имя файла:
+        // `LIST DC F"CHANAL"` = `7C 09 00 E3 06 …` (CHANAL 1),
+        // `LIST DC F/1C,"D0XM"` = `7C 0B 00 DC DE 1C DE E3 04 …` (М3 710).
         verb = 0x7C;
-        if (lex_.take_word("F")) out.push_back(0x00);
-        else if (lex_.take_word("R")) out.push_back(0x01);
-        else if (lex_.take_word("T")) out.push_back(0x02);
-        return true;
+        Encoder enc(lex_, out);
+        lex_.skip_spaces();
+        const char c = (lex_.pos() < lex_.end()) ? lex_.text()[lex_.pos()] : ' ';
+        if (!disk_prefix(enc, out, c == 'F' || c == 'R' || c == 'T'))
+            return false;
+        if (lex_.at_end() || lex_.at_colon()) return true;
+        return enc.expr() ? true : err(enc.error());
     }
 
     if (lex_.take_word("LOAD DC")) {
@@ -1107,7 +1145,10 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         Encoder enc(lex_, out);
         if (!disk_prefix(enc, out, true)) return false;
         if (lex_.at_end() || lex_.at_colon()) return true;
-        return enc.expr() ? true : err(enc.error());
+        if (!enc.expr()) return err(enc.error());
+        // За именем — до трёх номеров строк: откуда, докуда и куда
+        // продолжать исполнение (`ROM` 900, `SL2` 100).
+        return line_tail(enc, out);
     }
 
     if (lex_.take_word("SAVE DC")) {
@@ -1115,10 +1156,17 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         // (VICT 45): D2 — ключевое слово T, за ним диапазон в скобках.
         verb = 0x80;
         Encoder enc(lex_, out);
-        if (lex_.take_word("F")) out.push_back(0x00);
-        else if (lex_.take_word("R")) out.push_back(0x01);
-        else if (lex_.take_word("T")) out.push_back(0x02);
-        if (lex_.take_char('$')) out.push_back(0xD6);
+        // Устройства может не быть вовсе: `SAVE DC ("ПРОГ1") "КРУГ"`
+        // (пример 5.3). Приставка та же, что у прочих дисковых, — бывает и
+        // `/адрес` (`SAVE DC F/1C,("BUKWA")"BUKWA"`), и `#строка`
+        // (`SAVE DC T#K¤,(D-3)…` = `80 … 02 DB 5C DE EB …`, LКОПДИСК 2270).
+        lex_.skip_spaces();
+        const char c = (lex_.pos() < lex_.end()) ? lex_.text()[lex_.pos()] : ' ';
+        if (!disk_prefix(enc, out, c == 'F' || c == 'R' || c == 'T'))
+            return false;
+        // «Если специфицирован параметр Т, программа записывается на диск в
+        // оттранслированной форме» (разд. 5.3). Параметры P и G в корпусе
+        // не встречаются, и байтов у них нет.
         if (lex_.take_word("T")) out.push_back(0xD2);
         // Скобка от T не зависит: в ней либо имя вычеркнутого файла, на
         // место которого пишем, либо число запасных секторов — руководство,
@@ -1134,7 +1182,8 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
             out.push_back(0xD0);
         }
         if (lex_.at_end() || lex_.at_colon()) return true;
-        return enc.expr() ? true : err(enc.error());
+        if (!enc.expr()) return err(enc.error());
+        return line_tail(enc, out);
     }
 
     // Обмен программой через символьный буфер: `SAVE Z¤5215,5215` =
@@ -1582,7 +1631,14 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
             Encoder enc(lex_, out);
             lex_.skip_spaces();
             const char c = (lex_.pos() < lex_.end()) ? lex_.text()[lex_.pos()] : ' ';
-            if (!disk_prefix(enc, out, c != '/' && c != '#' && c != '$')) return false;
+            // У `BT` буквы устройства не бывает вовсе: во всех 793 операторах
+            // корпуса приставка это `/адрес` (`DC`) либо `#строка` (`DB`).
+            // Без приставки устройство берётся из группы `TAPE` (разд. 11.5),
+            // и в потоке тогда просто нет её байтов — как у `RESTORE` без
+            // номера строки.
+            const bool block = (ADDR[k].verb == 0x66 || ADDR[k].verb == 0x68);
+            const bool with_device = !block && c != '/' && c != '#' && c != '$';
+            if (!disk_prefix(enc, out, with_device)) return false;
             if (lex_.take_char('(')) {
                 out.push_back(0xEB);
                 if (!enc.expr()) return err(enc.error());
@@ -1849,6 +1905,17 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
             else if (t.t == Tok::COMMA) { enc.parser().consume(); out.push_back(0xDE); }
             else break;
             if (lex_.at_end() || lex_.at_colon()) break;
+            // Зона может быть пустой и в середине списка: `PRINT "A",,B`
+            // пропускает зону, `PRINT "A",;;C` — просто ничего не двигает.
+            // В потоке это два разделителя подряд, и такого в корпусе
+            // 1165 мест (`DE DE` 955, `DE DD` 208).
+            if (!enc.parser().peek(t, true)) return err(enc.error());
+            while (t.t == Tok::COMMA || t.t == Tok::SEMI) {
+                enc.parser().consume();
+                out.push_back(t.t == Tok::COMMA ? 0xDEu : 0xDDu);
+                if (lex_.at_end() || lex_.at_colon()) return true;
+                if (!enc.parser().peek(t, true)) return err(enc.error());
+            }
         }
         return true;
     }
@@ -1866,6 +1933,15 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         // `42 11 E3 0F …` (STAT03 420).
         verb = 0x42;
         if (lex_.at_end() || lex_.at_colon()) return true;
+        // `STOP #` = `42 01 DB` — форма, которой книга не описывает вовсе.
+        // Байт подтверждён с обеих сторон: в тексте она встречается в `SIG`
+        // 8300 и `SLIDE` 4300/8080, в токенах — 13 раз, и оба раза сразу
+        // за `ON … GOTO` как страховка от выхода за список. Что именно она
+        // делает, неизвестно; исполняется как обычный `STOP`.
+        if (lex_.take_char('#')) {
+            out.push_back(0xDB);
+            return true;
+        }
         Encoder enc(lex_, out);
         return enc.expr() ? true : err(enc.error());
     }

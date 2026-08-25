@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "core/errors.h"
 #include "core/expr.h"
 #include "core/value.h"
 #include "core/vars.h"
@@ -40,7 +41,7 @@ class Evaluator
 {
 public:
     Evaluator(TokenSource & src, VarStore & vars)
-        : ex_(src), src_(src), vars_(vars), fn_(0) {}
+        : ex_(src), src_(src), vars_(vars), fn_(0), code_(0) {}
 
     // Полное выражение, включая связки условий.
     bool expr(Value & out);
@@ -99,6 +100,17 @@ public:
         if (error_.empty()) error_ = m;
         return false;
     }
+    // Математическая ошибка — это ошибка машины с кодом 03, а не ограничение
+    // эмулятора: «если ошибка математическая, то выполняется оператор
+    // возврата RETURN» (руководство, пример 11.11). Вычислитель про ON ERROR
+    // не знает, поэтому только помечает причину, а превращает её в ошибку
+    // машины исполнитель.
+    bool math_fail(const std::string & m)
+    {
+        if (!code_) code_ = err::MATH;
+        return fail(m);
+    }
+    const char * error_code() const { return code_; }
 
 private:
     bool logic(Value & out);
@@ -120,6 +132,7 @@ private:
     TokenSource & src_;
     VarStore & vars_;
     FnResolver * fn_;
+    const char * code_;    // код ошибки машины, если она машинная
     std::string lit_;      // литерал под STR("…",…), чтобы было откуда резать
     std::string error_;
 };

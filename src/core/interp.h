@@ -148,6 +148,10 @@ private:
     };
 
     bool exec(unsigned verb, const uint8_t * ops, unsigned len);
+    // Сам разбор глагола. Отделён от exec(), чтобы после него можно было
+    // разобраться с кодом ошибки: у математических он есть, и ON ERROR их
+    // ловит (руководство, пример 11.11).
+    bool dispatch(unsigned verb, Stream & st, const uint8_t * ops, unsigned len);
 
     bool do_print(Stream & st);
     bool do_printusing(Stream & st);
