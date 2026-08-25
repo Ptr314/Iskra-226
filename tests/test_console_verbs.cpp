@@ -346,6 +346,38 @@ void test_skip_is_narrow()
     CHECK(!Interp::machine_verb(0x25));       // KEYIN
 }
 
+// Графика — свой разговор: буфер не разобран, и оператор останавливает
+// программу даже с ключом `-i`. Пропустить его значило бы выдать
+// нарисованное там, где ничего не нарисовано.
+//
+// `$OPEN`, `$COPY` и `$LET` попали в этот список не по имени, а по делу:
+// все семь файлов корпуса, где они есть, рисуют — `VICT` 6150 это
+// `¤OPEN B¤():NPLOT B¤(),P6,248:DRAW …`, а 6220 отправляет тот же буфер на
+// графопостроитель оператором `¤COPY /14,B¤()`.
+void test_graphics_verbs()
+{
+    CHECK(Interp::graphics_verb(0x0619));     // NPLOT
+    CHECK(Interp::graphics_verb(0x0615));     // DRAW
+    CHECK(Interp::graphics_verb(0x060F));     // $OPEN
+    CHECK(Interp::graphics_verb(0x061F));     // $COPY
+    CHECK(Interp::graphics_verb(0x0622));     // $LET
+    CHECK(!Interp::graphics_verb(0x0625));    // ASMB — машинозависимое
+    CHECK(!Interp::graphics_verb(0x060C));    // $TRAN( — обычный, сделан
+
+    std::string koi8, error;
+    utf8_to_koi8("10 DIM B\xC2\xA4(4)16\n"
+                 "20 \xC2\xA4OPEN B\xC2\xA4()\n", koi8);
+    NameTable names;
+    ProgramImage img;
+    if (!tokenize(koi8, img, names, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+
+    HeadlessHost host;
+    Interp interp(img, host);
+    interp.set_skip_machine(true);            // графики это не касается
+    CHECK(!interp.run(error));
+    CHECK(error.find("графический") != std::string::npos);
+}
+
 // --- оттранслированная форма ------------------------------------------------
 
 // Коды видов `CLEAR` взяты из корпуса: `14` это `P` (за ним диапазон строк,
@@ -429,6 +461,7 @@ int main()
     test_machine_verb_stops();
     test_machine_verb_skipped();
     test_skip_is_narrow();
+    test_graphics_verbs();
     test_tokenized();
     return test::summary("команды диалога внутри программы");
 }
