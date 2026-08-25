@@ -7,6 +7,7 @@
 
 #include "core/catalog.h"
 #include "core/detokenize.h"
+#include "core/tokenize.h"
 #include "core/koi8.h"
 #include "core/disk_record.h"
 #include "core/image.h"
@@ -1297,6 +1298,156 @@ bool Interp::do_return_clear(Stream & st, unsigned len)
         return true;
     }
     if (!calls_.empty()) calls_.pop_back();
+    return true;
+}
+
+// --- обмен программой через символьный буфер --------------------------------
+
+// В буфере лежит **программа в текстовом виде**, строки разделены байтом
+// `85` — тем же, что разделяет их в текстовом файле на дискете
+// (core/tokenize.h). Доказательства из корпуса:
+//
+//   * `EDITOR` 5195–5210 сохраняет строку 5215 в `Z¤`, дописывает в него
+//     набранное с клавиатуры оператором `LINPUT STR(Z¤,6)` — то есть прямо
+//     поверх текста, начиная с шестого байта, — ставит `HEX(85)` в конец и
+//     грузит обратно. Шестой байт: четыре цифры номера, пробел, текст;
+//   * `ASMBBAS` 9048 ищет в буфере `85`, чтобы напечатать очередную строку
+//     оператором `PRINT STR(A4¤(),A0,A1-1)` — значит, там текст;
+//   * `ASMBBAS` 9056–9058 сохраняет собственную строку 9066
+//     (`LOAD A4¤()9008,9008,9068`) и правит её `STR(A2¤,21)=A3¤`. Двадцать
+//     первый байт — начало второго номера, если считать «четыре цифры,
+//     пробел, `LOAD`, пробел, `A4¤()`, номера». Номер там собран
+//     оператором `CONVERT A TO A3¤,(####)`.
+const char BUF_EOL = '\x85';
+
+// Номера строк у обмена через буфер: до трёх сырых пар BCD через `DE`.
+unsigned Interp::buf_lines(Stream & st, unsigned * out, unsigned max)
+{
+    unsigned n = 0;
+    for (;;) {
+        uint8_t a = 0, b = 0;
+        if (n && (!st.src.peek_raw_byte(a) || a != 0xDE)) break;
+        if (n) st.src.skip(1);
+        if (!st.src.take_raw_byte(a) || !st.src.take_raw_byte(b)) break;
+        if (n < max) out[n] = bcd2(a) * 100 + bcd2(b);
+        ++n;
+        if (n >= max) break;
+    }
+    return n;
+}
+
+// `SAVE <буфер><строка1>,<строка2>` — листинг строк диапазона в символьную
+// переменную, каждая строка заканчивается байтом `85`.
+bool Interp::do_save_buf(Stream & st)
+{
+    uint8_t b = 0;
+    if (!st.src.take_raw_byte(b) || b != 0xDD)
+        return fail("SAVE: нет признака буфера");
+
+    Evaluator::Target dst;
+    if (!st.ev.target(dst, true)) return fail(st.ev.error());
+    if (!dst.is_str || !dst.data) return fail("SAVE: буфер не символьный");
+
+    unsigned ln[3] = { 0, 0, 0 };
+    const unsigned n = buf_lines(st, ln, 3);
+    if (!n) return fail("SAVE: нет номеров строк");
+    const unsigned from = ln[0];
+    const unsigned to = (n > 1) ? ln[1] : ln[0];
+
+    // Имён переменных в потоке нет: листинг называет их сам.
+    NameTable names;
+    std::string whole, err;
+    detokenize(img_, names, whole, err);
+
+    std::string out;
+    for (unsigned i = 0; i < img_.line_count(); ++i) {
+        const unsigned num = img_.line(i).number;
+        if (num < from || num > to) continue;
+        std::string text, why;
+        if (!detokenize_line(img_.line(i), names, text, why))
+            return fail("SAVE: строка " + num_str(num) + " не разбирается: " + why);
+        out += text;
+        out += BUF_EOL;
+    }
+
+    std::string & field = *dst.data;
+    for (unsigned i = 0; i < dst.len; ++i)
+        field[dst.off + i] = (i < out.size()) ? out[i] : ' ';
+    return true;
+}
+
+// `LOAD <буфер><строка1>,<строка2>[,<строка3>]` — обратно в текст программы.
+// Третий номер — куда продолжать исполнение: `EDITOR` 5210 грузит строку
+// 5215 и уходит на 5225, чтобы не исполнить только что заменённую строку
+// тут же; `ASMBBAS` 9066 и `DATABAS` 1283 уходят на 9068, где `STOP`.
+bool Interp::do_load_buf(Stream & st)
+{
+    uint8_t b = 0;
+    if (!st.src.take_raw_byte(b) || b != 0xDD)
+        return fail("LOAD: нет признака буфера");
+
+    // Буфер индексируется строго по таблицам: за ним сразу идут сырые байты
+    // номеров строк, и заглядывание приняло бы их за список индексов
+    // (CLAUDE.md, ловушка 3).
+    Evaluator::Target buf;
+    if (!st.ev.target(buf, true)) return fail(st.ev.error());
+    if (!buf.is_str || !buf.data) return fail("LOAD: буфер не символьный");
+    Value src;
+    if (!st.ev.load(buf, src)) return fail(st.ev.error());
+
+    unsigned ln[3] = { 0, 0, 0 };
+    const unsigned n = buf_lines(st, ln, 3);
+    if (!n) return fail("LOAD: нет номеров строк");
+    const unsigned from = ln[0];
+    const unsigned to = (n > 1) ? ln[1] : ln[0];
+
+    // Номер текущей строки надо запомнить до правки: индексы съедут.
+    const bool direct = (li_ == DIRECT);
+    const unsigned here = direct ? 0 : img_.line(li_).number;
+
+    NameTable names;
+    std::string whole, err;
+    detokenize(img_, names, whole, err);
+
+    std::size_t at = 0;
+    while (at < src.str.size()) {
+        const std::size_t e = src.str.find(BUF_EOL, at);
+        std::string chunk = (e == std::string::npos) ? src.str.substr(at)
+                                                     : src.str.substr(at, e - at);
+        at = (e == std::string::npos) ? src.str.size() : e + 1;
+        // Поле символьной переменной добито пробелами — это не текст.
+        while (!chunk.empty() && chunk[chunk.size() - 1] == ' ')
+            chunk.resize(chunk.size() - 1);
+        if (chunk.empty()) continue;
+
+        // Неразобранная строка откатывает таблицу имён: иначе выдуманные
+        // имена сдвинут индексы всех дальнейших переменных (CLAUDE.md).
+        const unsigned mark = names.count();
+        unsigned number = 0;
+        std::vector<uint8_t> body;
+        std::string why;
+        if (!tokenize_line(chunk, names, number, body, why)) {
+            names.truncate(mark);
+            return fail("LOAD: " + why);
+        }
+        if (number < from || number > to) { names.truncate(mark); continue; }
+        img_.put_line(number, body.empty() ? 0 : &body[0],
+                      static_cast<unsigned>(body.size()));
+    }
+
+    img_.vars() = names.vars();
+    img_.rebuild_tables();
+    rescan();
+
+    if (n > 2) return jump(ln[2]);
+
+    // Текст программы поменялся — индексы строк съехали, и текущую надо
+    // найти заново по номеру (та же беда, что у CLEAR P).
+    if (!direct) {
+        unsigned idx = 0;
+        if (!img_.find(here, idx)) { stopped_ = true; return true; }
+        li_ = idx;
+    }
     return true;
 }
 
@@ -3025,6 +3176,8 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x2C: return do_clear(st);
         case 0x2F: return do_run(st);
         case 0x2E: return do_list(st);
+        case 0x2A: return do_save_buf(st);
+        case 0x2D: return do_load_buf(st);
         case 0x81: return do_scratch(st);
         case 0x82: return do_scratch_disk(st);
 

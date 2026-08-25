@@ -241,6 +241,53 @@ void test_return_clear_all()
     CHECK_STR(line_of(screen, 1), "KONEC");
 }
 
+// --- обмен программой через символьный буфер --------------------------------
+
+// Приём `EDITOR` 5195–5215 целиком: сохранить листинг строки в символьную
+// переменную, переписать в нём текст оператора, загрузить обратно и
+// вызвать. Так редактор компилирует набранную пользователем формулу.
+//
+// Имена в буфере — те, что придумал детокенизатор: в потоке имён нет вовсе.
+void test_buffer_roundtrip()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM Z\xC2\xA4""60\n"
+        "20 Z\xC2\xA4=\" \":SAVE Z\xC2\xA4""5215,5215\n"
+        "30 PRINT \"[\";STR(Z\xC2\xA4,1,20);\"]\"\n"
+        // Шестой байт — начало текста оператора: четыре цифры номера и пробел.
+        "40 STR(Z\xC2\xA4,6)=\"A0(3)=A0(1)+A0(2)  \"\n"
+        "50 STR(Z\xC2\xA4,26,1)=HEX(85)\n"
+        "60 LOAD Z\xC2\xA4""5215,5215,70\n"
+        "70 A0(1)=3:A0(2)=4:GOSUB 5215\n"
+        "80 PRINT A0(3):STOP\n"
+        "5215 A0(3)=A0(1)*A0(2)\n"
+        "5220 RETURN\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // В буфере лежит листинг: номер, пробел, текст оператора.
+    CHECK_STR(line_of(screen, 1), "[5215 A0(3)=A0(1)*A0(]");
+    // Умножение заменено сложением: 3 + 4.
+    CHECK_STR(line_of(screen, 2), " 7");
+}
+
+// Строки за пределами диапазона `LOAD` в программу не попадают, а сам
+// диапазон отбирает их по номеру, записанному в буфере.
+void test_buffer_range()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM Z\xC2\xA4""80\n"
+        "20 Z\xC2\xA4=\" \":SAVE Z\xC2\xA4""100,110\n"
+        "30 PRINT \"[\";STR(Z\xC2\xA4,1,8);\"]\"\n"
+        "40 END\n"
+        "100 A=1\n"
+        "110 A=2\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // Две строки подряд, разделённые байтом 85; имена придуманы
+    // детокенизатором, поэтому переменная A программы зовётся тут A0.
+    CHECK_STR(line_of(screen, 1), "[100 A0=1]");
+}
+
 // --- оттранслированная форма ------------------------------------------------
 
 // Коды видов `CLEAR` взяты из корпуса: `14` это `P` (за ним диапазон строк,
@@ -319,6 +366,8 @@ int main()
     test_return_clear();
     test_return_clear_nested();
     test_return_clear_all();
+    test_buffer_roundtrip();
+    test_buffer_range();
     test_tokenized();
     return test::summary("команды диалога внутри программы");
 }
