@@ -62,10 +62,15 @@ public:
     static bool graphics_verb(unsigned verb)
     {
         switch (verb) {
+            case 0x0613:            // DOT
+            case 0x0614:            // DDRAW
             case 0x0615:            // DRAW
             case 0x0619:            // NPLOT
-            case 0x061E:            // LABEL
+            case 0x061A:            // ¤MOVE
+            case 0x061B:            // TURN
             case 0x061C:            // STRETCH
+            case 0x061D:            // FRAME
+            case 0x061E:            // LABEL
             case 0x0623:            // WINDOW
             case 0x0600:            // вероятно PLOT
             case 0x060F:            // $OPEN — открыть буфер
@@ -209,7 +214,7 @@ private:
     // Операции над байтами (гл. 14). `AND`, `OR` и `XOR` — частные
     // случаи `BOOL`: их таблицы истинности 8, E и 6.
     bool do_bitop(Stream & st, unsigned x, bool from_stream);
-    bool do_add(Stream & st);
+    bool do_add(Stream & st, bool carry_mode);
     bool do_rotate(Stream & st);
     // Второй аргумент: код байта либо вторая символьная переменная.
     bool byte_arg(Stream & st, Value & out);

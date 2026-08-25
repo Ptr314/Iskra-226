@@ -972,13 +972,23 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
     // однобайтовый литерал, как у INIT(.
     //
     // `BOOL` перед ними: у него впереди ещё цифра операции
-    // (`BOOL 9(A¤,B¤)` = 45 03 09 53 55, LКОПДИСК 4243). `ADD` из той же
-    // семьи, но с необязательным `C` — байт `D4`, как у `ROTATE C`; в
-    // корпусе форма с `C` не встречается.
+    // (`BOOL 9(A¤,B¤)` = 45 03 09 53 55, LКОПДИСК 4243).
+    //
+    // **`ADD C` — не признак у `ADD`, а свой глагол `63`.** Установлено на
+    // паре `SLIDE`/`SL2`: `SLIDE` 1430 = `K%=1+VAL(STR(A¤(),J+1)):ADD C
+    // (N¤,STR(A¤(),J+2,4)):RETURN`, а `SL2..` 1500 — те же три оператора,
+    // средний из которых `63 0F E1 E0 00 44 EA E8 02 DE E8 04 D0`. В обеих
+    // формах `ADD` без `C` не встречается ни разу, а `ADD C` — дважды
+    // против трёх `63` (редакции разные). Раньше признак кодировался
+    // выдуманным `D4` по аналогии с `ROTATE C`.
+    //
+    // Пишут его и слитно (`ADDC(`, книга, пример 14.2), и раздельно
+    // (`ADD C (`, `SLIDE`, `SIG`, `ROM`), поэтому берём оба написания.
     {
         static const struct { const char * word; uint8_t verb; int kind; } BITOPS[] = {
-            // kind: 0 — обычная, 1 — BOOL с цифрой, 2 — ADD с признаком C
-            { "BOOL", 0x45, 1 }, { "ADDC", 0x4A, 2 }, { "ADD", 0x4A, 0 },
+            // kind: 0 — обычная, 1 — BOOL с цифрой
+            { "BOOL", 0x45, 1 }, { "ADDC", 0x63, 0 }, { "ADD C", 0x63, 0 },
+            { "ADD", 0x4A, 0 },
             { "AND", 0x43, 0 }, { "OR", 0x61, 0 }, { "XOR", 0x62, 0 }
         };
         for (unsigned k = 0; k < sizeof(BITOPS) / sizeof(BITOPS[0]); ++k) {
@@ -989,8 +999,6 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
                 unsigned x = 0;
                 if (!lex_.take_hex_digit(x)) return err("BOOL без кода операции");
                 out.push_back(static_cast<uint8_t>(x));
-            } else if (BITOPS[k].kind == 2) {
-                out.push_back(0xD4);
             }
             if (!lex_.take_char('(')) return err("поразрядная операция без скобки");
             if (!enc.lvalue()) return err(enc.error());

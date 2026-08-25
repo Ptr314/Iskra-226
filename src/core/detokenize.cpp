@@ -1157,17 +1157,18 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
         }
 
         case 0x43: case 0x61: case 0x62:               // AND( OR( XOR(
-        case 0x45: case 0x4A: {                        // BOOL и ADD
+        case 0x45: case 0x4A: case 0x63: {             // BOOL, ADD и ADD C
             if (verb == 0x45) {
                 // Впереди цифра операции (LКОПДИСК 4243).
                 uint8_t x = 0;
                 if (!src.take_raw_byte(x)) { error = "BOOL без кода операции"; return false; }
                 d.emit("BOOL" + std::string(1, HEXD[x & 15]) + "(");
             } else if (verb == 0x4A) {
-                uint8_t b = 0;
-                const bool c = src.peek_raw_byte(b) && b == 0xD4;
-                if (c) src.skip(1);
-                d.emit(c ? "ADDC(" : "ADD(");
+                d.emit("ADD(");
+            } else if (verb == 0x63) {
+                // Сложение с переносом между байтами — свой глагол, а не
+                // признак у ADD (docs/format.md, разд. 5).
+                d.emit("ADD C(");
             } else {
                 d.emit(verb == 0x43 ? "AND(" : (verb == 0x61 ? "OR(" : "XOR("));
             }

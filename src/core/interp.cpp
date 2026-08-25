@@ -2749,14 +2749,12 @@ bool Interp::do_bitop(Stream & st, unsigned x, bool from_stream)
 // «Содержимое аргументов складывается по правилам сложения двоичных чисел,
 // а результат заносится в содержимое первого аргумента» (разд. 14.1).
 // Без `C` переноса между байтами нет; с `C` границы байтов игнорируются.
-bool Interp::do_add(Stream & st)
+// «Параметр С определяет способ сложения. При отсутствии параметра С сложение
+// происходит без переноса между байтами» (руководство, разд. 14.1). Признак —
+// не байт внутри оператора, а свой глагол: `4A` без переноса, `63` с ним
+// (docs/format.md, разд. 5, «Глагол 63»).
+bool Interp::do_add(Stream & st, bool carry_mode)
 {
-    bool carry_mode = false;
-    uint8_t b = 0;
-    // Признак `C` — тот же байт `D4`, что у `ROTATE C`. В корпусе форма с
-    // `C` не встречается, байт взят по аналогии (CLAUDE.md, «Допущения»).
-    if (st.src.peek_raw_byte(b) && b == 0xD4) { st.src.skip(1); carry_mode = true; }
-
     Evaluator::Target dst;
     if (!st.ev.target(dst, true)) return fail(st.ev.error());
     if (!dst.is_str || !dst.data) return fail("ADD: приёмник не символьный");
@@ -3605,7 +3603,8 @@ bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
         case 0x61: return do_bitop(st, 0xE, false);   // OR
         case 0x62: return do_bitop(st, 0x6, false);   // XOR
         case 0x45: return do_bitop(st, 0, true);      // BOOL
-        case 0x4A: return do_add(st);
+        case 0x4A: return do_add(st, false);
+        case 0x63: return do_add(st, true);
         case 0x4D: return do_rotate(st);
         case 0x54: return do_select(st);
         case 0x6D: return do_copy(st);
