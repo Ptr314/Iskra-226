@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 namespace iskra {
 
@@ -66,7 +67,7 @@ bool stmt_head(const std::vector<uint8_t> & body, unsigned at,
 
 Interp::Interp(ProgramImage & img, Host & host)
     : img_(img), host_(host), store_(img.vars()), labels_ready_(false),
-      data_ready_(false), data_i_(0), data_off_(0),
+      data_ready_(false), data_i_(0), data_off_(0), end_seen_(false),
       li_(0), off_(0), next_off_(0), jumped_(false), stopped_(false),
       max_steps_(0)
 {
@@ -559,6 +560,28 @@ bool Interp::do_open(Stream & st, bool with_device)
 bool Interp::store_value(const Evaluator::Target & target, Stream & st,
                          const std::vector<Value> & vals, std::size_t & used)
 {
+    // Числовой массив целиком — столько значений, сколько в нём элементов,
+    // строка за строкой (руководство, разд. 18.3 и 18.6).
+    if (target.whole && !target.is_str) {
+        const std::vector<VarInfo> & vi = store_.vars();
+        const unsigned d1 = (target.var < vi.size() && vi[target.var].dim1)
+                                ? vi[target.var].dim1 : 1;
+        const unsigned d2 = (target.var < vi.size() && vi[target.var].dim2)
+                                ? vi[target.var].dim2 : 1;
+        for (unsigned i = 1; i <= d1; ++i)
+            for (unsigned j = 1; j <= d2; ++j) {
+                if (used >= vals.size()) return fail("в записи меньше значений, чем приёмников");
+                const Value & v = vals[used++];
+                if (v.is_str) return fail("строке в записи соответствует числовой приёмник");
+                long idx[2] = { static_cast<long>(i), static_cast<long>(j) };
+                Number * cell = 0;
+                if (!store_.slot(target.var, idx, (d2 > 1) ? 2u : 1u, cell, error_))
+                    return fail(error_);
+                *cell = v.num;
+            }
+        return true;
+    }
+
     // Массив целиком — столько значений, сколько в нём элементов: «элементы
     // массива записываются построчно» (руководство, разд. 18.6).
     if (target.whole && target.is_str) {
@@ -594,6 +617,18 @@ bool Interp::do_dload(Stream & st)
     DeviceRow & r = dev_.row(d.row);
     if (!r.bound) return fail("файл не открыт");
 
+    // «В Бейсике „Искры 226“ есть специальный оператор для обнаружения факта
+    // чтения концевой (или закрывающей) записи файла оператором DATA LOAD DC»
+    // (руководство, разд. 18.5). Признак ставится здесь, а проверяет его
+    // `IF END THEN`; сама загрузка при этом ничего не делает, и адрес
+    // текущего сектора остаётся на концевой записи — на этом стоит
+    // пример 18.5.
+    unsigned code = 0;
+    if (!record_code(host_, d.drive, r.current, code))
+        return machine_error(err::UNKNOWN, "не читается сектор " + num_str(r.current));
+    end_seen_ = (code == REC_END);
+    if (end_seen_) return true;
+
     std::vector<Value> vals;
     unsigned next = 0;
     std::string err;
@@ -613,6 +648,402 @@ bool Interp::do_dload(Stream & st)
     // «По окончании операции загрузки адрес текущего сектора устанавливается
     // на первый сектор следующей записи» (руководство, разд. 18.4).
     r.current = (next <= r.last) ? next : r.last;
+    return true;
+}
+
+// --- запись данных в файл ---------------------------------------------------
+
+// «Оператор DATA SAVE DC OPEN создаёт новый файл и открывает его, т. е.
+// заносит имя файла и адреса его граничных секторов в указатель каталога, а
+// также записывает адреса начального, конечного и текущего секторов в строку
+// таблицы устройств» (руководство, разд. 18.2.1). В скобках либо число
+// секторов, либо имя вычеркнутого файла, на место которого файл ложится
+// (разд. 18.2.2).
+bool Interp::do_dsave_open(Stream & st)
+{
+    Disk d;
+    if (!disk_prefix(st, true, d)) return false;
+
+    Tok t;
+    if (!st.ev.parser().take(t, true) || t.t != Tok::LPAR)
+        return fail("DATA SAVE DC OPEN без размера");
+    Value size;
+    if (!st.ev.expr(size)) return fail(st.ev.error());
+    if (!st.ev.parser().take(t, false) || t.t != Tok::RPAR)
+        return fail("DATA SAVE DC OPEN: скобка не закрыта");
+
+    std::string name;
+    if (!st.ev.text(name)) return fail(st.ev.error());
+
+    uint8_t nm[NAME_LEN];
+    Catalog::make_name(name, nm);
+
+    Catalog cat(host_, d.drive);
+    CatalogEntry e;
+    std::string err;
+    if (!cat.find(nm, e, err)) return fail(err);
+    // «Попытка создать новый файл с именем „АНКЕТА“ приведёт к останову по
+    // ошибке, так как в указателе каталога уже есть такое имя» (разд. 18.3).
+    if (e.alive()) return machine_error(err::FILE_EXISTS, "файл с таким именем уже есть");
+
+    bool fresh = true;
+    if (size.is_str) {
+        // На месте вычеркнутого файла: «адреса граничных секторов не
+        // изменяются», а «содержимое секторов диска… не изменяется» — значит
+        // и служебной записи туда не пишем.
+        uint8_t old[NAME_LEN];
+        Catalog::make_name(size.str, old);
+        CatalogEntry victim;
+        if (!cat.find(old, victim, err)) return fail(err);
+        if (!victim.exists() || !victim.scratched())
+            return machine_error(err::NO_FILE, "вычеркнутого файла с таким именем нет");
+        if (!cat.rename_over(victim, nm, false, e, err)) return fail(err);
+        fresh = false;
+    } else {
+        long n = 0;
+        if (!size.num.floor_to_int(n) || n < 1)
+            return fail("DATA SAVE DC OPEN: размер не целое положительное число");
+        if (!cat.create(nm, false, static_cast<unsigned>(n), e, err))
+            return machine_error(cat.io_error() ? err::UNKNOWN : err::FILE_BIG, err);
+    }
+
+    // «Машина использует последний сектор файла для хранения служебной
+    // информации. Никакая другая информация по этому оператору в файл не
+    // записывается» (разд. 18.2.1). Это концевая запись со счётчиком 1:
+    // «если признак конца данных в файле не записан, то в графе
+    // „Использовано“ всегда будет стоять 00001» (разд. 18.4). Подтверждено
+    // нетронутым файлом `B0001` на `w001-s2` — 300 секторов нулей, и только
+    // в последнем `1C 00 01`.
+    if (fresh && !write_end_record(host_, d.drive, e.last, e.last, err))
+        return machine_error(err::UNKNOWN, err);
+
+    DeviceRow & r = dev_.row(d.row);
+    r.bound = true;
+    r.first = e.first;
+    r.current = e.first;
+    r.last = e.last;
+    return true;
+}
+
+// Значения списка `DATA SAVE DC`. Массив целиком идёт «строка за строкой»
+// (разд. 18.3), поэтому разворачивается в свои элементы — так же, как их
+// собирает обратно `store_value()` при чтении.
+bool Interp::save_values(Stream & st, std::vector<Value> & vals)
+{
+    for (;;) {
+        Tok t;
+        if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
+        if (t.t == Tok::END) break;
+
+        if (t.t == Tok::ARRAY) {
+            st.ev.parser().consume();
+            const unsigned var = t.var;
+            const std::vector<VarInfo> & vi = store_.vars();
+            const unsigned d1 = (var < vi.size() && vi[var].dim1) ? vi[var].dim1 : 1;
+            const unsigned d2 = (var < vi.size() && vi[var].dim2) ? vi[var].dim2 : 1;
+            for (unsigned i = 1; i <= d1; ++i) {
+                for (unsigned j = 1; j <= d2; ++j) {
+                    long idx[2] = { static_cast<long>(i), static_cast<long>(j) };
+                    const unsigned ni = (d2 > 1) ? 2u : 1u;
+                    Value v;
+                    if (store_.is_string(var)) {
+                        VarStore::StrLoc loc;
+                        if (!store_.str_element(var, idx, ni, loc, error_))
+                            return fail(error_);
+                        v.is_str = true;
+                        v.str = loc.data->substr(loc.off, loc.len);
+                    } else {
+                        Number * cell = 0;
+                        if (!store_.slot(var, idx, ni, cell, error_)) return fail(error_);
+                        v.num = *cell;
+                    }
+                    vals.push_back(v);
+                }
+            }
+        } else {
+            Value v;
+            if (!st.ev.expr(v)) return fail(st.ev.error());
+            vals.push_back(v);
+        }
+
+        // Разделитель после значения читается в позиции операции.
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t != Tok::COMMA) { st.ev.parser().unpeek(); break; }
+        st.ev.parser().consume();
+    }
+    return true;
+}
+
+// «Совокупность значений, записываемых с помощью одного оператора
+// DATA SAVE DC, называется логической записью данных… По окончании записи
+// адрес текущего сектора изменяется на адрес сектора, следующего за
+// последним сектором, занятым под данные» (разд. 18.3). Форма `END` пишет
+// односекторную концевую запись в текущий сектор (разд. 18.4).
+bool Interp::do_dsave(Stream & st)
+{
+    Disk d;
+    if (!disk_prefix(st, false, d)) return false;
+    DeviceRow & r = dev_.row(d.row);
+    if (!r.bound) return fail("файл не открыт");
+
+    std::string err;
+    uint8_t b = 0;
+    if (st.src.peek_raw_byte(b) && b == 0xD7) {
+        st.src.skip(1);
+        // Концевая запись помечает сектор, «откуда можно записывать данные»,
+        // поэтому текущий сектор она не двигает: следующая запись ляжет
+        // прямо на неё.
+        if (!write_end_record(host_, d.drive, r.first, r.current, err))
+            return machine_error(err::UNKNOWN, err);
+        return true;
+    }
+
+    std::vector<Value> vals;
+    if (!save_values(st, vals)) return false;
+    if (vals.empty()) return fail("DATA SAVE DC без значений");
+
+    unsigned next = 0;
+    if (!write_record(host_, d.drive, r.current, r.last, vals, next, err))
+        return machine_error(err::UNKNOWN, err);
+    r.current = next;
+    return true;
+}
+
+// «Оператор DATA SAVE DC CLOSE закрывает файл, записывая нули во все графы
+// таблицы устройств» (разд. 18.4). Адрес самого устройства при этом
+// остаётся: его назначает SELECT, а не открытие файла.
+bool Interp::do_dclose(Stream & st)
+{
+    Disk d;
+    if (!disk_prefix(st, false, d)) return false;
+    DeviceRow & r = dev_.row(d.row);
+    r.bound = false;
+    r.first = 0;
+    r.current = 0;
+    r.last = 0;
+    return true;
+}
+
+// «При считывании концевой записи по оператору DATA LOAD DC происходит
+// переход к строке с номером, указанным в операторе IF END THEN»
+// (разд. 18.5). Номер строки — сырой двухбайтовый BCD, как у GOTO.
+bool Interp::do_if_end(Stream & st)
+{
+    uint8_t a = 0, b = 0;
+    if (!st.src.take_raw_byte(a) || !st.src.take_raw_byte(b))
+        return fail("IF END THEN без номера строки");
+    if (!end_seen_) return true;
+    end_seen_ = false;
+    return jump(bcd2(a) * 100 + bcd2(b));
+}
+
+// --- режим абсолютной адресации секторов (разд. 18.9) -----------------------
+
+// Приставка и номер начального сектора: `<приставка> [EB <а.в.> D0]`.
+// «Таблица устройств всё же используется для хранения характерной для режима
+// DA адресной информации: адреса начального сектора, указанного в операторе,
+// максимально возможного адреса сектора… адреса сектора, следующего за
+// последним использованным» (разд. 18.9).
+bool Interp::abs_prefix(Stream & st, Disk & d, unsigned & sector,
+                        bool & has_target, Evaluator::Target & target)
+{
+    has_target = false;
+    if (!disk_prefix(st, true, d)) return false;
+
+    DeviceRow & r = dev_.row(d.row);
+    sector = r.current;
+
+    uint8_t b = 0;
+    if (st.src.peek_raw_byte(b) && b == 0xEB) {
+        st.src.skip(1);
+        Number n;
+        if (!st.ev.number(n)) return fail(st.ev.error());
+        Tok t;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t == Tok::COMMA) {
+            // «Значение этого адреса можно считать в числовую или
+            // символьную переменную, которая может быть указана после
+            // адреса начального сектора» (разд. 18.9.1).
+            st.ev.parser().consume();
+            if (!st.ev.target(target, true)) return fail(st.ev.error());
+            has_target = true;
+            if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        }
+        if (t.t != Tok::RPAR) return fail("обмен по адресу: скобка не закрыта");
+        st.ev.parser().consume();
+        long v = 0;
+        if (!n.floor_to_int(v) || v < 0)
+            return fail("номер сектора не целое неотрицательное число");
+        sector = static_cast<unsigned>(v);
+    }
+
+    const unsigned total = host_.disk_sectors(d.drive);
+    if (sector >= total)
+        return machine_error(err::UNKNOWN,
+                             "сектора " + num_str(sector) + " на диске нет");
+    r.bound = true;
+    r.first = sector;
+    r.current = sector;
+    r.last = total - 1;
+    return true;
+}
+
+// «Операторы этой группы… используются для записи и загрузки с диска
+// содержимого одного сектора размером в 256 байт. По оператору DATA SAVE BA
+// в заданный сектор записывается содержимое символьного массива. Если массив
+// содержит больше 256 байт, то записываются первые 256. Если массив содержит
+// меньше 256 байт, то оставшиеся байты сектора заполняются кодами HEX(00)»
+// (разд. 18.9.4).
+// «После выполнения оператора машина запоминает адрес сектора, следующего за
+// последним сектором, использованным в данной операции… В случае символьной
+// переменной используется двоичное значение первых двух байтов»
+// (разд. 18.9.1).
+bool Interp::store_next(Stream & st, bool has_target,
+                        const Evaluator::Target & target, unsigned next)
+{
+    if (!has_target) return true;
+    Value v;
+    if (target.is_str) {
+        v.is_str = true;
+        v.str.push_back(static_cast<char>((next >> 8) & 0xFF));
+        v.str.push_back(static_cast<char>(next & 0xFF));
+    } else {
+        v.num = Number::from_int(static_cast<long>(next));
+    }
+    if (!st.ev.store(target, v)) return fail(st.ev.error());
+    return true;
+}
+
+bool Interp::do_block(Stream & st, bool load)
+{
+    Disk d;
+    unsigned sector = 0;
+    bool has_target = false;
+    Evaluator::Target addr;
+    if (!abs_prefix(st, d, sector, has_target, addr)) return false;
+
+    uint8_t sec[Host::SECTOR_SIZE];
+    if (load) {
+        if (!host_.disk_read(d.drive, sector, sec))
+            return machine_error(err::UNKNOWN, "не читается сектор " + num_str(sector));
+        Evaluator::Target target;
+        if (!st.ev.target(target, true)) return fail(st.ev.error());
+        if (!target.is_str) return fail("DATA LOAD BA: приёмник не символьный");
+        if (!assign_string(st, target,
+                           std::string(reinterpret_cast<const char *>(sec),
+                                       Host::SECTOR_SIZE)))
+            return false;
+    } else {
+        Value v;
+        if (!st.ev.expr(v)) return fail(st.ev.error());
+        if (!v.is_str) return fail("DATA SAVE BA: значение не символьное");
+        std::memset(sec, 0, Host::SECTOR_SIZE);
+        const std::size_t n = (v.str.size() < Host::SECTOR_SIZE)
+                                  ? v.str.size() : Host::SECTOR_SIZE;
+        for (std::size_t i = 0; i < n; ++i)
+            sec[i] = static_cast<uint8_t>(v.str[i]);
+        if (!host_.disk_write(d.drive, sector, sec))
+            return machine_error(err::UNKNOWN, "не пишется сектор " + num_str(sector));
+    }
+
+    dev_.row(d.row).current = sector + 1;
+    return store_next(st, has_target, addr, sector + 1);
+}
+
+// «В режиме DA информация записывается в тех же форматах, что и в режиме
+// каталога» (разд. 18.9) — те же логические записи, только начальный сектор
+// задаётся прямо в операторе, а не берётся из каталога.
+bool Interp::do_abs_record(Stream & st, bool load)
+{
+    Disk d;
+    unsigned sector = 0;
+    bool has_target = false;
+    Evaluator::Target addr;
+    if (!abs_prefix(st, d, sector, has_target, addr)) return false;
+    DeviceRow & r = dev_.row(d.row);
+    std::string err;
+
+    if (!load) {
+        uint8_t b = 0;
+        if (st.src.peek_raw_byte(b) && b == 0xD7) {
+            st.src.skip(1);
+            if (!write_end_record(host_, d.drive, r.first, sector, err))
+                return machine_error(err::UNKNOWN, err);
+            r.current = sector + 1;
+            return store_next(st, has_target, addr, sector + 1);
+        }
+        std::vector<Value> vals;
+        if (!save_values(st, vals)) return false;
+        if (vals.empty()) return fail("DATA SAVE DA без значений");
+        unsigned next = 0;
+        if (!write_record(host_, d.drive, sector, r.last, vals, next, err))
+            return machine_error(err::UNKNOWN, err);
+        r.current = next;
+        return store_next(st, has_target, addr, next);
+    }
+
+    unsigned code = 0;
+    if (!record_code(host_, d.drive, sector, code))
+        return machine_error(err::UNKNOWN, "не читается сектор " + num_str(sector));
+    end_seen_ = (code == REC_END);
+    if (end_seen_) {
+        r.current = sector + 1;
+        return store_next(st, has_target, addr, sector + 1);
+    }
+
+    std::vector<Value> vals;
+    unsigned next = 0;
+    if (!read_record(host_, d.drive, sector, vals, next, err))
+        return machine_error(err::UNKNOWN, err);
+
+    std::size_t used = 0;
+    while (!st.src.at_end()) {
+        Evaluator::Target target;
+        if (!st.ev.target(target, true)) return fail(st.ev.error());
+        if (!store_value(target, st, vals, used)) return false;
+    }
+    r.current = next;
+    return store_next(st, has_target, addr, next);
+}
+
+// «Оператор VERIFY предназначен для контроля правильности записи информации
+// в заданной области диска… Если границы проверяемой области не заданы, то
+// проверяются все секторы диска» (разд. 18.9.5).
+bool Interp::do_verify(Stream & st)
+{
+    Disk d;
+    if (!disk_prefix(st, true, d)) return false;
+
+    const unsigned total = host_.disk_sectors(d.drive);
+    unsigned from = 0, to = total ? total - 1 : 0;
+    if (!st.src.at_end()) {
+        Number a;
+        if (!st.ev.number(a)) return fail(st.ev.error());
+        Tok t;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t != Tok::COMMA) return fail("VERIFY: нет второй границы");
+        st.ev.parser().consume();
+        Number b;
+        if (!st.ev.number(b)) return fail(st.ev.error());
+        long x = 0, y = 0;
+        if (!a.floor_to_int(x) || !b.floor_to_int(y) || x < 0 || y < 0)
+            return fail("VERIFY: границы не целые неотрицательные");
+        // «Значение адреса начального сектора должно быть меньше адреса
+        // конечного сектора, иначе выдаётся сообщение об ошибке».
+        if (x >= y) return machine_error(err::UNKNOWN, "VERIFY: границы наоборот");
+        from = static_cast<unsigned>(x);
+        to = static_cast<unsigned>(y);
+    }
+    if (to >= total) return machine_error(err::UNKNOWN, "VERIFY: за концом диска");
+
+    uint8_t sec[Host::SECTOR_SIZE];
+    for (unsigned s = from; s <= to; ++s)
+        if (!host_.disk_read(d.drive, s, sec)) {
+            // «на экран дисплея выводится сообщение о номере ошибочного
+            // сектора: ERROR IN SECTOR 200».
+            emit("ERROR IN SECTOR " + num_str(s));
+            emit_newline();
+        }
     return true;
 }
 
@@ -1879,7 +2310,16 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x7D: return do_load_dc(st);
 
         case 0x75: return do_open(st, true);
+        case 0x78: return do_dsave_open(st);
         case 0x74: return do_dload(st);
+        case 0x76: return do_dsave(st);
+        case 0x77: return do_dclose(st);
+        case 0x1E: return do_if_end(st);
+        case 0x6E: return do_block(st, false);
+        case 0x70: return do_block(st, true);
+        case 0x6F: return do_abs_record(st, false);
+        case 0x71: return do_abs_record(st, true);
+        case 0x83: return do_verify(st);
         case 0x79: return do_dskip(st, true);
         case 0x7A: return do_dskip(st, false);
         case 0x7B: return do_limits(st);

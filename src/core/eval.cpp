@@ -504,6 +504,14 @@ bool Evaluator::target(Target & t, bool by_table)
                        : (by_table ? k.table_array : k.indexed);
     if (indexed && !indices(t.idx, t.nidx)) return false;
 
+    // Числовой массив целиком — приёмник дисковых операторов: значения
+    // ложатся в него по элементам, поэтому места в поле у него нет.
+    if (k.t == Tok::ARRAY && !vars_.is_string(k.var)) {
+        t.whole = true;
+        t.nidx = 0;
+        return true;
+    }
+
     if (vars_.is_string(k.var) || k.t == Tok::ARRAY) {
         VarStore::StrLoc loc;
         if (!vars_.str_element(k.var, t.idx, k.t == Tok::ARRAY ? 0 : t.nidx,

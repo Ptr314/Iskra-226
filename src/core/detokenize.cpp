@@ -570,6 +570,14 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             return lvalue_list(d, src, error);
         }
 
+        case 0x1E: {                                   // IF END THEN <строка>
+            d.emit("IF END THEN ");
+            std::string n;
+            if (!line_number(src, n)) { error = "IF END THEN без номера строки"; return false; }
+            d.emit(n);
+            return true;
+        }
+
         case 0x24: {                                   // IF … THEN <строка>
             d.emit("IF ");
             if (!d.expr()) { error = d.error(); return false; }
@@ -1132,6 +1140,13 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
                 d.parser().consume();
                 d.emit("(");
                 if (!d.expr()) { error = d.error(); return false; }
+                if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+                if (t.t == Tok::COMMA) {
+                    // Приёмник адреса за последним занятым сектором.
+                    d.parser().consume();
+                    d.emit(",");
+                    if (!d.lvalue()) { error = d.error(); return false; }
+                }
                 if (!d.parser().take(t, false) || t.t != Tok::RPAR) {
                     error = "обмен по адресу: скобка не закрыта";
                     return false;
@@ -1139,6 +1154,12 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
                 d.emit(")");
             }
             if (src.at_end()) return true;
+            uint8_t e = 0;
+            if (!load && src.peek_raw_byte(e) && e == 0xD7) {
+                src.skip(1);
+                d.emit("END");
+                return true;
+            }
             return load ? lvalue_list(d, src, error) : expr_list(d, src, error);
         }
 

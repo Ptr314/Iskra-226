@@ -67,6 +67,14 @@ bool is_record_start(unsigned code)
     return code == REC_SINGLE || code == REC_FIRST;
 }
 
+bool record_code(Host & host, unsigned drive, unsigned sector, unsigned & code)
+{
+    uint8_t sec[SEC];
+    if (!host.disk_read(drive, sector, sec)) return false;
+    code = sec[0];
+    return true;
+}
+
 bool read_record(Host & host, unsigned drive, unsigned start,
                  std::vector<Value> & out, unsigned & next, std::string & err)
 {

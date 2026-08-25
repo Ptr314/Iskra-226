@@ -1469,9 +1469,22 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
             if (lex_.take_char('(')) {
                 out.push_back(0xEB);
                 if (!enc.expr()) return err(enc.error());
+                // Второй элемент в скобках — приёмник адреса «сектора,
+                // следующего за последним использованным» (разд. 18.9.1,
+                // `DATA SAVE DA F(P,P) A()`). В корпусе эта форма не
+                // встречается: запятая взята той же, что везде, — `DE`.
+                if (take_sep(enc, Tok::COMMA)) {
+                    out.push_back(0xDE);
+                    if (!enc.lvalue()) return err(enc.error());
+                }
                 if (!take_sep(enc, Tok::RPAR))
                     return err("обмен по адресу: скобка не закрыта");
                 out.push_back(0xD0);
+            }
+            // Признак конца данных: `DATA SAVE DA F(P,P) END` (пример 18.29).
+            if (!ADDR[k].load && lex_.take_word("END")) {
+                out.push_back(0xD7);
+                return true;
             }
             for (;;) {
                 if (ADDR[k].load) {
@@ -1766,6 +1779,16 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         if (!take_sep(enc, Tok::RPAR)) return err("ROTATE: скобка не закрыта");
         out.push_back(0xD0);
         return true;
+    }
+
+    // Раньше обычного IF: иначе `END` разберётся как выражение.
+    if (lex_.take_word("IF END THEN")) {
+        // `IF END THEN <номер строки: 2 байта BCD>` — отдельный глагол
+        // (docs/format.md, разд. 5, дополнения к таблице глаголов).
+        verb = 0x1E;
+        unsigned n = 0;
+        if (!lex_.take_uint(n)) return err("IF END THEN без номера строки");
+        return line_number(out, n);
     }
 
     if (lex_.take_word("IF")) {

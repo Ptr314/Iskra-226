@@ -106,7 +106,24 @@ private:
     bool do_restore(Stream & st);
     bool do_select(Stream & st);
     bool do_open(Stream & st, bool with_device);
+    bool do_dsave_open(Stream & st);
+    bool do_dsave(Stream & st);
+    bool do_dclose(Stream & st);
+    bool do_if_end(Stream & st);
+    // Режим абсолютной адресации (разд. 18.9): приставка и номер
+    // начального сектора, дальше блок в 256 байт (BA) либо обычная
+    // логическая запись (DA).
+    bool abs_prefix(Stream & st, Disk & d, unsigned & sector,
+                    bool & has_target, Evaluator::Target & target);
+    bool store_next(Stream & st, bool has_target,
+                    const Evaluator::Target & target, unsigned next);
+    bool do_block(Stream & st, bool load);
+    bool do_abs_record(Stream & st, bool load);
+    bool do_verify(Stream & st);
     bool do_dload(Stream & st);
+    // Значения списка `DATA SAVE DC`: массив целиком разворачивается в свои
+    // элементы — «массивы записываются строка за строкой» (разд. 18.3).
+    bool save_values(Stream & st, std::vector<Value> & vals);
     bool do_dskip(Stream & st, bool backwards);
     bool do_limits(Stream & st);
     bool do_onerr(Stream & st);
@@ -222,6 +239,10 @@ private:
     bool data_ready_;
     unsigned data_i_;       // указатель начала считывания: какой DATA
     unsigned data_off_;     // и смещение в его операндах
+
+    // Последний `DATA LOAD DC` прочитал концевую запись — это и проверяет
+    // `IF END THEN` (руководство, разд. 18.5).
+    bool end_seen_;
 
     unsigned li_;           // индекс текущей строки
     unsigned off_;          // смещение текущего оператора в теле строки
