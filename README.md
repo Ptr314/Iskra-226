@@ -47,7 +47,8 @@ iskra -i --run-file EDITOR.bin         пропуская ASMB и $GIO
 `XOR`, `BOOL`, `ADD`, `ROTATE`, `HEXPRINT`), упаковку чисел
 (`PACK`/`UNPACK`), поиск и замену в символьных данных (`REPLACE`, `$TRAN(`),
 блочный обмен с устройствами (`DATA SAVE/LOAD BT`), `LINPUT`,
-помеченные подпрограммы `DEFFN'`/`GOSUB'`, `SELECT` с таблицей устройств,
+помеченные подпрограммы `DEFFN'`/`GOSUB'`, функции пользователя
+(`DEFFN A(H)=…` и обращение `FN A(…)`), `SELECT` с таблицей устройств,
 `ON ERROR`, выдачу каталога `LIST DC` и `LIMITS`.
 
 **Файлы данных читаются и пишутся** — и в режиме каталога

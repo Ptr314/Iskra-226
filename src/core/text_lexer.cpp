@@ -97,6 +97,17 @@ bool TextLexer::take_word(const char * w)
     return true;
 }
 
+bool TextLexer::take_fn_name(unsigned & out)
+{
+    skip_spaces();
+    if (p_ >= end_) return false;
+    const char c = s_[p_];
+    if (!is_letter(c) && !is_digit(c)) return false;
+    ++p_;
+    out = static_cast<unsigned char>(c);
+    return true;
+}
+
 bool TextLexer::take_uint(unsigned & out)
 {
     skip_spaces();
@@ -244,6 +255,26 @@ bool TextLexer::next(Tok & t, bool /*operand_expected*/)
         ++p_;
         t.t = Tok::HASH;
         return true;
+    }
+
+    // FN<имя>( — обращение к функции пользователя. В таблицу ключевых слов
+    // это не укладывается: там за именем функции обязана стоять скобка, а
+    // здесь между ними имя. Проверяем всю связку сразу — иначе «FNA(8)»
+    // разобралось бы как переменные F, N и A подряд.
+    if (p_ + 2 <= end_ && s_.compare(p_, 2, "FN") == 0) {
+        unsigned q = p_ + 2;
+        while (q < end_ && s_[q] == ' ') ++q;
+        if (q < end_ && (is_letter(s_[q]) || is_digit(s_[q]))) {
+            const char nm = s_[q];
+            unsigned r = q + 1;
+            while (r < end_ && s_[r] == ' ') ++r;
+            if (r < end_ && s_[r] == '(') {
+                p_ = r + 1;
+                t.t = Tok::FN_USER;
+                t.var = static_cast<unsigned char>(nm);
+                return true;
+            }
+        }
     }
 
     unsigned klen = 0;

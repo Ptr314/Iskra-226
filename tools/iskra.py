@@ -183,6 +183,7 @@ def preamble(verb, ops):
     if verb in (0x21,0x22,0x2F): return 2          # BCD line
     if verb == 0x23: return 1                      # GOSUB' label (binary)
     if verb == 0x27: return 5                      # DEFFN' label + 4 zero
+    if verb == 0x5A: return 4                      # DEFFN name + 2 work + formal
     if verb == 0x25: return 5                      # KEYIN var + 2 BCD lines
     if verb in (0x3F,0x56): return len(ops)        # raw text
     if verb == 0x54: return len(ops)               # SELECT: own format

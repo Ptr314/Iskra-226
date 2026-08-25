@@ -79,10 +79,12 @@ bool stmt_head(const std::vector<uint8_t> & body, unsigned at,
 
 Interp::Interp(ProgramImage & img, Host & host)
     : img_(img), host_(host), store_(img.vars()), labels_ready_(false),
+      funcs_ready_(false), fn_depth_(0),
       data_ready_(false), data_i_(0), data_off_(0), end_seen_(false),
       li_(0), off_(0), next_off_(0), jumped_(false), stopped_(false),
       max_steps_(0), skip_machine_(false)
 {
+    fnres_.owner = this;
 }
 
 bool Interp::fail(const std::string & m)
@@ -3009,7 +3011,7 @@ bool Interp::next_data(Value & out, bool & exhausted)
         // Значения идут вплотную, без разделителей, поэтому берётся ровно
         // один операнд: полное выражение прочитало бы `E7` следующей
         // константы как `AND`.
-        Stream ds(&b[d.at], d.len, &img_.vars(), store_);
+        Stream ds(&b[d.at], d.len, &img_.vars(), store_, &fnres_);
         ds.src.set_pos(data_off_);
         if (!ds.ev.operand(out)) return fail(ds.ev.error());
         data_off_ = ds.src.pos();
@@ -3120,6 +3122,102 @@ bool Interp::do_deffn(Stream & st, unsigned len)
     (void)st;
     (void)len;
     return true;
+}
+
+// --- функции пользователя (руководство, разд. 4.8) ---------------------------
+
+// «Функция может быть объявлена в любом месте программы, независимо от того,
+// где она будет использоваться», поэтому определения ищутся просмотром всего
+// текста — тем же, что и метки помеченных подпрограмм.
+void Interp::build_functions()
+{
+    funcs_ready_ = true;
+    for (unsigned l = 0; l < img_.line_count(); ++l) {
+        const std::vector<uint8_t> & b = img_.line(l).body;
+        unsigned at = 0;
+        for (;;) {
+            unsigned verb = 0, ops_at = 0, len = 0;
+            if (!stmt_head(b, at, verb, ops_at, len)) break;
+            if (verb == 0x5A && len >= 4) {
+                const unsigned name = b[ops_at];
+                // Машина ищет просмотром текста сверху вниз, поэтому при
+                // повторе имени побеждает первое определение — так же, как
+                // у DEFFN'.
+                if (funcs_.find(name) == funcs_.end())
+                    funcs_[name] = std::make_pair(l, at);
+            }
+            at = ops_at + len;
+            if (at >= b.size()) break;
+        }
+    }
+}
+
+// «Сначала вычисляется значение арифметического выражения, затем это
+// значение присваивается формальной переменной и осуществляется вычисление
+// значения выражения, заданного в определении функции» (разд. 4.8).
+//
+// Формальная переменная — обычная глобальная переменная программы, как и у
+// помеченных подпрограмм: своего места для неё в машине нет, и прежнее
+// значение не восстанавливается.
+bool Interp::call_fn(unsigned name, const Value & arg, Value & out,
+                     std::string & err)
+{
+    if (!funcs_ready_) build_functions();
+
+    std::map<unsigned, std::pair<unsigned, unsigned> >::const_iterator it =
+        funcs_.find(name);
+    if (it == funcs_.end()) return false;      // причина — за вызывающим
+
+    if (arg.is_str) {
+        err = std::string("FN ") + static_cast<char>(name) +
+              ": аргумент символьный, а функция числовая";
+        return false;
+    }
+
+    // Тело лежит в программе, и вычисляется оно тем же кодом. Обращение
+    // изнутри тела к самому себе программу бы зациклило, а стек — обвалило.
+    if (fn_depth_ >= 32) {
+        err = std::string("FN ") + static_cast<char>(name) +
+              ": слишком глубокая вложенность вызовов";
+        return false;
+    }
+
+    const std::vector<uint8_t> & b = img_.line(it->second.first).body;
+    unsigned verb = 0, ops_at = 0, len = 0;
+    if (!stmt_head(b, it->second.second, verb, ops_at, len) || len < 4) {
+        err = std::string("FN ") + static_cast<char>(name) + ": DEFFN испорчен";
+        return false;
+    }
+    // Байты: имя, два байта рабочего поля, формальная переменная, тело.
+    const unsigned formal = b[ops_at + 3];
+    if (store_.is_string(formal)) {
+        err = std::string("FN ") + static_cast<char>(name) +
+              ": формальная переменная символьная";
+        return false;
+    }
+    std::string serr;
+    Number * cell = 0;
+    if (!store_.slot(formal, 0, 0, cell, serr)) { err = serr; return false; }
+    *cell = arg.num;
+
+    Stream body(&b[ops_at + 4], len - 4, &img_.vars(), store_, &fnres_);
+    ++fn_depth_;
+    Value v;
+    const bool ok = body.ev.expr(v);
+    --fn_depth_;
+    if (!ok) {
+        err = std::string("FN ") + static_cast<char>(name) + ": " +
+              body.ev.error();
+        return false;
+    }
+    out = v;
+    return true;
+}
+
+bool Interp::Functions::call_fn(unsigned name, const Value & arg, Value & out,
+                                std::string & err)
+{
+    return owner->call_fn(name, arg, out, err);
 }
 
 bool Interp::do_gosubq(Stream & st)
@@ -3376,7 +3474,7 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
     // задания констант» (руководство, разд. 4.9).
     if (verb == 0x56 || verb == 0x3F || verb == 0x29) return true;
 
-    Stream st(ops, len, &img_.vars(), store_);
+    Stream st(ops, len, &img_.vars(), store_, &fnres_);
 
     switch (verb) {
         case 0x36: return do_let(st);
@@ -3413,6 +3511,9 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x4D: return do_rotate(st);
         case 0x54: return do_select(st);
         case 0x27: case 0x3A: return do_deffn(st, len);
+        // Определение функции пользователя при исполнении ничего не делает:
+        // тело вычисляется по обращению FN<имя>( (руководство, разд. 4.8).
+        case 0x5A: return true;
         case 0x23: return do_gosubq(st);
         case 0x80: return do_save_dc(st);
         case 0x7D: return do_load_dc(st);

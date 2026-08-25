@@ -330,6 +330,19 @@ bool Encoder::primary()
         case Tok::FN_AT:  return call(0xD5, 2, 3, false);
         case Tok::FN_TAB: return call(0xDF, 1, 1);
 
+        // FN<имя>( — функция пользователя: `F0`, имя сырым кодом символа,
+        // аргумент и `D0` (`GC121` 2310 = `F0 48 31 D0` при `DEFFN H`).
+        case Tok::FN_USER: {
+            emit(0xF0);
+            emit(static_cast<uint8_t>(t.var));
+            if (!expr()) return false;
+            Tok c;
+            if (!ex_.take(c, false) || c.t != Tok::RPAR)
+                return fail("FN: скобка не закрыта");
+            emit(0xD0);
+            return true;
+        }
+
         case Tok::FN_STR: return substr();
         // Неявные функции: скобок в потоке нет вовсе, ни открывающей, ни
         // закрывающей (docs/format.md, разд. 5).
@@ -521,10 +534,44 @@ private:
     // Дальше стоит символьное значение? Отличает форму LIMITS с именем файла
     // от формы без него: имя символьное, приёмники числовые.
     bool at_string_name();
+    // Определение числовой функции пользователя (руководство, разд. 4.8).
+    bool deffn(unsigned & verb, std::vector<uint8_t> & out);
 
     TextLexer & lex_;
     std::string error_;
 };
+
+// DEFFN <имя функции>(<формальная переменная>) = <а.в.> (разд. 4.8).
+// В потоке: `5A <имя> <два байта рабочего поля> <формальная> <выражение>`
+// (`LL` 9 = `5A 48 00 00 2A EB 2A EA F2 2A D0 D0 DC E8 02`, то есть
+// `DEFFN H(X)=(X+ABS(X))/2`). Знака равенства в потоке нет вовсе.
+bool StmtEncoder::deffn(unsigned & verb, std::vector<uint8_t> & out)
+{
+    verb = 0x5A;
+    unsigned nm = 0;
+    if (!lex_.take_fn_name(nm))
+        return err("DEFFN: имя функции — буква A…Z либо цифра");
+    out.push_back(static_cast<uint8_t>(nm));
+    // Рабочее поле машина заполняет при исполнении; восстановить его из
+    // текста нечем, как и адрес возврата у DEFFN'.
+    out.push_back(0x00);
+    out.push_back(0x00);
+
+    if (!lex_.take_char('(')) return err("DEFFN: нет скобки после имени функции");
+    Encoder enc(lex_, out);
+    Tok t;
+    if (!enc.parser().take(t, true)) return err(enc.error());
+    if (t.t != Tok::VAR) return err("DEFFN: ждали формальную переменную");
+    // «Именем формальной переменной может быть имя любой числовой
+    // переменной Бейсика» — символьная сюда не годится.
+    out.push_back(static_cast<uint8_t>(t.var));
+    if (!enc.parser().take(t, false) || t.t != Tok::RPAR)
+        return err("DEFFN: скобка не закрыта");
+    if (!enc.parser().take(t, false) || t.t != Tok::EQ)
+        return err("DEFFN без знака равенства");
+    if (!enc.expr()) return err(enc.error());
+    return true;
+}
 
 std::string StmtEncoder::leading_word() const
 {
@@ -827,8 +874,10 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
 
     // Помеченные подпрограммы: метка — двоичное число, а не BCD.
     if (lex_.take_word("DEFFN")) {
+        // Без апострофа это определение числовой функции (разд. 4.8) —
+        // совсем другой глагол.
+        if (!lex_.take_char(0x27)) return deffn(verb, out);
         verb = 0x27;
-        if (!lex_.take_char(0x27)) return err("DEFFN без апострофа");
         unsigned label = 0;
         if (!lex_.take_uint(label) || label > 255) return err("DEFFN': метка 0…255");
         out.push_back(static_cast<uint8_t>(label));

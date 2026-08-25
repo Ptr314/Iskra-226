@@ -219,9 +219,11 @@ void test_errors()
                     screen, error));
     CHECK(error.find("типы") != std::string::npos);
 
-    // DEFFN без апострофа — функция пользователя, её пока нет.
+    // DEFFN без апострофа подпрограммы не помечает: это определение функции
+    // пользователя, и проверяется оно отдельно (tests/test_userfn.cpp).
     error.clear();
-    CHECK(!run_text("10 DEFFN A(X)=X+1\n", screen, error));
+    CHECK(!run_text("10 GOSUB '65\n100 DEFFN A(X)=X+1\n", screen, error));
+    CHECK(error.find("нет подпрограммы") != std::string::npos);
 }
 
 void test_key_text_is_not_a_subroutine()

@@ -14,6 +14,20 @@
 
 namespace iskra {
 
+// Функция пользователя: `DEFFN A(H)=<а.в.>`, обращение `FN A(<а.в.>)`
+// (руководство, разд. 4.8). Тело определения лежит в другом операторе
+// программы, и вычислителю до него не дотянуться: он видит только поток
+// одного оператора. Кто программу держит — тот функцию и подставляет.
+class FnResolver
+{
+public:
+    virtual ~FnResolver() {}
+    // name — имя функции кодом символа. false и пустая err значит «такой
+    // функции в программе нет».
+    virtual bool call_fn(unsigned name, const Value & arg, Value & out,
+                         std::string & err) = 0;
+};
+
 // Третий обход той же грамматики: `ExprParser` строит дерево, `Encoder` из
 // tokenize.cpp выдаёт байты, а этот — значение. Дерева не строит вовсе:
 // «интерпретатор осуществляет пошаговый перевод операторов» (руководство,
@@ -26,7 +40,7 @@ class Evaluator
 {
 public:
     Evaluator(TokenSource & src, VarStore & vars)
-        : ex_(src), src_(src), vars_(vars) {}
+        : ex_(src), src_(src), vars_(vars), fn_(0) {}
 
     // Полное выражение, включая связки условий.
     bool expr(Value & out);
@@ -65,6 +79,10 @@ public:
     // Прочитать значение из уже разобранного приёмника.
     bool load(const Target & t, Value & v);
 
+    // Кому передавать обращения FN<имя>(. Ноль значит «функций нет» —
+    // так вычислитель работает вне программы.
+    void set_functions(FnResolver * f) { fn_ = f; }
+
     ExprParser & parser() { return ex_; }
     const ExprParser & parser() const { return ex_; }
     // Причина может лежать в трёх местах: у источника лексем, у разборщика
@@ -92,6 +110,7 @@ private:
     bool primary(Value & out);
 
     bool call(Value & out, Tok::Type fn);
+    bool user_call(Value & out, unsigned name);
     bool indices(long * idx, unsigned & n);
     bool substr(Value & out, VarStore::StrLoc & loc);
     bool implicit(Value & out, Tok::Type fn);
@@ -100,6 +119,7 @@ private:
     ExprParser ex_;
     TokenSource & src_;
     VarStore & vars_;
+    FnResolver * fn_;
     std::string lit_;      // литерал под STR("…",…), чтобы было откуда резать
     std::string error_;
 };

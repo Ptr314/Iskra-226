@@ -429,6 +429,29 @@ bool Evaluator::call(Value & out, Tok::Type fn)
     return fail("функция ещё не вычисляется");
 }
 
+// FN<имя>(<а.в.>) — «сначала вычисляется значение арифметического
+// выражения, затем это значение присваивается формальной переменной и
+// осуществляется вычисление значения выражения, заданного в определении
+// функции» (руководство, разд. 4.8). Подстановку делает тот, кто держит
+// программу: тело определения лежит в другом операторе.
+bool Evaluator::user_call(Value & out, unsigned name)
+{
+    Value arg;
+    if (!expr(arg)) return false;
+    Tok c;
+    if (!ex_.take(c, false) || c.t != Tok::RPAR)
+        return fail("FN: скобка не закрыта");
+
+    if (!fn_)
+        return fail(std::string("FN ") + static_cast<char>(name) +
+                    ": функции пользователя вне программы не бывает");
+    std::string err;
+    if (!fn_->call_fn(name, arg, out, err))
+        return fail(err.empty() ? (std::string("нет функции FN ") +
+                                   static_cast<char>(name)) : err);
+    return true;
+}
+
 bool Evaluator::primary(Value & out)
 {
     out = Value();
@@ -467,6 +490,8 @@ bool Evaluator::primary(Value & out)
         case Tok::FN_LEN: case Tok::FN_NUM:
         case Tok::FN_VAL: case Tok::FN_POS:
             return implicit(out, t.t);
+
+        case Tok::FN_USER: return user_call(out, t.var);
 
         default: break;
     }

@@ -278,6 +278,18 @@ bool Decoder::token(const Tok & t, bool operand_expected, bool & stop)
         // У AT( закрывающей скобки в потоке нет.
         case Tok::FN_AT:  return call("AT", 2, 3, false);
 
+        // FN<имя>( — функция пользователя: имя лежит сырым кодом символа,
+        // и по таблице имён его искать не надо.
+        case Tok::FN_USER: {
+            emit(std::string("FN") + static_cast<char>(t.var) + "(");
+            if (!expr()) return false;
+            Tok c;
+            if (!ex_.take(c, false)) return fail(ex_.error());
+            if (c.t != Tok::RPAR) return fail("FN( не закрыт");
+            emit(")");
+            return true;
+        }
+
         case Tok::FN_STR: return substr();
         case Tok::FN_LEN: return implicit("LEN", false, false);
         case Tok::FN_NUM: return implicit("NUM", false, false);
@@ -798,6 +810,22 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             }
             d.emit(")");
             return true;
+        }
+
+        case 0x5A: {                                   // DEFFN — своя функция
+            uint8_t nm = 0;
+            if (!src.take_raw_byte(nm)) { error = "DEFFN без имени"; return false; }
+            // Два байта рабочего поля машина заполняет при исполнении.
+            uint8_t skip = 0;
+            for (unsigned k = 0; k < 2; ++k)
+                if (!src.take_raw_byte(skip)) { error = "DEFFN оборван"; return false; }
+            uint8_t formal = 0;
+            if (!src.take_raw_byte(formal))
+                { error = "DEFFN без формальной переменной"; return false; }
+            std::string nv;
+            if (!d.name(formal, nv)) { error = "нет имени для индекса переменной"; return false; }
+            d.emit(std::string("DEFFN ") + static_cast<char>(nm) + "(" + nv + ")=");
+            return d.expr();
         }
 
         case 0x27: case 0x3A: {                        // DEFFN' и DEFFN' с текстом

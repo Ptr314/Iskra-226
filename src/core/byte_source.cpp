@@ -85,6 +85,7 @@ bool looks_like_operand(uint8_t b)
         case 0xE1:                                 // STR(
         case 0xE5: case 0xE6: case 0xE7: case 0xE8:   // константы
         case 0xEB:                                 // (
+        case 0xF0:                                 // FN<имя>( — своя функция
         case 0xF1:                                 // #PI
         case 0xF2: case 0xF3: case 0xF4: case 0xF5:
         case 0xF6: case 0xF7: case 0xF8:           // функции
@@ -223,6 +224,17 @@ bool ByteSource::next(Tok & t, bool operand_expected)
         case 0xEB: t.t = Tok::LPAR; return true;
         case 0xDB: t.t = Tok::HASH; return true;
         case 0xE1: t.t = Tok::FN_STR; return true;
+
+        // FN<имя>( — функция пользователя. Имя лежит следующим байтом сырым
+        // кодом символа, а не индексом переменной: пространства имён разные
+        // (руководство, разд. 4.8). Закрывается скобкой `D0`.
+        case 0xF0: {
+            if (!operand_expected) break;
+            if (i_ >= n_) return fail("FN без имени функции");
+            t.t = Tok::FN_USER;
+            t.var = p_[i_++];
+            return true;
+        }
         case 0xEC: t.t = Tok::FN_POS; return true;
         case 0xED: t.t = Tok::FN_LEN; return true;
         case 0xEE: t.t = Tok::FN_NUM; return true;

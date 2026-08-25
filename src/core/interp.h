@@ -112,12 +112,22 @@ public:
     const DeviceTable & devices() const { return dev_; }
 
 private:
+    // Подстановка функций пользователя. Отдельным объектом, а не самим
+    // исполнителем: интерфейс вычислителя незачем выносить в его лицо.
+    struct Functions : public FnResolver {
+        Functions() : owner(0) {}
+        bool call_fn(unsigned name, const Value & arg, Value & out,
+                     std::string & err);
+        Interp * owner;
+    };
+    friend struct Functions;
+
     // Один оператор: источник байт и вычислитель над ним. Живёт ровно на
     // время исполнения оператора.
     struct Stream {
         Stream(const uint8_t * p, unsigned n, const std::vector<VarInfo> * vars,
-               VarStore & store)
-            : src(p, n, vars), ev(src, store) {}
+               VarStore & store, FnResolver * fn)
+            : src(p, n, vars), ev(src, store) { ev.set_functions(fn); }
         ByteSource src;
         Evaluator ev;
     };
@@ -219,6 +229,9 @@ private:
     bool do_load_buf(Stream & st);
     unsigned buf_lines(Stream & st, unsigned * out, unsigned max);
     bool do_deffn(Stream & st, unsigned len);
+    // Функции пользователя: `DEFFN <имя>(<формальная>)=<а.в.>` (разд. 4.8).
+    void build_functions();
+    bool call_fn(unsigned name, const Value & arg, Value & out, std::string & err);
 
     // Приставка `<устройство>[¤][/адрес][#строка]` — в номер строки таблицы
     // устройств и номер дисковода хоста.
@@ -254,7 +267,14 @@ private:
     // Указатель начала считывания: оператор DATA и смещение в его операндах.
     void restore_data(unsigned stmt) { data_i_ = stmt; data_off_ = 0; }
     // Сбросить построенное просмотром программы — после её правки.
-    void rescan() { labels_.clear(); labels_ready_ = false; data_ready_ = false; }
+    void rescan()
+    {
+        labels_.clear();
+        labels_ready_ = false;
+        data_ready_ = false;
+        funcs_.clear();
+        funcs_ready_ = false;
+    }
 
     void emit(const std::string & koi8);
     void emit_newline();
@@ -304,6 +324,15 @@ private:
     // Метка помеченной подпрограммы → её DEFFN': строка и смещение в теле.
     std::map<unsigned, std::pair<unsigned, unsigned> > labels_;
     bool labels_ready_;
+
+    // Имя функции → её DEFFN: строка и смещение оператора в теле. «Функция
+    // может быть объявлена в любом месте программы, независимо от того, где
+    // она будет использоваться» (разд. 4.8), поэтому — тем же просмотром,
+    // что и метки.
+    std::map<unsigned, std::pair<unsigned, unsigned> > funcs_;
+    bool funcs_ready_;
+    Functions fnres_;
+    unsigned fn_depth_;             // защита от бесконечной рекурсии
 
     // Оператор DATA: строка, смещение операндов и их длина уже без
     // двухбайтового хвоста цепочки.
