@@ -327,6 +327,10 @@ int run_program(iskra::ProgramImage & img, iskra::HeadlessHost & host,
     }
 
     iskra::Interp interp(img, host);
+    // Прогон пакетный: очередь нажатий задана заранее и не пополнится, а
+    // `KEYIN` при пустой клавиатуре крутится вечно — это правильно для
+    // машины, но здесь ждать некому. В окне и в диалоге ограничения нет.
+    interp.set_max_steps(2000000);
     std::string error;
     const bool ok = interp.run(error);
 

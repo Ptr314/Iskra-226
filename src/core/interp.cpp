@@ -1301,6 +1301,43 @@ bool Interp::do_return_clear(Stream & st, unsigned len)
     return true;
 }
 
+// «Оператор KEYIN в данной книге не рассматривается» (руководство,
+// разд. 18.1) — семантика восстановлена по корпусу и совпадает с той, что
+// была у Wang 2200:
+//
+//   * клавиша не нажата — исполнение идёт **следующим оператором**;
+//   * нажата обычная — код в приёмник, управление на первую строку;
+//   * нажата клавиша специальных функций — код в приёмник, на вторую.
+//
+// Неблокирующий опрос виден прямо в тексте: `EDITOR` 244 это
+// `KEYIN A¤,246,246:GOTO 244` — пустой цикл ожидания, а `EDITOR` 3312 —
+// `FOR I=1TO100:KEYIN A¤,3314,3500:NEXT I`. Разные строки у двух видов
+// клавиш: `EDITOR` 2505 (`KEYIN B¤,2510,2700`) и 6310.
+bool Interp::do_keyin(Stream & st)
+{
+    // Приёмник индексируется строго по таблицам: за ним сразу идут сырые
+    // байты номеров строк (CLAUDE.md, ловушка 3).
+    Evaluator::Target target;
+    if (!st.ev.target(target, true)) return fail(st.ev.error());
+    if (!target.is_str) return fail("KEYIN: приёмник не символьный");
+
+    unsigned ln[2] = { 0, 0 };
+    for (unsigned k = 0; k < 2; ++k) {
+        uint8_t a = 0, b = 0;
+        if (!st.src.take_raw_byte(a) || !st.src.take_raw_byte(b))
+            return fail("KEYIN без номеров строк");
+        ln[k] = bcd2(a) * 100 + bcd2(b);
+    }
+
+    uint8_t code = 0;
+    if (!host_.poll_key(code)) return true;      // не нажата — дальше по тексту
+    const bool special = host_.key_was_special();
+
+    if (!assign_string(st, target, std::string(1, static_cast<char>(code))))
+        return false;
+    return jump(ln[special ? 1 : 0]);
+}
+
 // --- обмен программой через символьный буфер --------------------------------
 
 // В буфере лежит **программа в текстовом виде**, строки разделены байтом
@@ -3176,6 +3213,7 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x2C: return do_clear(st);
         case 0x2F: return do_run(st);
         case 0x2E: return do_list(st);
+        case 0x25: return do_keyin(st);
         case 0x2A: return do_save_buf(st);
         case 0x2D: return do_load_buf(st);
         case 0x81: return do_scratch(st);

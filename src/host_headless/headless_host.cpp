@@ -12,13 +12,14 @@
 namespace iskra {
 
 HeadlessHost::HeadlessHost()
-    : key_pos_(0), ticks_(0)
+    : special_(false), key_pos_(0), ticks_(0)
 {
 }
 
 bool HeadlessHost::poll_key(uint8_t & code)
 {
     if (key_pos_ >= keys_.size()) return false;
+    special_ = (key_pos_ < keys_sf_.size()) && keys_sf_[key_pos_] != 0;
     code = keys_[key_pos_++];
     return true;
 }
@@ -26,6 +27,14 @@ bool HeadlessHost::poll_key(uint8_t & code)
 void HeadlessHost::feed_keys(const uint8_t * codes, unsigned len)
 {
     keys_.insert(keys_.end(), codes, codes + len);
+    keys_sf_.resize(keys_.size(), 0);
+}
+
+void HeadlessHost::feed_special_key(uint8_t code)
+{
+    keys_.push_back(code);
+    keys_sf_.resize(keys_.size(), 0);
+    keys_sf_.back() = 1;
 }
 
 void HeadlessHost::mount(unsigned drive, const std::vector<uint8_t> & data)

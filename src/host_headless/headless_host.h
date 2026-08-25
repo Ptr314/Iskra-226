@@ -24,6 +24,7 @@ public:
     bool present() { screen_.clear_dirty(); return true; }
 
     bool poll_key(uint8_t & code);
+    bool key_was_special() const { return special_; }
     // Ждать тут нечего: очередь задана заранее, и пустая очередь — это конец
     // сценария, а не «пока не нажали».
     bool wait_key(uint8_t & code) { return poll_key(code); }
@@ -34,6 +35,10 @@ public:
     uint32_t ticks_ms() const { return ticks_; }
 
     // Очередь нажатий, которую разбирает poll_key().
+    // Клавиша специальных функций: тот же код, но `KEYIN` уводит её
+    // на другую строку.
+    void feed_special_key(uint8_t code);
+
     void feed_keys(const uint8_t * codes, unsigned len);
 
     // Время идёт только тогда, когда его двигают: прогоны воспроизводимы.
@@ -58,6 +63,8 @@ public:
 private:
     Screen screen_;
     std::vector<uint8_t> keys_;
+    std::vector<uint8_t> keys_sf_;      // признак «клавиша спецфункции»
+    bool special_;
     unsigned key_pos_;
     std::vector<uint8_t> printer_;
     std::vector<uint8_t> disks_[2];

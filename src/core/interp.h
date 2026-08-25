@@ -169,6 +169,7 @@ private:
     // Один-два номера строк сырыми парами BCD; сколько прочитано.
     unsigned line_range(Stream & st, unsigned & from, unsigned & to);
     // Обмен программой через символьный буфер (EDITOR 5195, ASMBBAS 9056).
+    bool do_keyin(Stream & st);
     bool do_save_buf(Stream & st);
     bool do_load_buf(Stream & st);
     unsigned buf_lines(Stream & st, unsigned * out, unsigned max);
