@@ -12,12 +12,27 @@
 
 #include "core/console.h"
 #include "core/koi8.h"
+#include "core/names.h"
 #include "core/program.h"
+#include "core/tokenize.h"
 #include "host_common/disk_args.h"
 #include "host_common/fileio.h"
 #include "host_win32/win32_host.h"
 
 namespace {
+
+// Прочитать файл целиком. Имя приходит в UTF-8, поэтому открывается оно
+// общим open_utf8: путь с кириллицей до окна доходит.
+bool read_text_file(const std::string & path, std::string & out)
+{
+    std::FILE * f = iskra::open_utf8(path.c_str(), "rb");
+    if (!f) return false;
+    char buf[4096];
+    std::size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+    std::fclose(f);
+    return true;
+}
 
 void say(const std::string & utf8_text, const std::string & utf8_title,
          UINT flags)
@@ -31,16 +46,19 @@ void say(const std::string & utf8_text, const std::string & utf8_title,
 std::string usage()
 {
     std::string s =
-    "iskra-win [ОБРАЗ] [--dN ОБРАЗ] [--rN] [--scale N] [-i]\n"
+    "iskra-win [ОБРАЗ] [--dN ОБРАЗ] [--rN] [--text ЛИСТИНГ] [--scale N] [-i]\n"
     "\n"
     "ОБРАЗ — плоский образ дискеты «Искры»: сектора по 256 байт подряд.\n"
     "Названный без ключа, он идёт в дисковод 0 — тот же, что --d0.\n"
     "\n";
     s += iskra::DiskArgs::help();
-    s += "\n  --scale N                целое увеличение кадра 512x256. Без\n"
+    s += "\n  --text ЛИСТИНГ           положить текстовую программу в память,\n"
+         "                           как если бы её набрали с клавиатуры\n"
+         "  --scale N                целое увеличение кадра 560x256. Без\n"
          "                           ключа берётся наибольшее, влезающее в экран\n"
-         "  -i                       пропускать машинозависимые операторы\n"
-         "                           (ASMB, $GIO) вместо остановки\n"
+         "  -i                       пропускать то, чего здесь нет: ASMB,\n"
+         "                           $GIO и вывод на графическое устройство\n"
+         "                           /10 — вместо остановки\n"
          "\nЗапись на дискету идёт прямо в файл образа.";
     return s;
 }
@@ -57,6 +75,7 @@ int run(int argc, wchar_t ** argv, std::string & error)
     iskra::DiskArgs mounts;
     unsigned scale = 0;      // 0 — подобрать под экран
     bool skip_machine = false;
+    std::string listing;
 
     for (std::size_t i = 0; i < args.size(); ++i) {
         bool handled = false;
@@ -64,12 +83,15 @@ int run(int argc, wchar_t ** argv, std::string & error)
         if (handled) continue;
 
         const std::string & arg = args[i];
-        if (arg == "--scale" && i + 1 < args.size()) {
+        if (arg == "--text" && i + 1 < args.size()) {
+            listing = args[++i];
+        } else if (arg == "--scale" && i + 1 < args.size()) {
             scale = static_cast<unsigned>(std::atoi(args[++i].c_str()));
             if (!scale) scale = 1;
         } else if (arg == "-i") {
-            // Машинозависимые операторы (ASMB, $GIO) пропускать: их
-            // исполнение требует эмуляции процессора, которой здесь нет.
+            // Пропускать то, чего здесь нет: `ASMB` и `$GIO` требуют
+            // эмуляции процессора, а у графического устройства `/10` не
+            // разобраны управляющие коды.
             skip_machine = true;
         } else if (arg == "--help" || arg == "-h" || arg == "/?") {
             say(usage(), "Искра 226", MB_ICONINFORMATION);
@@ -101,6 +123,25 @@ int run(int argc, wchar_t ** argv, std::string & error)
     iskra::ProgramImage img;
     iskra::Console console(img, host);
     console.interp().set_skip_machine(skip_machine);
+
+    // Листинг, названный ключом `--text`, кладётся в память до приглашения —
+    // ровно так же, как если бы его набрали с клавиатуры. Дальше `RUN`, и
+    // это единственный способ прогнать в окне программу, которой нет на
+    // дискете: файлового диалога у нас нет.
+    if (!listing.empty()) {
+        std::string utf8;
+        if (!read_text_file(listing, utf8)) {
+            error = "не удалось прочитать " + listing;
+            return 1;
+        }
+        std::string koi8;
+        iskra::utf8_to_koi8(utf8, koi8);
+        if (!iskra::tokenize(koi8, img, console.names(), error)) {
+            error = "трансляция: " + error;
+            return 1;
+        }
+    }
+
     return console.run(error) ? 0 : 1;
 }
 

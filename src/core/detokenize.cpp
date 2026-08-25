@@ -1791,14 +1791,54 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             if (!d.expr()) { error = d.error(); return false; }
             return true;
 
-        case 0x0615: case 0x0619: case 0x061C: case 0x061E:
-        case 0x0623: {                                 // графика
-            const char * word = (verb == 0x0615) ? "DRAW"
+        case 0x0613: case 0x0614: case 0x0615: case 0x0619:
+        case 0x061A: case 0x061B: case 0x061C:
+        case 0x061D: case 0x0623: {                    // графика
+            const char * word = (verb == 0x0613) ? "DOT"
+                              : (verb == 0x0614) ? "DDRAW"
+                              : (verb == 0x0615) ? "DRAW"
                               : (verb == 0x0619) ? "NPLOT"
+                              : (verb == 0x061A) ? "$MOVE"
+                              : (verb == 0x061B) ? "TURN"
                               : (verb == 0x061C) ? "STRETCH"
-                              : (verb == 0x061E) ? "LABEL" : "WINDOW";
+                              : (verb == 0x061D) ? "FRAME" : "WINDOW";
             d.emit(std::string(word) + " ");
             return expr_list(d, src, error);
+        }
+
+        // `LABEL` разбирается отдельно: у него **пропущенные аргументы** —
+        // `LABEL B¤(),,,"Y"` (VICT 6150), — а множитель размера пишется
+        // вплотную к имени буфера, без разделителя (`LABEL B¤()3,,,"Q"`).
+        // Общий список выражений тут не годится ни тем, ни другим.
+        case 0x061E: {
+            d.emit("LABEL ");
+            // Буфер берётся приёмником, а не выражением: тот не заглядывает
+            // вперёд, и сразу за ним можно смотреть сырой байт.
+            if (!d.lvalue()) { error = d.error(); return false; }
+
+            uint8_t b = 0;
+            if (!src.peek_raw_byte(b)) return true;
+            if (b != 0xDE) {                      // множитель размера
+                if (!d.expr()) { error = d.error(); return false; }
+                Tok t;
+                if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+                if (t.t != Tok::COMMA) return true;
+                d.parser().consume();
+            } else {
+                src.skip(1);
+            }
+            d.emit(",");
+
+            for (;;) {
+                if (!src.peek_raw_byte(b)) return true;
+                if (b == 0xDE) { src.skip(1); d.emit(","); continue; }
+                if (!d.expr()) { error = d.error(); return false; }
+                Tok t;
+                if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+                if (t.t != Tok::COMMA) return true;
+                d.parser().consume();
+                d.emit(",");
+            }
         }
 
         case 0x0625: {                                 // ASMB

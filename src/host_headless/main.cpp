@@ -62,8 +62,9 @@ int usage()
         "  iskra --run-text ФАЙЛ [ВВОД…]  исполнить текстовый листинг\n"
         "  iskra --console [ОБРАЗ]   диалоговый режим в терминале\n"
         "\nКлючи:\n"
-        "  -i                        пропускать машинозависимые операторы\n"
-        "                            (ASMB, $GIO) вместо остановки\n"
+        "  -i                        пропускать то, чего здесь нет: ASMB,\n"
+        "                            $GIO и вывод на графическое устройство\n"
+        "                            /10 — вместо остановки\n"
         "\nКлючи диалогового режима:\n");
     out(iskra::DiskArgs::help());
     out("\n\nЗапись на дискету в диалоговом режиме идёт прямо в файл образа.\n");
@@ -113,6 +114,28 @@ int cmd_screen()
     std::printf("\nкурсор: строка %u, позиция %u; звонков: %u\n",
                 s.row(), s.col(), s.take_bells());
     return 0;
+}
+
+// Растр графики в терминал. Целиком 560x256 не показать, поэтому знак
+// печатается за клетку 4x8 точек: горит хоть одна — горит и знак. Это
+// проверка «нарисовалось ли», а не картинка.
+void dump_raster(const iskra::Raster & r, const char * title)
+{
+    if (r.empty()) return;
+    std::string s = "\n";
+    s += title;
+    s += ":\n";
+    for (unsigned y = iskra::RASTER_HEIGHT; y > 0; y -= 8) {
+        for (unsigned x = 0; x < iskra::RASTER_WIDTH; x += 4) {
+            bool lit = false;
+            for (unsigned dy = 0; !lit && dy < 8; ++dy)
+                for (unsigned dx = 0; !lit && dx < 4; ++dx)
+                    if (r.at(x + dx, y - 1 - dy)) lit = true;
+            s += lit ? '*' : '.';
+        }
+        s += '\n';
+    }
+    out(s);
 }
 
 // Таблица кодов растром знакогенератора: колонки — старшая цифра кода.
@@ -451,6 +474,8 @@ int run_program(iskra::ProgramImage & img, iskra::HeadlessHost & host,
     const bool ok = interp.run(error);
 
     out(host.dump());
+    dump_raster(host.raster(), "растр экрана");
+    dump_raster(host.plotter(), "лист графопостроителя");
     if (!ok) {
         std::printf("\nостановлено: %s\n", error.c_str());
         return 1;

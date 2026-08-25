@@ -401,6 +401,52 @@ void test_tables_round_trip()
     }
 }
 
+// Текстовая программа с дискеты: младший бит признака в заголовке файла
+// сброшен, а в секторах лежит листинг, где строки разделены байтом `85`.
+// Машина транслирует такую при загрузке — промежуточного представления у
+// неё нет вовсе. На дисках корпуса так лежит половина программ (`М1`,
+// `FAN01`, `STAT01.`, `STAT06`).
+void test_text_program()
+{
+    // Разделитель `85` в UTF-8 не живёт, поэтому строки переводятся порознь
+    // и сшиваются уже в КОИ-8.
+    std::string first, second, koi8;
+    utf8_to_koi8("10 PRINT \"ТЕКСТОМ\"", first);
+    utf8_to_koi8("20 A=2+3:PRINT A", second);
+    koi8 = first + '\x85' + second;
+
+    std::vector<uint8_t> file(3 * SEC, 0);
+    file[0] = 0x01;
+    for (unsigned i = 1; i <= 8; ++i) file[i] = 0x20;     // имя пробелами
+    file[9] = 0x20;                                       // признак: текст
+    file[SEC] = 0x02;                                     // первый сектор
+    file[SEC + 1] = 0x80;
+    for (std::size_t i = 0; i < koi8.size() && i + 2 < SEC; ++i)
+        file[SEC + 2 + i] = static_cast<uint8_t>(koi8[i]);
+    file[2 * SEC] = 0x1C;                                 // концевая запись
+
+    ProgramImage img;
+    std::string error;
+    if (!img.load_file(file, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(img.line_count(), 2u);
+    CHECK_EQ(img.line(0).number, 10u);
+    CHECK_EQ(img.line(1).number, 20u);
+
+    HeadlessHost host;
+    Interp interp(img, host);
+    if (!interp.run(error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_STR(line_of(host.dump(), 1), "ТЕКСТОМ");
+    CHECK_STR(line_of(host.dump(), 2), " 5");
+}
+
 } // namespace
 
 int main()
@@ -415,5 +461,6 @@ int main()
     test_load_da();
     test_load_missing();
     test_tables_round_trip();
+    test_text_program();
     return test::summary("запись и загрузка программ");
 }

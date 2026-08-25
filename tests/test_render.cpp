@@ -23,11 +23,11 @@ struct Frame
     std::vector<uint32_t> px;
     unsigned pitch;
 
-    Frame(const Renderer & r, const Screen & s)
+    Frame(const Renderer & r, const Screen & s, const Raster * g = 0)
         : px(static_cast<std::size_t>(r.width() + 7) * r.height(), 0xDEADBEEF),
           pitch(r.width() + 7)
     {
-        r.draw(s, &px[0], pitch);
+        r.draw(s, &px[0], pitch, g);
     }
 
     uint32_t at(unsigned x, unsigned y) const
@@ -73,36 +73,36 @@ unsigned check_cell(const Frame & f, const Renderer & r, unsigned col,
     return bad;
 }
 
-// Знакогенератор «Искры» — глиф 5x8 в знакоместе 6x10, значит 80x24
-// знакомест дают текстовый блок 480x240. Кадр при этом — растр трубки,
-// 512x256, и блок стоит посреди него: по 16 точек полей слева и справа,
-// по 8 сверху и снизу.
+// Знакогенератор «Искры» — глиф 5x8 в знакоместе 7x10, значит 80x24
+// знакомест дают текстовый блок 560x240. Кадр при этом — растр трубки,
+// 560x256: по ширине блок занимает его целиком, полей остаётся по 8 точек
+// сверху и снизу.
 void test_size()
 {
     Renderer r = make(1);
     CHECK_EQ(r.font().width(), 5u);
     CHECK_EQ(r.font().height(), 8u);
-    CHECK_EQ(r.font().cell_width(), 6u);
+    CHECK_EQ(r.font().cell_width(), 7u);
     CHECK_EQ(r.font().cell_height(), 10u);
     CHECK_EQ(r.font().offset_x(), 0u);
     CHECK_EQ(r.font().offset_y(), 0u);
 
-    CHECK_EQ(r.text_width(), 480u);
+    CHECK_EQ(r.text_width(), 560u);
     CHECK_EQ(r.text_height(), 240u);
     CHECK_EQ(r.frame_width(), RASTER_WIDTH);
     CHECK_EQ(r.frame_height(), RASTER_HEIGHT);
-    CHECK_EQ(r.margin_x(), 16u);
+    CHECK_EQ(r.margin_x(), 0u);
     CHECK_EQ(r.margin_y(), 8u);
 
-    CHECK_EQ(r.width(), 512u);
+    CHECK_EQ(r.width(), 560u);
     CHECK_EQ(r.height(), 256u);
-    CHECK_EQ(r.pixels(), 512u * 256u);
+    CHECK_EQ(r.pixels(), 560u * 256u);
 
     // Точка квадратная: сжатий больше нет.
     CHECK_EQ(DOT_TALL, 1u);
     for (unsigned k = 1; k <= 4; ++k) {
         r.set_scale(k, k * DOT_TALL);
-        CHECK_EQ(r.width(), 512u * k);
+        CHECK_EQ(r.width(), 560u * k);
         CHECK_EQ(r.height(), 256u * k);
     }
 }
@@ -171,7 +171,7 @@ void test_cell_margins()
                 if (text_at(f, r, c * cw + x, y) != BG) ++lit;
             }
     CHECK_EQ(lit, 0u);
-    CHECK_EQ(cw - font.width(), 1u);   // ровно один столбец просвета
+    CHECK_EQ(cw - font.width(), 2u);   // ровно два столбца просвета
 
     for (unsigned x = 0; x < 3 * cw; ++x) {
         CHECK_EQ(text_at(f, r, x, font.height()), BG); // межстрочный интервал
@@ -316,11 +316,76 @@ void test_scale()
     CHECK_EQ(mismatch, 0u);
 }
 
+// Графика поверх знакомест. Трубка одна, а устройств два, и как она их
+// смешивает, книга не говорит вовсе: взято исключающее или, чтобы линия была
+// видна и на пустом поле, и поверх знака. Сложение остаётся под рукой.
+void test_overlay()
+{
+    Screen s;
+    s.at(1, 1);
+    const char * t = "\xE1";                  // «А» в КОИ-8
+    s.write(reinterpret_cast<const uint8_t *>(t), 1);
+
+    Renderer r = make(1);
+    const Font & font = r.font();
+
+    // Точка, которая заведомо горит в глифе, и точка, которая заведомо нет.
+    unsigned gx = 0, gy = 0;
+    bool found = false;
+    for (unsigned y = 0; !found && y < font.height(); ++y)
+        for (unsigned x = 0; !found && x < font.width(); ++x)
+            if (font.dot(0x61, x, y)) { gx = x; gy = y; found = true; }
+    CHECK(found);
+
+    // Растр: зажигаем ту же точку кадра, что и глиф. Знакоместо первое,
+    // поля кадра — сверху; у растра счёт снизу вверх.
+    Raster g;
+    const unsigned fx = r.margin_x() + gx;
+    const unsigned fy = r.margin_y() + gy;
+    g.plot(fx, RASTER_HEIGHT - 1 - fy);
+
+    {
+        const Frame f(r, s, &g);
+        // Исключающее или: знак и графика в одной точке гасят друг друга.
+        CHECK_EQ(f.at(fx, fy), BG);
+    }
+    {
+        r.set_overlay(Renderer::OVERLAY_OR);
+        const Frame f(r, s, &g);
+        CHECK_EQ(f.at(fx, fy), FG);
+    }
+}
+
+// Лист графопостроителя — не экран: тёмное перо на светлой бумаге, и знаков
+// на нём нет вовсе.
+void test_paper()
+{
+    Renderer r = make(1);
+    const uint32_t INK = pack_rgb(0x11, 0x22, 0x33);
+    const uint32_t PAPER = pack_rgb(0xEE, 0xDD, 0xCC);
+    r.set_paper_colors(INK, PAPER);
+
+    Raster g;
+    g.plot(5, 7);
+
+    std::vector<uint32_t> px(static_cast<std::size_t>(r.width() + 7) * r.height(),
+                             0xDEADBEEF);
+    r.draw_raster(g, &px[0], r.width() + 7);
+
+    const std::size_t pitch = r.width() + 7;
+    const unsigned row = RASTER_HEIGHT - 1 - 7;
+    CHECK_EQ(px[row * pitch + 5], INK);
+    CHECK_EQ(px[row * pitch + 6], PAPER);
+    CHECK_EQ(px[0], PAPER);
+}
+
 } // namespace
 
 int main()
 {
     test_size();
+    test_overlay();
+    test_paper();
     test_blank();
     test_glyph();
     test_cell_margins();

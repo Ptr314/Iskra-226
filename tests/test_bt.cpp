@@ -215,10 +215,88 @@ void test_tokenized()
     CHECK_EQ(b[4], 0x35u);
 }
 
+// `PRINT /<адрес>` уводит вывод оператора на устройство — приставка та же,
+// что у блочного обмена: `PRINT /10,HEX(0D)` = `4C 07 DC DE 10 DE …`
+// (`VICT` 80). В корпусе таких операторов 182 в 33 файлах.
+void test_print_to_device()
+{
+    TapeHost host;
+    std::string error;
+    if (!run(host,
+             "10 PRINT /34,\"НА ЛИНИЮ\";\n"
+             "20 PRINT \"НА ЭКРАН\"\n", error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    // На устройство ушло только своё, без перевода строки: он подавлен `;`.
+    std::string want;
+    utf8_to_koi8("НА ЛИНИЮ", want);
+    CHECK_STR(host.outgoing_, want);
+    CHECK_EQ(host.write_addr_, 0x34u);
+    // А экран получил своё, и приставка на следующий оператор не перешла.
+    // dump() отдаёт UTF-8, поэтому сравнивается прямо с текстом.
+    CHECK_STR(line_of(host.dump(), 1), "НА ЭКРАН");
+}
+
+// Устройства, которого у хоста нет, программа не переживает.
+void test_print_missing_device()
+{
+    HeadlessHost host;                       // обычный: знает 05 и 0C
+    std::string error;
+    CHECK(!run(host, "10 PRINT /34,\"КУДА-ТО\"\n", error));
+    CHECK(error.find("/34") != std::string::npos);
+}
+
+// У графического устройства `10` разобрана часть управляющих кодов —
+// `03`, `0D`, `0E`, `0F` (`docs/format.md`, разд. 5), — а на остальных
+// программа останавливается. Ключ `-i` велит такое пропускать, как `ASMB`
+// и `$GIO`. Прочие неизвестные адреса ключ не покрывает: там устройства
+// просто нет.
+void test_print_graphics_device_skipped()
+{
+    const char * src = "10 PRINT /10,HEX(01)\n20 PRINT \"ДОШЛИ\"\n";
+
+    {
+        HeadlessHost host;
+        std::string error;
+        CHECK(!run(host, src, error));
+        CHECK(error.find("/10") != std::string::npos);
+    }
+    {
+        HeadlessHost host;
+        std::string koi8, error;
+        utf8_to_koi8(src, koi8);
+        NameTable names;
+        ProgramImage img;
+        if (!tokenize(koi8, img, names, error)) { CHECK(false); return; }
+        Interp interp(img, host);
+        interp.set_skip_machine(true);
+        CHECK(interp.run(error));
+        CHECK_STR(line_of(host.dump(), 1), "ДОШЛИ");
+    }
+    {
+        // А вот `/34` под ключ не подпадает.
+        HeadlessHost host;
+        std::string koi8, error;
+        utf8_to_koi8("10 PRINT /34,\"КУДА-ТО\"\n", koi8);
+        NameTable names;
+        ProgramImage img;
+        if (!tokenize(koi8, img, names, error)) { CHECK(false); return; }
+        Interp interp(img, host);
+        interp.set_skip_machine(true);
+        CHECK(!interp.run(error));
+        CHECK(error.find("/34") != std::string::npos);
+    }
+}
+
 } // namespace
 
 int main()
 {
+    test_print_to_device();
+    test_print_missing_device();
+    test_print_graphics_device_skipped();
     test_to_screen();
     test_to_printer();
     test_missing_device();

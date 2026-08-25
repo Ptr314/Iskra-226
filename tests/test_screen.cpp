@@ -176,11 +176,11 @@ void test_koi8()
 
 void test_font()
 {
-    // Знакогенератор самой «Искры» — глиф 5x8 в знакоместе 6x10.
+    // Знакогенератор самой «Искры» — глиф 5x8 в знакоместе 7x10.
     const Font & f = Font::standard();
     CHECK_EQ(f.width(), 5u);
     CHECK_EQ(f.height(), 8u);
-    CHECK_EQ(f.cell_width(), 6u);
+    CHECK_EQ(f.cell_width(), 7u);
     CHECK_EQ(f.cell_height(), 10u);
 
     // Пробел пуст, буквы — нет.

@@ -1644,7 +1644,10 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
     {
         static const struct { const char * word; unsigned verb; } PLOT[] = {
             { "NPLOT", 0x0619 }, { "STRETCH", 0x061C },
-            { "WINDOW", 0x0623 }, { "DRAW", 0x0615 }
+            { "WINDOW", 0x0623 }, { "DDRAW", 0x0614 },
+            { "DRAW", 0x0615 },   { "FRAME", 0x061D },
+            { "DOT", 0x0613 },    { "$MOVE", 0x061A },
+            { "TURN", 0x061B }
         };
         unsigned found = 0;
         for (unsigned k = 0; !found && k < sizeof(PLOT) / sizeof(PLOT[0]); ++k)

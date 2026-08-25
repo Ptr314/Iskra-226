@@ -19,11 +19,27 @@ Renderer::Renderer()
       // цвета меняет.
       fg_(pack_rgb(0x30, 0xD8, 0x30)),
       bg_(pack_rgb(0x00, 0x00, 0x00)),
+      // Бумага и перо: лист светлый, чернила тёмные. Чистого белого не
+      // берём — на экране он режет глаз сильнее, чем настоящая бумага.
+      ink_(pack_rgb(0x14, 0x14, 0x14)),
+      paper_(pack_rgb(0xF2, 0xF0, 0xE8)),
+      overlay_(OVERLAY_XOR),
       cursor_(false)
 {
 }
 
-void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch) const
+void Renderer::draw_raster(const Raster & g, uint32_t * out, unsigned pitch) const
+{
+    for (unsigned y = 0; y < height(); ++y) {
+        uint32_t * line = out + y * pitch;
+        const unsigned gy = frame_height() - 1 - y / scale_y_;
+        for (unsigned x = 0; x < width(); ++x)
+            line[x] = g.at(x / scale_x_, gy) ? ink_ : paper_;
+    }
+}
+
+void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch,
+                    const Raster * g) const
 {
     const unsigned cw = font_->cell_width();
     const unsigned ch = font_->cell_height();
@@ -37,15 +53,19 @@ void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch) const
     const unsigned cur_col = s.col();
 
     // Поля вокруг текстового блока — часть растра трубки, а не пустота за
-    // краем кадра: их надо закрасить, иначе там останется мусор буфера.
-    // Закрашивается кадр целиком, вместе с местом под знаки: так короче, а
-    // лишний проход по 512x256 не стоит и десятой доли мига.
+    // краем кадра: их надо закрасить, иначе там останется мусор буфера. И
+    // графика в них попадает: она рисуется по всему растру, а знакоместа
+    // занимают его не целиком. Закрашивается кадр целиком, вместе с местом
+    // под знаки: так короче, а лишний проход по 560x256 не стоит и десятой
+    // доли мига.
     const unsigned mx = margin_x() * sx;
     const unsigned my = margin_y() * sy;
-    if (mx || my)
+    if (mx || my || g)
         for (unsigned y = 0; y < height(); ++y) {
             uint32_t * line = out + y * pitch;
-            for (unsigned x = 0; x < width(); ++x) line[x] = bg_;
+            const unsigned gy = frame_height() - 1 - y / sy;
+            for (unsigned x = 0; x < width(); ++x)
+                line[x] = (g && g->at(x / sx, gy)) ? fg_ : bg_;
         }
 
     for (unsigned r = 1; r <= SCREEN_ROWS; ++r) {
@@ -70,11 +90,22 @@ void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch) const
                 const bool underline = cursor_here && y + 1 == ch;
                 const bool in_glyph = y >= oy && y - oy < gh;
 
+                // Строка развёртки в координатах растра: у знакомест счёт
+                // сверху вниз, у графики снизу вверх.
+                const unsigned gyy = frame_height() - 1
+                                   - (margin_y() + (r - 1) * ch + y);
+
                 for (unsigned x = 0; x < cw; ++x) {
                     bool on = underline;
                     if (!on && in_glyph && x >= ox && x - ox < gw)
                         on = font_->dot(cell.ch, x - ox, y - oy);
-                    const uint32_t color = (on != inv) ? fg_ : bg_;
+                    bool lit = (on != inv);
+                    // Графика поверх знакомест: трубка одна, а устройства
+                    // два. Исключающее или видно и на пустом поле, и поверх
+                    // знака; сложение теряло бы линию в светлых местах.
+                    if (g && g->at(margin_x() + (c - 1) * cw + x, gyy))
+                        lit = (overlay_ == OVERLAY_XOR) ? !lit : true;
+                    const uint32_t color = lit ? fg_ : bg_;
                     for (unsigned k = 0; k < sx; ++k) line[x * sx + k] = color;
                 }
                 // При увеличении строка развёртки повторяется как есть.

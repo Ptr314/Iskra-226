@@ -53,7 +53,10 @@ add_library(iskra_core STATIC
     src/core/vars.h             src/core/vars.cpp
     src/core/eval.h             src/core/eval.cpp
     src/core/detokenize.h       src/core/detokenize.cpp
+    src/core/raster.h           src/core/raster.cpp
+    src/core/gbuffer.h          src/core/gbuffer.cpp
     src/core/interp.h           src/core/interp.cpp
+    src/core/interp_graphics.cpp
     src/core/console.h          src/core/console.cpp
     src/core/screen.h           src/core/screen.cpp
 

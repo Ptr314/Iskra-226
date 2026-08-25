@@ -77,7 +77,7 @@ void ask_for_real_pixels()
 } // namespace
 
 Win32Host::Win32Host()
-    : key_pos_(0), hwnd_(0), closed_(false), cursor_on_(false),
+    : key_pos_(0), hwnd_(0), plot_hwnd_(0), closed_(false), cursor_on_(false),
       start_ms_(GetTickCount())
 {
 }
@@ -156,23 +156,80 @@ void Win32Host::redraw()
 {
     if (frame_.size() != render_.pixels()) resize_frame();
     render_.set_cursor(cursor_on_);
-    render_.draw(screen_, &frame_[0], render_.width());
+    // Трубка одна: графический растр ложится поверх знакомест. Пока на нём
+    // ни одной точки, накладывать нечего — и лишнего прохода не будет.
+    render_.draw(screen_, &frame_[0], render_.width(),
+                 raster_.empty() ? 0 : &raster_);
     screen_.clear_dirty();
+    raster_.clear_dirty();
     if (hwnd_) InvalidateRect(static_cast<HWND>(hwnd_), 0, FALSE);
 }
 
-void Win32Host::paint(void * hdc_raw)
+// Лист графопостроителя — тот же растр, только без знакомест: своих знаков
+// у бумаги нет.
+void Win32Host::redraw_plot()
+{
+    if (!plot_hwnd_) return;
+    if (plot_frame_.size() != render_.pixels())
+        plot_frame_.assign(render_.pixels(), 0);
+    render_.draw_raster(plotter_, &plot_frame_[0], render_.width());
+    plotter_.clear_dirty();
+    InvalidateRect(static_cast<HWND>(plot_hwnd_), 0, FALSE);
+}
+
+// Окно листа заводится по первому выводу на графопостроитель. Класс окна
+// тот же, что у экрана: он уже зарегистрирован, и разводятся окна по HWND.
+bool Win32Host::open_plotter()
+{
+    if (plot_hwnd_) return true;
+    if (!hwnd_) return false;
+
+    const unsigned fw = render_.width(), fh = render_.height();
+    RECT rc;
+    client_rect(fw, fh, fitting_scale(fw, fh), rc);
+    AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+
+    std::vector<wchar_t> title;
+    utf8_to_utf16("Искра 226 — графопостроитель", title);
+
+    HWND hwnd = CreateWindowExW(0, CLASS_NAME, &title[0], WS_OVERLAPPEDWINDOW,
+                                CW_USEDEFAULT, CW_USEDEFAULT,
+                                rc.right - rc.left, rc.bottom - rc.top,
+                                0, 0, GetModuleHandleW(0), 0);
+    if (!hwnd) return false;
+
+    SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    plot_hwnd_ = hwnd;
+    redraw_plot();
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    return true;
+}
+
+// Бумаги у нас нет, и разрешения графопостроителя мы не знаем: книга
+// называет его «планшетным» и больше о нём не говорит, а размер картинки не
+// задан ни в буфере, ни в его заголовке. Поэтому лист берётся в тех же
+// координатах, что и буфер, — это единственная система координат, которая в
+// данных есть (docs/DECISIONS.md, разд. 15).
+Raster * Win32Host::plot_surface(uint8_t addr)
+{
+    if (addr == 0x14 && !open_plotter()) return 0;
+    return Host::plot_surface(addr);
+}
+
+void Win32Host::paint(void * hwnd_raw, void * hdc_raw,
+                      const std::vector<uint32_t> & frame)
 {
     HDC hdc = static_cast<HDC>(hdc_raw);
     const int w = static_cast<int>(render_.width());
     const int h = static_cast<int>(render_.height());
 
     RECT rc;
-    GetClientRect(static_cast<HWND>(hwnd_), &rc);
+    GetClientRect(static_cast<HWND>(hwnd_raw), &rc);
 
     // Увеличение только целое: экран знакоместный, дробное растяжение съело
     // бы ровность знаков — однопиксельные штрихи вышли бы разной толщины.
-    // Кадр — растр трубки 512x256, и показывается он как 512k x 256k.
+    // Кадр — растр трубки 560x256, и показывается он как 560k x 256k.
     // Что не поместилось — поля, они закрашиваются.
     const int tall = static_cast<int>(DOT_TALL);
     int k = rc.right / w;
@@ -194,7 +251,7 @@ void Win32Host::paint(void * hdc_raw)
 
     SetStretchBltMode(hdc, COLORONCOLOR);   // ближайший сосед, без сглаживания
     StretchDIBits(hdc, dx, dy, dw, dh, 0, 0, w, h,
-                  &frame_[0], &bi, DIB_RGB_COLORS, SRCCOPY);
+                  &frame[0], &bi, DIB_RGB_COLORS, SRCCOPY);
 
     HBRUSH black = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
     RECT m;
@@ -222,7 +279,9 @@ long long Win32Host::handle(void * hwnd_raw, unsigned msg,
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
-        paint(hdc);
+        const bool is_plot = (hwnd_raw == plot_hwnd_);
+        const std::vector<uint32_t> & f = is_plot ? plot_frame_ : frame_;
+        if (!f.empty()) paint(hwnd_raw, hdc, f);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -249,10 +308,14 @@ long long Win32Host::handle(void * hwnd_raw, unsigned msg,
     }
 
     case WM_CLOSE:
+        // Закрытый лист графопостроителя эмулятор не останавливает: это
+        // бумага, а не машина. Заведётся заново при следующем выводе.
+        if (hwnd_raw == plot_hwnd_) { DestroyWindow(hwnd); return 0; }
         closed_ = true;
         return 0;
 
     case WM_DESTROY:
+        if (hwnd_raw == plot_hwnd_) { plot_hwnd_ = 0; return 0; }
         closed_ = true;
         hwnd_ = 0;
         return 0;
@@ -279,10 +342,11 @@ bool Win32Host::present()
     // Мигание курсора: не событие, а состояние часов, поэтому проверяется
     // здесь, а не по таймеру окна.
     const bool on = ((GetTickCount() - start_ms_) / BLINK_MS) % 2 == 0;
-    if (screen_.dirty() || on != cursor_on_) {
+    if (screen_.dirty() || raster_.dirty() || on != cursor_on_) {
         cursor_on_ = on;
         redraw();
     }
+    if (plotter_.dirty()) redraw_plot();
 
     if (screen_.take_bells()) MessageBeep(MB_OK);
     return true;

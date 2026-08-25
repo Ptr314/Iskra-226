@@ -57,21 +57,30 @@ public:
     long long handle(void * hwnd, unsigned msg, unsigned long long wp,
                      long long lp, bool & done);
 
+    // Лист графопостроителя показывается своим окном, и заводится оно
+    // лениво — по первому же `¤COPY /14`. Пока программа не рисует на
+    // бумагу, второго окна на экране нет.
+    Raster * plot_surface(uint8_t addr);
+
 private:
     void pump();                  // разобрать накопившиеся сообщения
     void redraw();                // пересобрать кадр из знакомест
-    void paint(void * hdc);       // выложить кадр в окно
+    void redraw_plot();           // пересобрать лист графопостроителя
+    void paint(void * hwnd, void * hdc, const std::vector<uint32_t> & frame);
     void resize_frame();
+    bool open_plotter();
 
     Screen screen_;
     Renderer render_;
     DiskFiles disks_;
 
     std::vector<uint32_t> frame_;
+    std::vector<uint32_t> plot_frame_;
     std::vector<uint8_t> keys_;
     std::size_t key_pos_;
 
     void * hwnd_;
+    void * plot_hwnd_;
     bool closed_;
 
     // Курсор мигает сам: у хоста часы, ядру про это знать незачем.

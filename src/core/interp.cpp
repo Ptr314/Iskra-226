@@ -29,13 +29,15 @@ namespace {
         return b;
     }
 
-    // ФАУ устройства пишут двумя шестнадцатеричными цифрами.
-    std::string hex2_str(unsigned v)
-    {
-        char b[8];
-        std::sprintf(b, "%02X", v & 0xFF);
-        return b;
-    }
+}
+
+// ФАУ устройства пишут двумя шестнадцатеричными цифрами. Общий на два
+// файла: графика зовёт его из interp_graphics.cpp.
+std::string hex2_str(unsigned v)
+{
+    char b[8];
+    std::sprintf(b, "%02X", v & 0xFF);
+    return b;
 }
 
 // Образ CONVERT — одно описание формата и ничего кроме него
@@ -82,9 +84,13 @@ Interp::Interp(ProgramImage & img, Host & host)
       funcs_ready_(false), fn_depth_(0),
       data_ready_(false), data_i_(0), data_off_(0), end_seen_(false),
       li_(0), off_(0), next_off_(0), jumped_(false), stopped_(false),
-      max_steps_(0), skip_machine_(false)
+      max_steps_(0), skip_machine_(false), print_dev_(0), print_fail_(false)
 {
     fnres_.owner = this;
+    // Пока `WINDOW` не звали, областью вывода служит весь растр: `VICT`,
+    // `STAT01`, `M2`, `M4`, `P2`, `STAT001` и `FAN01` не зовут его вовсе, а
+    // рисуют прямо дискретами экрана.
+    gwin_ = screen_box();
 }
 
 bool Interp::fail(const std::string & m)
@@ -109,15 +115,62 @@ bool Interp::variable(unsigned index, Number & out) const
     return true;
 }
 
+// `PRINT /<адрес>` уводит вывод оператора на названное устройство. Адрес `05`
+// — сам экран, и тогда всё идёт обычным путём, со знакоместами и курсором;
+// прочие адреса получают байты как есть, через границу с хостом. Устройства,
+// которого у хоста нет, `device_write` не примет, и программа остановится:
+// молча терять вывод нельзя.
+// Графическое устройство (ФАУ 10) принимает управляющие коды, которых мы не
+// разобрали: на весь корпус их пять — `0D`, `0E`, `0F`, `01` и пара `01 02`,
+// — и что каждый значит, неизвестно. Найти неоткуда: у Wang ближайший
+// родственник это 2282 Graphic CRT, но его руководство существует только
+// сканом, а сами графические операторы «Искры» вангу и не принадлежат
+// (docs/format.md, разд. 5).
+//
+// Ключ `-i` велит такое пропускать — как `ASMB` и `$GIO`. Без ключа
+// программа останавливается: принять код и промолчать значило бы соврать.
+// Прочие неизвестные адреса под ключ не подпадают: там устройства у хоста
+// просто нет, а это другое.
+bool Interp::device_skipped(unsigned addr) const
+{
+    return skip_machine_ && addr == 0x10;
+}
+
+bool Interp::emit_to_device(const uint8_t * data, unsigned len)
+{
+    if (!host_.device_write(static_cast<uint8_t>(print_dev_), data, len)) {
+        if (device_skipped(print_dev_)) return true;
+        print_fail_ = true;
+        return false;
+    }
+    return true;
+}
+
 void Interp::emit(const std::string & koi8)
 {
     if (koi8.empty()) return;
+    if (print_dev_ && print_dev_ != 0x05) {
+        emit_to_device(reinterpret_cast<const uint8_t *>(koi8.data()),
+                       static_cast<unsigned>(koi8.size()));
+        return;
+    }
     host_.screen().write(reinterpret_cast<const uint8_t *>(koi8.data()),
                          static_cast<unsigned>(koi8.size()));
 }
 
 void Interp::emit_newline()
 {
+    // Графическому полю строки ни к чему, и перевод, который `PRINT`
+    // дописывает сам, на него не уходит. Иначе `PRINT /10,HEX(03)`
+    // (`GRAFISN` 110) слал бы `03 0D 0A`, и гашение поля было бы не
+    // отличить от двух неизвестных кодов следом.
+    if (print_dev_ == 0x10) return;
+
+    if (print_dev_ && print_dev_ != 0x05) {
+        const uint8_t nl[2] = { CC_CR, CC_DOWN };
+        emit_to_device(nl, 2);
+        return;
+    }
     Screen & s = host_.screen();
     s.put(CC_CR);
     s.put(CC_DOWN);
@@ -283,6 +336,29 @@ bool Interp::do_print(Stream & st)
     bool last_was_at = false;
     bool newline = true;
 
+    // Приставка устройства — та же, что у блочного обмена: `PRINT /10,HEX(0D)`
+    // = `4C 07 DC DE 10 DE …` (`VICT` 80). В корпусе это 182 оператора в 33
+    // файлах, и 115 из них — экран.
+    print_dev_ = 0;
+    print_fail_ = false;
+    {
+        uint8_t b = 0;
+        if (st.src.peek_raw_byte(b) && (b == 0xDC || b == 0xDB)) {
+            unsigned addr = 0;
+            if (!bt_prefix(st, addr)) return false;
+            print_dev_ = addr;
+        }
+    }
+    // Выходов из оператора много, и на каждом устройство надо вернуть
+    // консольному: иначе следующий `PRINTUSING` ушёл бы туда же.
+    struct DevGuard {
+        explicit DevGuard(unsigned & d) : d_(d) {}
+        ~DevGuard() { d_ = 0; }
+        unsigned & d_;
+    } dev_guard(print_dev_);
+
+    const bool to_screen = (print_dev_ == 0 || print_dev_ == 0x05);
+
     for (;;) {
         Tok t;
         // Разделитель читается в позиции операции: `DE` там запятая, а в
@@ -291,7 +367,11 @@ bool Interp::do_print(Stream & st)
         // (CLAUDE.md, ловушка 2).
         if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
         if (t.t == Tok::END) break;
-        if (t.t == Tok::COMMA) { st.ev.parser().consume(); emit_zone(); newline = false; continue; }
+        if (t.t == Tok::COMMA) {
+            if (!to_screen) return fail("PRINT /" + hex2_str(print_dev_) +
+                                        ": зоны есть только на экране");
+            st.ev.parser().consume(); emit_zone(); newline = false; continue;
+        }
         if (t.t == Tok::SEMI)  { st.ev.parser().consume(); newline = false; continue; }
 
         // Не разделитель — значит очередной элемент, а его надо читать в
@@ -299,6 +379,10 @@ bool Interp::do_print(Stream & st)
         st.ev.parser().unpeek();
         if (!st.ev.parser().peek(t, true)) return fail(st.ev.error());
         if (t.t == Tok::END) break;
+
+        if ((t.t == Tok::FN_TAB || t.t == Tok::FN_AT) && !to_screen)
+            return fail("PRINT /" + hex2_str(print_dev_) +
+                        ": AT( и TAB( двигают курсор экрана");
 
         if (t.t == Tok::FN_TAB) {
             // «позиции строки нумеруются с нуля» (разд. 4.4), и курсор
@@ -359,15 +443,25 @@ bool Interp::do_print(Stream & st)
         // Разделитель после значения читается в позиции операции: разбор
         // выражения уже заглянул вперёд именно в ней (CLAUDE.md).
         if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
-        if (t.t == Tok::COMMA) { st.ev.parser().consume(); emit_zone(); newline = false; }
+        if (t.t == Tok::COMMA) {
+            if (!to_screen) return fail("PRINT /" + hex2_str(print_dev_) +
+                                        ": зоны есть только на экране");
+            st.ev.parser().consume(); emit_zone(); newline = false;
+        }
         else if (t.t == Tok::SEMI) { st.ev.parser().consume(); newline = false; }
         else break;
+
+        if (print_fail_) return fail("PRINT: устройства /" +
+                                     hex2_str(print_dev_) + " у хоста нет");
     }
 
     // PRINT AT(...) курсор только ставит и перевода строки не делает:
     // «курсор устанавливается в тридцатую позицию восьмой строки экрана»,
     // а печать следующего оператора идёт с этой позиции (пример 17.5).
     if (newline && !last_was_at) emit_newline();
+    if (print_fail_)
+        return fail("PRINT: устройства /" + hex2_str(print_dev_) +
+                    " у хоста нет");
     return true;
 }
 
@@ -995,7 +1089,8 @@ bool Interp::do_block_transfer(Stream & st, bool load)
             if (!v.str.empty() &&
                 !host_.device_write(static_cast<uint8_t>(addr),
                                     reinterpret_cast<const uint8_t *>(v.str.data()),
-                                    static_cast<unsigned>(v.str.size())))
+                                    static_cast<unsigned>(v.str.size())) &&
+                !device_skipped(addr))
                 return fail("DATA SAVE BT: устройства /" + hex2_str(addr) +
                             " у хоста нет");
         }
@@ -3992,6 +4087,14 @@ bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
         case 0x0606: return do_mat_copy(st);
         case 0x060A: return do_mat_search(st);
         case 0x0626: return do_replace(st);
+        case 0x060F: return do_gopen(st);
+        case 0x0623: return do_gwindow(st);
+        case 0x061D: return do_gframe(st);
+        case 0x0619: return do_gpoint(st, GOP_NPLOT, "NPLOT");
+        case 0x0615: return do_gpoint(st, GOP_DRAW, "DRAW");
+        case 0x0613: return do_gpoint(st, GOP_DOT, "DOT");
+        case 0x061E: return do_glabel(st);
+        case 0x061F: return do_gcopy(st);
         case 0x060C: return do_tran(st);
         case 0x47: return do_convert(st);
         case 0x48: return do_pack(st, false);
@@ -4092,12 +4195,11 @@ bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
         return fail("оператор " + name + " машинозависим: нужна эмуляция "
                     "процессора. Ключ -i велит такие пропускать");
     }
-    // Графика — отдельный проект: всё это работает над буфером, устройство
-    // которого не разобрано. Пропускать нельзя — программа выглядела бы
-    // рисующей.
+    // Графика — отдельный проект. Формат буфера разобран (docs/format.md,
+    // разд. 5), а второго растра и вывода на него нет вовсе. Пропускать
+    // нельзя — программа выглядела бы рисующей.
     if (graphics_verb(verb))
-        return fail("оператор " + name + " графический: устройство буфера "
-                    "не разобрано");
+        return fail("оператор " + name + " графический: растра ещё нет");
     return fail("оператор " + name + " ещё не исполняется");
 }
 

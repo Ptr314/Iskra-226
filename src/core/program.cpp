@@ -5,6 +5,9 @@
 
 #include "core/program.h"
 
+#include "core/names.h"
+#include "core/tokenize.h"
+
 
 #include <cstdio>
 #include <cstring>
@@ -263,10 +266,11 @@ bool ProgramImage::load_file(const std::vector<uint8_t> & file, std::string & er
         error = "не программа BASIC (признак " + hex2(attr) + ")";
         return false;
     }
-    if ((attr & 1) == 0) {
-        error = "программа в текстовом виде, а не оттранслированная";
-        return false;
-    }
+    // Младший бит признака различает два представления программы. Текстовое
+    // машина **транслирует при загрузке** — промежуточного вида у неё нет
+    // вовсе (docs/DECISIONS.md, разд. 12), — и на дисках корпуса половина
+    // программ лежит именно так (`М1`, `FAN01`, `STAT01.`, `STAT06`).
+    if ((attr & 1) == 0) return load_text_file(file, error);
 
     std::vector<uint8_t> code;
     unsigned p = SECTOR;
@@ -277,6 +281,36 @@ bool ProgramImage::load_file(const std::vector<uint8_t> & file, std::string & er
         p += SECTOR;
     }
     return load_stream(code, error);
+}
+
+// Текстовая программа с дискеты: сектора устроены так же, как у
+// оттранслированной, а в них лежит листинг в КОИ-8, где строки разделены
+// байтом `85` — тем же, что разделяет их в символьном буфере `SAVE`
+// (docs/format.md, разд. 10).
+//
+// Имена переменных здесь не сохраняются: индексы раздаются по первому
+// появлению имени, как и у машины, а для `LIST` детокенизатор придумает их
+// заново. Диалог для этого зовёт `Console::refresh_names()`.
+bool ProgramImage::load_text_file(const std::vector<uint8_t> & file,
+                                  std::string & error)
+{
+    std::string text;
+    unsigned p = SECTOR;
+    while (p + SECTOR <= file.size()) {
+        if (file[p] == 0x1C) break;             // control record
+        if (file[p + 1] != 0x80) break;
+        for (unsigned i = p + 2; i < p + SECTOR; ++i) {
+            const uint8_t c = file[i];
+            if (c == 0x85) text += '\n';
+            else if (c) text += static_cast<char>(c);
+        }
+        p += SECTOR;
+    }
+    if (text.empty()) { error = "текстовая программа пуста"; return false; }
+    text += '\n';
+
+    NameTable names;
+    return tokenize(text, *this, names, error);
 }
 
 bool ProgramImage::load_stream(const std::vector<uint8_t> & code, std::string & error)

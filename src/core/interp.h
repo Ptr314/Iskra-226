@@ -13,12 +13,16 @@
 #include "core/devtable.h"
 #include "core/errors.h"
 #include "core/eval.h"
+#include "core/gbuffer.h"
 #include "core/host.h"
 #include "core/program.h"
 #include "core/value.h"
 #include "core/vars.h"
 
 namespace iskra {
+
+// ФАУ устройства пишут двумя шестнадцатеричными цифрами.
+std::string hex2_str(unsigned v);
 
 // Исполнитель работает с тем же образом программы, что лежит в памяти
 // машины: поток строк и таблицы переменных. Промежуточного представления
@@ -59,22 +63,19 @@ public:
     // `$OPEN`, `$COPY` и `$LET` попали сюда не по имени, а по делу: все семь
     // файлов корпуса, где они есть, рисуют (`VICT` 6150 = `¤OPEN B¤():NPLOT
     // B¤(),P6,248:DRAW …`, дальше `¤COPY /14,B¤()` на графопостроитель).
+    // Исполняются: `¤OPEN`, `WINDOW`, `FRAME`, `NPLOT`, `DRAW`, `DOT`,
+    // `LABEL` и `¤COPY` — те, у кого разобраны и операнды, и запись в
+    // потоке. Здесь остались те, что **переписывают уже лежащие записи**
+    // (`STRETCH`, `TURN`, `¤MOVE`, `¤LET`) либо кладут запись, смысл которой
+    // неизвестен (`DDRAW`, `PLOT`).
     static bool graphics_verb(unsigned verb)
     {
         switch (verb) {
-            case 0x0613:            // DOT
             case 0x0614:            // DDRAW
-            case 0x0615:            // DRAW
-            case 0x0619:            // NPLOT
             case 0x061A:            // ¤MOVE
             case 0x061B:            // TURN
             case 0x061C:            // STRETCH
-            case 0x061D:            // FRAME
-            case 0x061E:            // LABEL
-            case 0x0623:            // WINDOW
             case 0x0600:            // вероятно PLOT
-            case 0x060F:            // $OPEN — открыть буфер
-            case 0x061F:            // $COPY — отправить буфер устройству
             case 0x0622:            // $LET — над тем же буфером
                 return true;
             default: return false;
@@ -207,6 +208,42 @@ private:
     // Замена и перекодировка символьных данных (разд. 15.3).
     bool do_replace(Stream & st);
     bool do_tran(Stream & st);
+
+    // Система координат буфера (docs/format.md, разд. 5, «WINDOW, FRAME и
+    // ORIGIN»). `WINDOW` — область на устройстве в дискретах, и она общая:
+    // имени буфера в операндах нет вовсе. `FRAME` — та же область в
+    // пользовательских единицах, и вот она своя у каждого буфера.
+    //
+    // **В машине это отображение живёт в самом буфере**, в неразобранных
+    // байтах заголовка 7-39. Выдумывать их нельзя — буфер уходит на дискету
+    // через `DATA SAVE`, — поэтому держим его при себе. Для корпуса
+    // неразличимо: `SLIDE` при загрузке чужой картинки заголовок отбрасывает
+    // и зовёт `FRAME` заново (4550, 4510).
+    struct GBox {
+        GBox() {}
+        Number x0, x1, y0, y1;
+    };
+    static GBox screen_box();
+    GBox gwin_;
+    std::map<unsigned, GBox> gframe_;
+
+    // --- графика ---------------------------------------------------------
+    // Разобрать операнд-буфер: символьная переменная целиком.
+    bool device_skipped(unsigned addr) const;
+    bool emit_to_device(const uint8_t * data, unsigned len);
+    bool raw_comma(Stream & st);
+    bool gbuf_operand(Stream & st, const char * who, unsigned & var,
+                      Evaluator::Target & tgt);
+    bool do_gbox(Stream & st, GBox & out, const char * who);
+    // Пользовательские единицы — в дискреты устройства по FRAME и WINDOW.
+    bool gmap(unsigned var, const Number & ux, const Number & uy,
+              long & x, long & y);
+    bool do_gopen(Stream & st);
+    bool do_gwindow(Stream & st);
+    bool do_gframe(Stream & st);
+    bool do_gpoint(Stream & st, uint8_t op, const char * who);
+    bool do_glabel(Stream & st);
+    bool do_gcopy(Stream & st);
     // Место символьного значения со знаком «в обратном порядке»
     // (руководство, разд. 15.2).
     bool str_place(Stream & st, bool & reverse, Evaluator::Target & out);
@@ -377,6 +414,14 @@ private:
     bool stopped_;
     unsigned long max_steps_;
     bool skip_machine_;
+
+    // Устройство, на которое уводит вывод приставка `PRINT /<адрес>`. Ноль
+    // и `05` — консольный экран, то есть обычный путь со знакоместами.
+    // Сбрасывается на выходе из оператора: приставка действует только на
+    // него одного.
+    unsigned print_dev_;
+    bool print_fail_;
+
     std::string error_;
 };
 

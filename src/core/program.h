@@ -58,6 +58,8 @@ public:
     // Из файла, снятого с дискеты. Оттранслированный грузится как есть;
     // текстовый тут отвергается — его переводит core/tokenize.*.
     bool load_file(const std::vector<uint8_t> & file, std::string & error);
+    // Текстовая программа: машина транслирует её при загрузке.
+    bool load_text_file(const std::vector<uint8_t> & file, std::string & error);
 
     // Из уже собранного потока — без заголовочного сектора и служебных байт.
     bool load_stream(const std::vector<uint8_t> & code, std::string & error);

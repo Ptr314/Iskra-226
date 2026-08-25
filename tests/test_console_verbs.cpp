@@ -346,27 +346,30 @@ void test_skip_is_narrow()
     CHECK(!Interp::machine_verb(0x25));       // KEYIN
 }
 
-// Графика — свой разговор: буфер не разобран, и оператор останавливает
+// Графика — свой разговор: оператор, которого мы не понимаем, останавливает
 // программу даже с ключом `-i`. Пропустить его значило бы выдать
 // нарисованное там, где ничего не нарисовано.
 //
-// `$OPEN`, `$COPY` и `$LET` попали в этот список не по имени, а по делу:
-// все семь файлов корпуса, где они есть, рисуют — `VICT` 6150 это
-// `¤OPEN B¤():NPLOT B¤(),P6,248:DRAW …`, а 6220 отправляет тот же буфер на
-// графопостроитель оператором `¤COPY /14,B¤()`.
+// В списке остались те, что **переписывают уже лежащие записи** — `STRETCH`,
+// `TURN`, `¤MOVE`, `¤LET`, — и те, чья запись в потоке неизвестна: `DDRAW`
+// и `PLOT`. Всё, что разобрано, исполняется; проверяет это `test_graphics`.
 void test_graphics_verbs()
 {
-    CHECK(Interp::graphics_verb(0x0619));     // NPLOT
-    CHECK(Interp::graphics_verb(0x0615));     // DRAW
-    CHECK(Interp::graphics_verb(0x060F));     // $OPEN
-    CHECK(Interp::graphics_verb(0x061F));     // $COPY
+    CHECK(Interp::graphics_verb(0x061C));     // STRETCH
+    CHECK(Interp::graphics_verb(0x061B));     // TURN
+    CHECK(Interp::graphics_verb(0x0600));     // PLOT
+    CHECK(!Interp::graphics_verb(0x0619));    // NPLOT — исполняется
+    CHECK(!Interp::graphics_verb(0x0615));    // DRAW — исполняется
+    CHECK(!Interp::graphics_verb(0x060F));    // $OPEN — исполняется
+    CHECK(!Interp::graphics_verb(0x061F));    // $COPY — исполняется
     CHECK(Interp::graphics_verb(0x0622));     // $LET
     CHECK(!Interp::graphics_verb(0x0625));    // ASMB — машинозависимое
     CHECK(!Interp::graphics_verb(0x060C));    // $TRAN( — обычный, сделан
 
     std::string koi8, error;
     utf8_to_koi8("10 DIM B\xC2\xA4(4)16\n"
-                 "20 \xC2\xA4OPEN B\xC2\xA4()\n", koi8);
+                 "20 \xC2\xA4OPEN B\xC2\xA4()\n"
+                 "30 STRETCH B\xC2\xA4(),0,0,1,1\n", koi8);
     NameTable names;
     ProgramImage img;
     if (!tokenize(koi8, img, names, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
