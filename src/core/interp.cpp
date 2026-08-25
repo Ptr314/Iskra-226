@@ -28,6 +28,14 @@ namespace {
         std::sprintf(b, "%u", v);
         return b;
     }
+
+    // ФАУ устройства пишут двумя шестнадцатеричными цифрами.
+    std::string hex2_str(unsigned v)
+    {
+        char b[8];
+        std::sprintf(b, "%02X", v & 0xFF);
+        return b;
+    }
 }
 
 // Образ CONVERT — одно описание формата и ничего кроме него
@@ -891,6 +899,87 @@ bool Interp::do_if_end(Stream & st)
     if (!end_seen_) return true;
     end_seen_ = false;
     return jump(bcd2(a) * 100 + bcd2(b));
+}
+
+// --- блочный обмен с устройством: DATA SAVE BT и DATA LOAD BT ---------------
+
+// Устройство задаётся приставкой. Форм три:
+//
+//   * `/<а.в.>` — байт `DC` и **выражение**: в корпусе там и однобайтовый
+//     литерал (`/34` = `DC DE 34`, VICT 2190), и переменная (`DC 0B`,
+//     DISSM 7382) — программа вычисляет адрес сама;
+//   * `#<а.в.>` — байт `DB`, номер строки таблицы устройств;
+//   * ничего — тогда берётся группа `TAPE`: «TAPE — устройство ввода и
+//     вывода для операторов DATA LOAD BT и DATA SAVE BT» (разд. 11.5).
+bool Interp::bt_prefix(Stream & st, unsigned & addr)
+{
+    uint8_t b = 0;
+    if (st.src.peek_raw_byte(b) && (b == 0xDC || b == 0xDB)) {
+        st.src.skip(1);
+        Number n;
+        if (!st.ev.number(n)) return fail(st.ev.error());
+        long v = 0;
+        if (!n.floor_to_int(v) || v < 0 || v > 255)
+            return fail("BT: адрес устройства вне 0…255");
+        if (b == 0xDC) {
+            addr = static_cast<unsigned>(v);
+        } else {
+            if (!DeviceTable::valid_row(static_cast<unsigned>(v)))
+                return fail("BT: строки " + num_str(static_cast<unsigned>(v)) +
+                            " в таблице устройств нет");
+            addr = dev_.row(static_cast<unsigned>(v)).addr;
+        }
+        // Запятая после приставки читается в позиции операции.
+        Tok t;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t == Tok::COMMA) st.ev.parser().consume();
+        else st.ev.parser().unpeek();
+        return true;
+    }
+    addr = dev_.addr(DG_TAPE);
+    return true;
+}
+
+// «TAPE — устройство ввода и вывода для операторов DATA LOAD BT и
+// DATA SAVE BT» (руководство, разд. 11.5). Сами операторы книга не
+// описывает: шлют и принимают блок байтов, без всякой служебной разметки —
+// в отличие от `DATA SAVE DC`, где у записи есть заголовки значений.
+bool Interp::do_block_transfer(Stream & st, bool load)
+{
+    unsigned addr = 0;
+    if (!bt_prefix(st, addr)) return false;
+
+    while (!st.src.at_end()) {
+        if (load) {
+            Evaluator::Target target;
+            if (!st.ev.target(target, true)) return fail(st.ev.error());
+            if (!target.is_str || !target.data)
+                return fail("DATA LOAD BT: приёмник не символьный");
+            std::vector<uint8_t> buf(target.len ? target.len : 1, 0);
+            if (!host_.device_read(static_cast<uint8_t>(addr), &buf[0], target.len))
+                return fail("DATA LOAD BT: устройства /" + hex2_str(addr) +
+                            " у хоста нет");
+            std::string & field = *target.data;
+            for (unsigned i = 0; i < target.len; ++i)
+                field[target.off + i] = static_cast<char>(buf[i]);
+        } else {
+            Value v;
+            if (!st.ev.expr(v)) return fail(st.ev.error());
+            if (!v.is_str) return fail("DATA SAVE BT: значение не символьное");
+            if (!v.str.empty() &&
+                !host_.device_write(static_cast<uint8_t>(addr),
+                                    reinterpret_cast<const uint8_t *>(v.str.data()),
+                                    static_cast<unsigned>(v.str.size())))
+                return fail("DATA SAVE BT: устройства /" + hex2_str(addr) +
+                            " у хоста нет");
+        }
+
+        Tok t;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t != Tok::COMMA) { st.ev.parser().unpeek(); break; }
+        st.ev.parser().consume();
+    }
+    return true;
 }
 
 // --- режим абсолютной адресации секторов (разд. 18.9) -----------------------
@@ -3334,6 +3423,8 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x76: return do_dsave(st);
         case 0x77: return do_dclose(st);
         case 0x1E: return do_if_end(st);
+        case 0x68: return do_block_transfer(st, false);
+        case 0x66: return do_block_transfer(st, true);
         case 0x6E: return do_block(st, false);
         case 0x70: return do_block(st, true);
         case 0x6F: return do_abs_record(st, false);

@@ -133,6 +133,9 @@ private:
     bool store_next(Stream & st, bool has_target,
                     const Evaluator::Target & target, unsigned next);
     bool do_block(Stream & st, bool load);
+    // Блочный обмен с устройством по ФАУ: DATA SAVE/LOAD BT.
+    bool bt_prefix(Stream & st, unsigned & addr);
+    bool do_block_transfer(Stream & st, bool load);
     bool do_abs_record(Stream & st, bool load);
     bool do_verify(Stream & st);
     bool do_dload(Stream & st);

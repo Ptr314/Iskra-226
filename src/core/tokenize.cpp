@@ -554,14 +554,22 @@ bool StmtEncoder::disk_prefix(Encoder & enc, std::vector<uint8_t> & out,
     // `¤` — контрольное считывание после записи (руководство, разд. 5.2).
     if (lex_.take_char('$')) out.push_back(0xD6);
     if (lex_.take_char('/')) {
-        unsigned a = 0;
-        if (!lex_.take_hex2(a)) return err("нет адреса устройства после «/»");
+        // За `DC` идёт выражение: `/34` это однобайтовый литерал `DE 34`
+        // (VICT 2190), а `DC 0B` — переменная (DISSM 7382), программа
+        // вычисляет адрес сама. Две шестнадцатеричные цифры пробуем первыми:
+        // адреса устройств пишут именно так, и `/0C` иначе разобралось бы
+        // как «ноль» и имя.
         out.push_back(0xDC);
-        out.push_back(0xDE);
-        out.push_back(static_cast<uint8_t>(a));
+        unsigned a = 0;
+        if (lex_.take_hex2(a)) {
+            out.push_back(0xDE);
+            out.push_back(static_cast<uint8_t>(a));
+        } else if (!enc.expr()) {
+            return err("нет адреса устройства после «/»");
+        }
         // Запятая за адресом кодируется: `DATA SAVE BT /34,W¤` = 68 05
         // DC DE 34 DE 0F (VICT 2190).
-        if (lex_.take_char(',')) out.push_back(0xDE);
+        if (take_sep(enc, Tok::COMMA) || lex_.take_char(',')) out.push_back(0xDE);
     }
     if (lex_.take_char('#')) {
         out.push_back(0xDB);

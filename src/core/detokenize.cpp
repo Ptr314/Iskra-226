@@ -412,12 +412,23 @@ bool disk_prefix(Decoder & d, ByteSource & src, bool with_device)
     if (src.peek_raw_byte(b) && b == 0xD6) { src.skip(1); d.emit("$"); }
     if (src.peek_raw_byte(b) && b == 0xDC) {
         src.skip(1);
-        uint8_t de = 0, addr = 0;
-        if (!src.take_raw_byte(de) || de != 0xDE) return false;
-        if (!src.take_raw_byte(addr)) return false;
         d.emit("/");
-        d.emit(std::string(1, HEXD[addr >> 4]) + HEXD[addr & 15]);
-        if (src.peek_raw_byte(b) && b == 0xDE) { src.skip(1); d.emit(","); }
+        // За `DC` идёт выражение. Однобайтовый литерал `DE hh` пишется
+        // двумя шестнадцатеричными цифрами — так адреса и записывают; всё
+        // прочее (в корпусе это переменная) выписывается как выражение.
+        uint8_t addr = 0;
+        if (src.peek_raw_byte(b) && b == 0xDE) {
+            src.skip(1);
+            if (!src.take_raw_byte(addr)) return false;
+            d.emit(std::string(1, HEXD[addr >> 4]) + HEXD[addr & 15]);
+            if (src.peek_raw_byte(b) && b == 0xDE) { src.skip(1); d.emit(","); }
+        } else {
+            if (!d.expr()) return false;
+            Tok t;
+            if (!d.parser().peek(t, false)) return false;
+            if (t.t == Tok::COMMA) { d.parser().consume(); d.emit(","); }
+            else d.parser().unpeek();
+        }
     }
     if (src.peek_raw_byte(b) && b == 0xDB) {
         src.skip(1);
@@ -1215,6 +1226,7 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             if (!disk_prefix(d, src, true)) { error = "приставка устройства"; return false; }
             Tok t;
             if (!d.parser().peek(t, true)) { error = d.error(); return false; }
+            if (t.t == Tok::END) return true;
             if (t.t == Tok::LPAR) {
                 d.parser().consume();
                 d.emit("(");
@@ -1231,6 +1243,10 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
                     return false;
                 }
                 d.emit(")");
+            } else {
+                // Заглянутую лексему надо вернуть: конец операндов
+                // спрашивают у разборщика, а не у источника (CLAUDE.md).
+                d.parser().unpeek();
             }
             if (src.at_end()) return true;
             uint8_t e = 0;
