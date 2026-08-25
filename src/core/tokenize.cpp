@@ -538,6 +538,9 @@ private:
     bool deffn(unsigned & verb, std::vector<uint8_t> & out);
     // Хвост из номеров строк у SAVE DC и LOAD DC: сырые пары BCD через `DE`.
     bool line_tail(Encoder & enc, std::vector<uint8_t> & out);
+    // Конец элемента группы `PLOT`: ближайшие `,` или `>` вне скобок и
+    // вне литерала.
+    unsigned element_end() const;
 
     TextLexer & lex_;
     std::string error_;
@@ -573,6 +576,25 @@ bool StmtEncoder::deffn(unsigned & verb, std::vector<uint8_t> & out)
         return err("DEFFN без знака равенства");
     if (!enc.expr()) return err(enc.error());
     return true;
+}
+
+unsigned StmtEncoder::element_end() const
+{
+    unsigned p = lex_.pos();
+    const unsigned e = lex_.end();
+    unsigned depth = 0;
+    bool in_str = false;
+    while (p < e) {
+        const char c = lex_.text()[p];
+        if (c == '"') in_str = !in_str;
+        else if (!in_str) {
+            if (c == '(') ++depth;
+            else if (c == ')') { if (!depth) break; --depth; }
+            else if (!depth && (c == ',' || c == '>')) break;
+        }
+        ++p;
+    }
+    return p;
 }
 
 std::string StmtEncoder::leading_word() const
@@ -1493,6 +1515,56 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         }
         if (t.t == Tok::MINUS) { enc.parser().consume(); out.push_back(0xE9); }
         return enc.lvalue() ? true : err(enc.error());
+    }
+
+    // `PLOT <x,y,перо>[,<…>]…` — подкод `06 00` (docs/format.md, разд. 5,
+    // «Подкод 06 00 — это PLOT»). Группа ограничена `D7` … `D4`, элементы и
+    // сами группы разделяются `DE`; любой элемент может быть пуст.
+    if (lex_.take_word("PLOT")) {
+        verb = 0x0600;
+        Encoder enc(lex_, out);
+        for (;;) {
+            if (!lex_.take_char('<')) return err("PLOT: группа не открыта");
+            out.push_back(0xD7);
+            unsigned k = 0;
+            for (;;) {
+                if (lex_.take_char('>')) break;
+                if (lex_.take_char(',')) {
+                    // Пустой элемент: `PLOT <,,R>` (SLIDE 5650).
+                    out.push_back(0xDE);
+                    ++k;
+                    continue;
+                }
+
+                // Третий элемент — перо. Буква там значит метку, а не
+                // переменную: у машины та же неоднозначность, и решает её
+                // только место в группе.
+                unsigned pen = 0;
+                if (k != 2 || !lex_.take_pen(pen)) {
+                    // Границу элемента ищем сами: `>` внутри выражения —
+                    // знак сравнения, и разборщик съел бы вместе с ним
+                    // закрывающую скобку группы.
+                    const unsigned stop = element_end();
+                    const unsigned save = lex_.end();
+                    lex_.set_end(stop);
+                    const bool ok = enc.expr();
+                    enc.parser().reset();
+                    lex_.set_end(save);
+                    lex_.set_pos(stop);
+                    if (!ok) return err(enc.error());
+                } else {
+                    out.push_back(static_cast<uint8_t>(pen));
+                }
+
+                if (lex_.take_char('>')) break;
+                if (!lex_.take_char(',')) return err("PLOT: группа не закрыта");
+                out.push_back(0xDE);
+                ++k;
+            }
+            out.push_back(0xD4);
+            if (!lex_.take_char(',')) return true;
+            out.push_back(0xDE);
+        }
     }
 
     // --- операторы со знаком ¤ и графика ------------------------------------

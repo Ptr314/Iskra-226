@@ -56,8 +56,10 @@ public:
     Decoder(ByteSource & src, const NameTable & names, std::string & out)
         : ex_(src), src_(src), names_(names), out_(out) {}
 
-    // Выражение до разделителя уровня оператора.
-    bool expr();
+    // Выражение до разделителя уровня оператора. stop_at_gt — остановиться
+    // ещё и на `D4`: внутри группы `PLOT` это закрывающая скобка группы, а
+    // не знак «больше» (docs/format.md, разд. 5).
+    bool expr(bool stop_at_gt = false);
     // Приёмник: переменная, элемент массива либо STR(. by_table — решать
     // «скаляр или массив» строго по таблицам, без заглядывания вперёд:
     // нужно там, где за приёмником сразу идёт значение (CLAUDE.md).
@@ -334,7 +336,7 @@ bool Decoder::token(const Tok & t, bool operand_expected, bool & stop)
     return true;
 }
 
-bool Decoder::expr()
+bool Decoder::expr(bool stop_at_gt)
 {
     bool first = true;
     for (;;) {
@@ -349,7 +351,8 @@ bool Decoder::expr()
         if (!ex_.peek(t, as_operand)) return fail(ex_.error());
         if (t.t == Tok::COMMA || t.t == Tok::SEMI || t.t == Tok::RPAR
             || t.t == Tok::KW_TO || t.t == Tok::KW_STEP || t.t == Tok::KW_THEN
-            || t.t == Tok::KW_GOTO || t.t == Tok::KW_GOSUB)
+            || t.t == Tok::KW_GOTO || t.t == Tok::KW_GOSUB
+            || (stop_at_gt && t.t == Tok::GT))
             return !first || fail("выражение пусто");
 
         ex_.consume();
@@ -1088,6 +1091,50 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
                 if (!d.expr()) { error = d.error(); return false; }
             }
             return true;
+        }
+
+        case 0x0600: {                                 // PLOT
+            // Группы `D7` … `D4`, элементы и группы через `DE`; любой
+            // элемент может быть пуст. Третий — перо: байты `E5`…`E9` это
+            // буквы `U`, `D`, `R`, `S`, `C` (пара SLIDE/SL2, строки
+            // 5650–5690 против 5660–5700).
+            d.emit("PLOT ");
+            for (bool firstg = true; ; firstg = false) {
+                uint8_t b = 0;
+                if (!firstg) d.emit(",");
+                if (!src.take_raw_byte(b) || b != 0xD7) {
+                    error = "PLOT: группа не открыта";
+                    return false;
+                }
+                d.emit("<");
+                unsigned k = 0;
+                for (;;) {
+                    if (!src.peek_raw_byte(b)) { error = "PLOT: группа не закрыта"; return false; }
+                    if (b == 0xD4) { src.skip(1); break; }
+                    if (b == 0xDE) { src.skip(1); d.emit(","); ++k; continue; }
+
+                    bool pen = false;
+                    if (k == 2 && b >= 0xE5 && b <= 0xE9) {
+                        const unsigned save = src.pos();
+                        src.skip(1);
+                        uint8_t nx = 0;
+                        if (src.peek_raw_byte(nx) && (nx == 0xD4 || nx == 0xDE)) {
+                            static const char PEN[] = "UDRSC";
+                            d.emit(std::string(1, PEN[b - 0xE5]));
+                            pen = true;
+                        } else {
+                            src.set_pos(save);
+                        }
+                    }
+                    if (!pen) {
+                        if (!d.expr(true)) { error = d.error(); return false; }
+                        d.parser().unpeek();
+                    }
+                }
+                d.emit(">");
+                if (!src.peek_raw_byte(b) || b != 0xDE) return true;
+                src.skip(1);
+            }
         }
 
         case 0x0603:                                   // MAT READ

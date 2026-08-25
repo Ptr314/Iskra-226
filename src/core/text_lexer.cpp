@@ -107,6 +107,21 @@ bool TextLexer::take_word(const char * w)
     return true;
 }
 
+bool TextLexer::take_pen(unsigned & out)
+{
+    skip_spaces();
+    if (p_ >= end_) return false;
+    static const char LETTERS[] = "UDRSC";      // байты E5…E9 по порядку
+    const char * at = std::strchr(LETTERS, s_[p_]);
+    if (!at || !s_[p_]) return false;
+    unsigned q = p_ + 1;
+    while (q < end_ && s_[q] == ' ') ++q;
+    if (q >= end_ || (s_[q] != ',' && s_[q] != '>')) return false;
+    out = 0xE5u + static_cast<unsigned>(at - LETTERS);
+    p_ = q;
+    return true;
+}
+
 bool TextLexer::take_fn_name(unsigned & out)
 {
     skip_spaces();
