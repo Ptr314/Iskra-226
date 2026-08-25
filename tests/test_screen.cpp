@@ -176,17 +176,11 @@ void test_koi8()
 
 void test_font()
 {
-    for (unsigned h = 8; h <= 16; ++h) {
-        const Font * f = Font::by_height(h);
-        const bool expected = (h == 8 || h == 14 || h == 16);
-        CHECK(expected == (f != 0));
-    }
-
-    // Достоверный знакогенератор — глиф 7x8 в знакоместе 8x10.
+    // Знакогенератор самой «Искры» — глиф 5x8 в знакоместе 6x10.
     const Font & f = Font::standard();
-    CHECK_EQ(f.width(), 7u);
+    CHECK_EQ(f.width(), 5u);
     CHECK_EQ(f.height(), 8u);
-    CHECK_EQ(f.cell_width(), 8u);
+    CHECK_EQ(f.cell_width(), 6u);
     CHECK_EQ(f.cell_height(), 10u);
 
     // Пробел пуст, буквы — нет.
@@ -194,41 +188,47 @@ void test_font()
     for (unsigned y = 0; y < f.height(); ++y) {
         if (f.glyph(0x20)[y]) space_blank = false;
         if (f.glyph('A')[y])  letter_blank = false;
-        if (f.glyph(0xE1)[y]) cyr_blank = false;
+        if (f.glyph(0x61)[y]) cyr_blank = false;      // А кириллическая
     }
     CHECK(space_blank);
     CHECK(!letter_blank);
     CHECK(!cyr_blank);
 
-    // Младший бит байта развёртки не занят вовсе: глиф семиточечный и
-    // прижат влево.
+    // Три младших бита байта развёртки не заняты вовсе: глиф пятиточечный
+    // и прижат влево.
     unsigned stray = 0;
-    for (unsigned c = 0; c < 256; ++c)
+    for (unsigned c = 0; c < FONT_GLYPHS; ++c)
         for (unsigned y = 0; y < f.height(); ++y)
-            if (f.glyph(static_cast<unsigned char>(c))[y] & 1) ++stray;
+            if (f.glyph(static_cast<unsigned char>(c))[y] & 0x07) ++stray;
     CHECK_EQ(stray, 0u);
 
-    // В позиции 0x24 «Искра» высвечивает ¤, а не доллар. У этого
-    // знакогенератора так и есть в исходнике, подменять нечего: верхняя
-    // строка пуста, а у доллара там перемычка.
-    CHECK_EQ(f.glyph(0x24)[0], 0u);
-    CHECK(f.dot(0x24, 0, 1) && f.dot(0x24, 6, 1));
-
-    // Крупные шрифты — восьмиточечные, знакоместо равно глифу, и там 0x24
-    // подменяется на лету: в консольном PSF лежит доллар.
-    const Font & big = *Font::by_height(16);
-    CHECK_EQ(big.width(), 8u);
-    CHECK_EQ(big.cell_width(), 8u);
-    CHECK_EQ(big.glyph(0x24)[0], 0u);
-    CHECK_EQ(big.glyph(0x24)[big.height() - 1], 0u);
-    CHECK(big.glyph(0x24)[8] != 0);
-
-    // Строчная и прописная кириллица различаются — литералы в апострофах
-    // на «Искре» бывают строчными.
-    bool same = true;
+    // Старший бит кода отбрасывается: КОИ-8 E1 и КОИ-7 Н2 61 — одна и та же
+    // прописная А, и глиф у них общий.
+    bool aliased = true;
     for (unsigned y = 0; y < f.height(); ++y)
-        if (f.glyph(0xC1)[y] != f.glyph(0xE1)[y]) same = false;
-    CHECK(!same);
+        if (f.glyph(0xE1)[y] != f.glyph(0x61)[y]) aliased = false;
+    CHECK(aliased);
+
+    // Верхняя строка знакоместа пуста у всех 96 знаков: сам глиф 5x7.
+    unsigned topmost = 0;
+    for (unsigned c = 0; c < FONT_GLYPHS; ++c)
+        if (f.glyph(static_cast<unsigned char>(c))[0]) ++topmost;
+    CHECK_EQ(topmost, 0u);
+
+    // В позиции 0x24 «Искра» высвечивает ¤, а не доллар, — так на рисунке
+    // 3.1 и есть, подменять нечего.
+    CHECK(f.dot(0x24, 0, 1) && f.dot(0x24, 4, 1));
+    CHECK(!f.dot(0x24, 0, 2) && !f.dot(0x24, 4, 2));
+
+    // 5F — не подчёркивание, а Ъ; 7F пуст. Оба отличия от КОИ-7 Н2 видны
+    // прямо на рисунке.
+    bool hard_blank = true, del_blank = true;
+    for (unsigned y = 0; y < f.height(); ++y) {
+        if (f.glyph(0x5F)[y]) hard_blank = false;
+        if (f.glyph(0x7F)[y]) del_blank = false;
+    }
+    CHECK(!hard_blank);
+    CHECK(del_blank);
 }
 
 // --- Хост ------------------------------------------------------------------

@@ -83,7 +83,9 @@ std::string HeadlessHost::dump() const
     for (unsigned r = 1; r <= SCREEN_ROWS; ++r) {
         unsigned len = 0;
         for (unsigned c = 1; c <= SCREEN_COLS; ++c) {
-            line[c - 1] = screen_.cell(r, c).ch;
+            // В ячейке лежит КОИ-7 Н2, а koi8_to_utf8 ждёт КОИ-8: у
+            // прописной кириллицы это разные половины таблицы.
+            line[c - 1] = koi7_to_koi8(screen_.cell(r, c).ch);
             if (line[c - 1] != 0x20) len = c;
         }
         koi8_to_utf8(line, len, out);

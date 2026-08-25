@@ -27,11 +27,19 @@ inline uint32_t pack_rgb(uint8_t r, uint8_t g, uint8_t b)
 // систему не знает ничего — оконному хосту остаётся завести окно, разобрать
 // события и вывалить готовый кадр.
 //
-// Точка экрана «Искры» выше своей ширины ровно вдвое. Отсюда и знакоместо
-// 8x10: кадр выходит 640x240, а на экране — 640k x 480k, то есть **4:3 при
-// любом целом k**. Отношение сторон трубки книгой не описано; двойка выбрана
-// так, чтобы 4:3 получалось без дробного растяжения (CLAUDE.md, «Допущения»).
-const unsigned DOT_TALL = 2;
+// **Растр экрана — 512x256.** Границы известны из корпуса: `NPLOT B¤(),498,0`
+// и `NPLOT B6¤(),0,245` при `SELECT PLOT` = `10`, то есть сама трубка, а не
+// графопостроитель (CLAUDE.md, «Что уже известно про машину»). Знакоместа
+// живут на том же растре: 80x24 при поле 6x10 дают 480x240, и текстовый блок
+// стоит посреди кадра — по 16 точек полей слева и справа, по 8 сверху и
+// снизу.
+const unsigned RASTER_WIDTH  = 512;
+const unsigned RASTER_HEIGHT = 256;
+
+// Точка пока квадратная: отношение сторон трубки книгой не описано вовсе, а
+// растр 512x256 сам по себе 2:1. Прежде здесь стояла двойка — она подгоняла
+// кадр 640x240 под 4:3, — но подгонять больше нечего, и сжатия убраны.
+const unsigned DOT_TALL = 1;
 
 // Увеличение только целое: экран знакоместный, и сглаживание ему во вред.
 // Дробное растяжение однопиксельному шрифту противопоказано — штрихи выходят
@@ -46,9 +54,8 @@ class Renderer
 public:
     Renderer();
 
-    void set_font(const Font & f) { font_ = &f; }
-
-    // Увеличение по осям порознь: точка не квадратная.
+    // Увеличение по осям порознь: точка сейчас квадратная, но `DOT_TALL`
+    // держится отдельной величиной, и хост множит вертикаль на неё.
     void set_scale(unsigned x, unsigned y)
     {
         scale_x_ = x ? x : 1;
@@ -67,10 +74,26 @@ public:
     unsigned scale_x() const { return scale_x_; }
     unsigned scale_y() const { return scale_y_; }
 
-    // Кадр меряется знакоместами, а не глифами: у достоверного шрифта поле
-    // шире и выше глифа, и межбуквенный просвет живёт именно там.
-    unsigned width() const  { return SCREEN_COLS * font_->cell_width()  * scale_x_; }
-    unsigned height() const { return SCREEN_ROWS * font_->cell_height() * scale_y_; }
+    // Текстовый блок меряется знакоместами, а не глифами: у знакогенератора
+    // «Искры» поле шире и выше глифа, и межбуквенный просвет живёт именно
+    // там. При поле 6x10 это 480x240.
+    unsigned text_width() const  { return SCREEN_COLS * font_->cell_width(); }
+    unsigned text_height() const { return SCREEN_ROWS * font_->cell_height(); }
+
+    // Кадр — растр трубки, 512x256. Блок в него влезает по построению;
+    // максимум здесь страхует поля от ухода в минус, если знакоместо
+    // когда-нибудь окажется больше.
+    unsigned frame_width() const
+    { return text_width() > RASTER_WIDTH ? text_width() : RASTER_WIDTH; }
+    unsigned frame_height() const
+    { return text_height() > RASTER_HEIGHT ? text_height() : RASTER_HEIGHT; }
+
+    // Поля вокруг текстового блока: он стоит посреди растра.
+    unsigned margin_x() const { return (frame_width()  - text_width())  / 2; }
+    unsigned margin_y() const { return (frame_height() - text_height()) / 2; }
+
+    unsigned width() const  { return frame_width()  * scale_x_; }
+    unsigned height() const { return frame_height() * scale_y_; }
     unsigned pixels() const { return width() * height(); }
 
     // Нарисовать кадр целиком. pitch — длина строки буфера в точках, а не

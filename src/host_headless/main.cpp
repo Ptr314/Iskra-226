@@ -52,7 +52,7 @@ int usage()
 {
     out("Искра-226 — хост без окна\n\n"
         "  iskra --screen            проверка экрана и знакогенератора\n"
-        "  iskra --chart [8|14|16]   таблица кодов КОИ-8; без числа — 7x8\n"
+        "  iskra --chart             таблица кодов КОИ-7 Н2 растром\n"
         "  iskra --list ОБРАЗ        каталог образа дискеты\n"
         "  iskra --cat ОБРАЗ ИМЯ     листинг программы с образа\n"
         "  iskra --detok ФАЙЛ        листинг ранее извлечённого файла\n"
@@ -116,19 +116,13 @@ int cmd_screen()
 }
 
 // Таблица кодов растром знакогенератора: колонки — старшая цифра кода.
-int cmd_chart(unsigned height)
+int cmd_chart()
 {
-    // Без числа — достоверный знакогенератор; с числом — крупный.
-    const iskra::Font * f = height ? iskra::Font::by_height(height)
-                                   : &iskra::Font::standard();
-    if (!f) {
-        std::printf("нет знакогенератора высотой %u (есть 8, 14, 16)\n", height);
-        return 1;
-    }
+    const iskra::Font * f = &iskra::Font::standard();
 
-    std::printf("знакогенератор %ux%u в знакоместе %ux%u, коды 20-FF\n\n",
+    std::printf("знакогенератор %ux%u в знакоместе %ux%u, коды 20-7F\n\n",
                 f->width(), f->height(), f->cell_width(), f->cell_height());
-    for (unsigned base = 0x20; base < 0x100; base += 0x10) {
+    for (unsigned base = 0x20; base < iskra::FONT_GLYPHS; base += 0x10) {
         std::printf("      ");
         for (unsigned i = 0; i < 16; ++i) std::printf("%02X       ", base + i);
         std::printf("\n");
@@ -146,7 +140,6 @@ int cmd_chart(unsigned height)
     }
     return 0;
 }
-
 
 bool read_file_bytes(const char * path, std::string & out)
 {
@@ -623,6 +616,11 @@ private:
             utf8.resize(utf8.size() - 1);
         pending_.clear();
         iskra::utf8_to_koi8(utf8, pending_);
+        // Строчных букв у машины нет ни одной: клавиша выдаёт прописную
+        // (core/koi8.h, «семибитная граница машины»).
+        for (std::size_t i = 0; i < pending_.size(); ++i)
+            pending_[i] = static_cast<char>(
+                iskra::koi8_upper(static_cast<uint8_t>(pending_[i])));
         pending_ += '\r';
         pos_ = 0;
         return true;
@@ -690,11 +688,7 @@ int main(int argc, char ** argv)
 
     if (cmd == "--screen") return cmd_screen();
 
-    if (cmd == "--chart") {
-        unsigned h = 0;                 // 0 — достоверный знакогенератор
-        if (argc > 2) h = static_cast<unsigned>(std::atoi(argv[2]));
-        return cmd_chart(h);
-    }
+    if (cmd == "--chart") return cmd_chart();
 
     if (cmd == "--list" && argc > 2) return cmd_list(argv[2]);
     if (cmd == "--cat" && argc > 3) return cmd_cat(argv[2], argv[3]);

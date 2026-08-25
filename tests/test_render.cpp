@@ -36,6 +36,13 @@ struct Frame
     }
 };
 
+// Точка текстового блока: он стоит посреди растра трубки, и от начала кадра
+// его отделяют поля.
+uint32_t text_at(const Frame & f, const Renderer & r, unsigned x, unsigned y)
+{
+    return f.at(r.margin_x() * r.scale_x() + x, r.margin_y() * r.scale_y() + y);
+}
+
 Renderer make(unsigned sx, unsigned sy)
 {
     Renderer r;
@@ -48,9 +55,10 @@ Renderer make(unsigned scale) { return make(scale, scale); }
 
 // Сверка знакоместа с знакогенератором: точка в точку, включая поля.
 // Возвращает число расхождений. inv — знакоместо выделено позитивом.
-unsigned check_cell(const Frame & f, const Font & font, unsigned col,
+unsigned check_cell(const Frame & f, const Renderer & r, unsigned col,
                     unsigned row, unsigned char code, bool inv)
 {
+    const Font & font = r.font();
     unsigned bad = 0;
     for (unsigned y = 0; y < font.cell_height(); ++y)
         for (unsigned x = 0; x < font.cell_width(); ++x) {
@@ -59,40 +67,48 @@ unsigned check_cell(const Frame & f, const Font & font, unsigned col,
                 y >= font.offset_y() && y - font.offset_y() < font.height())
                 on = font.dot(code, x - font.offset_x(), y - font.offset_y());
             const uint32_t want = (on != inv) ? FG : BG;
-            if (f.at(col * font.cell_width() + x,
-                     row * font.cell_height() + y) != want) ++bad;
+            if (text_at(f, r, col * font.cell_width() + x,
+                        row * font.cell_height() + y) != want) ++bad;
         }
     return bad;
 }
 
-// Достоверный знакогенератор — глиф 7x8 в знакоместе 8x10, значит 80x24
-// знакомест дают 640x240 точки. А раз точка вдвое выше своей ширины, на
-// экране это 640k x 480k — **ровно 4:3 при любом целом k**, без дробного
-// растяжения.
+// Знакогенератор «Искры» — глиф 5x8 в знакоместе 6x10, значит 80x24
+// знакомест дают текстовый блок 480x240. Кадр при этом — растр трубки,
+// 512x256, и блок стоит посреди него: по 16 точек полей слева и справа,
+// по 8 сверху и снизу.
 void test_size()
 {
     Renderer r = make(1);
-    CHECK_EQ(r.font().width(), 7u);
+    CHECK_EQ(r.font().width(), 5u);
     CHECK_EQ(r.font().height(), 8u);
-    CHECK_EQ(r.font().cell_width(), 8u);
+    CHECK_EQ(r.font().cell_width(), 6u);
     CHECK_EQ(r.font().cell_height(), 10u);
     CHECK_EQ(r.font().offset_x(), 0u);
     CHECK_EQ(r.font().offset_y(), 0u);
 
-    CHECK_EQ(r.width(), 640u);
-    CHECK_EQ(r.height(), 240u);
-    CHECK_EQ(r.pixels(), 640u * 240u);
+    CHECK_EQ(r.text_width(), 480u);
+    CHECK_EQ(r.text_height(), 240u);
+    CHECK_EQ(r.frame_width(), RASTER_WIDTH);
+    CHECK_EQ(r.frame_height(), RASTER_HEIGHT);
+    CHECK_EQ(r.margin_x(), 16u);
+    CHECK_EQ(r.margin_y(), 8u);
 
-    // Увеличение по осям порознь; с DOT_TALL по вертикали выходит 4:3.
+    CHECK_EQ(r.width(), 512u);
+    CHECK_EQ(r.height(), 256u);
+    CHECK_EQ(r.pixels(), 512u * 256u);
+
+    // Точка квадратная: сжатий больше нет.
+    CHECK_EQ(DOT_TALL, 1u);
     for (unsigned k = 1; k <= 4; ++k) {
         r.set_scale(k, k * DOT_TALL);
-        CHECK_EQ(r.width(), 640u * k);
-        CHECK_EQ(r.height(), 480u * k);
-        CHECK_EQ(r.width() * 3u, r.height() * 4u);
+        CHECK_EQ(r.width(), 512u * k);
+        CHECK_EQ(r.height(), 256u * k);
     }
 }
 
 // Чистый экран — это 80x24 пробела, и ни одной светлой точки на кадре.
+// Поля вокруг текстового блока тоже тёмные, а не мусор буфера.
 void test_blank()
 {
     Screen s;
@@ -117,10 +133,10 @@ void test_glyph()
     const Frame f(r, s);
     const Font & font = r.font();
 
-    CHECK_EQ(check_cell(f, font, 2, 1, 0x41, false), 0u);
+    CHECK_EQ(check_cell(f, r, 2, 1, 0x41, false), 0u);
     // Соседние знакоместа остались пробелами.
-    CHECK_EQ(check_cell(f, font, 3, 1, 0x20, false), 0u);
-    CHECK_EQ(check_cell(f, font, 2, 0, 0x20, false), 0u);
+    CHECK_EQ(check_cell(f, r, 3, 1, 0x20, false), 0u);
+    CHECK_EQ(check_cell(f, r, 2, 0, 0x20, false), 0u);
 
     unsigned lit = 0;
     for (unsigned y = 0; y < font.height(); ++y)
@@ -131,9 +147,9 @@ void test_glyph()
 
 // Поля знакоместа — не часть глифа: столбец справа от глифа и две нижние
 // строки развёртки остаются фоном, что бы в знакоместе ни стояло. Из этого
-// и получается просвет между буквами и между строками. Глиф 7 точек в
-// знакоместе 8 — значит между соседними знаками ровно один тёмный столбец,
-// и даже подряд идущие `Ш` не сливаются.
+// и получается просвет между буквами и между строками. Глиф 5 точек в
+// знакоместе 6 — значит между соседними знаками ровно один тёмный столбец,
+// и подряд идущие `Ш` не сливаются.
 void test_cell_margins()
 {
     Screen s;
@@ -152,28 +168,29 @@ void test_cell_margins()
             for (unsigned x = 0; x < cw; ++x) {
                 if (x >= font.offset_x() && x - font.offset_x() < font.width())
                     continue;
-                if (f.at(c * cw + x, y) != BG) ++lit;
+                if (text_at(f, r, c * cw + x, y) != BG) ++lit;
             }
     CHECK_EQ(lit, 0u);
     CHECK_EQ(cw - font.width(), 1u);   // ровно один столбец просвета
 
     for (unsigned x = 0; x < 3 * cw; ++x) {
-        CHECK_EQ(f.at(x, font.height()), BG);          // межстрочный интервал
-        CHECK_EQ(f.at(x, chh - 1), BG);                // строка курсора
+        CHECK_EQ(text_at(f, r, x, font.height()), BG); // межстрочный интервал
+        CHECK_EQ(text_at(f, r, x, chh - 1), BG);       // строка курсора
     }
 
     // Крайние столбцы самого `Ш` горят — значит просвет держится полем, а
     // не пустотой внутри глифа.
-    CHECK(font.dot(0xFB, 0, 0));
-    CHECK(font.dot(0xFB, font.width() - 1, 0));
+    CHECK(font.dot(0xFB, 0, 1));
+    CHECK(font.dot(0xFB, font.width() - 1, 1));
 }
 
-// Кириллица — половина всего, что «Искра» показывает. Ъ в исходном ПЗУ не
-// было (там сплошная заливка), он дорисован — и должен быть буквой.
+// Кириллица — половина всего, что «Искра» показывает. Экран семибитный, и
+// строчных букв у него нет вовсе: «а» высвечивается как «А».
 void test_cyrillic()
 {
     Screen s;
     const uint8_t text[] = { 0xE1, 0xC1, 0xF0, 0xFF };   // «АаПЪ» в КОИ-8
+    const uint8_t want[] = { 0x61, 0x61, 0x70, 0x5F };   // то же в КОИ-7 Н2
     s.write(text, sizeof(text));
 
     const Renderer r = make(1);
@@ -181,35 +198,34 @@ void test_cyrillic()
     const Font & font = r.font();
 
     for (unsigned i = 0; i < sizeof(text); ++i) {
-        CHECK_EQ(check_cell(f, font, i, 0, text[i], false), 0u);
+        CHECK_EQ(s.cell(1, i + 1).ch, want[i]);
+        CHECK_EQ(check_cell(f, r, i, 0, want[i], false), 0u);
         unsigned lit = 0;
         for (unsigned y = 0; y < font.height(); ++y)
             for (unsigned x = 0; x < font.width(); ++x)
-                if (font.dot(text[i], x, y)) ++lit;
+                if (font.dot(want[i], x, y)) ++lit;
         CHECK(lit > 0);
     }
 
-    // «А» и «а» — разные знаки, а не один глиф на оба регистра.
-    bool same = true;
-    for (unsigned y = 0; y < font.height(); ++y)
-        if (font.glyph(0xE1)[y] != font.glyph(0xC1)[y]) same = false;
-    CHECK(!same);
-
-    // Ъ — не заливка: в исходном ПЗУ FF был закрашен целиком.
+    // Ъ у «Искры» стоит в позиции 5F — там, где у КОИ-7 Н2 подчёркивание, —
+    // и это буква, а не заливка. От Ь он отличается тем, что сдвинут на
+    // столбец вправо, а слева вверху добавлена перекладина.
     unsigned full = 0;
     for (unsigned y = 0; y < font.height(); ++y) {
         unsigned row = 0;
         for (unsigned x = 0; x < font.width(); ++x)
-            if (font.dot(0xFF, x, y)) ++row;
+            if (font.dot(0x5F, x, y)) ++row;
         if (row == font.width()) ++full;
     }
     CHECK_EQ(full, 0u);
-    // И он отличается от Ь ровно перекладиной в верхней строке.
-    unsigned diff = 0;
+    CHECK(font.dot(0x5F, 0, 1) && font.dot(0x5F, 1, 1));
+    CHECK(!font.dot(0x5F, 0, 2) && font.dot(0x5F, 1, 2));
+
+    // А позиция 7F, где у КОИ-7 Н2 стоит Ъ, у «Искры» пуста.
+    bool del_blank = true;
     for (unsigned y = 0; y < font.height(); ++y)
-        if (font.glyph(0xFF)[y] != font.glyph(0xF8)[y]) ++diff;
-    CHECK_EQ(diff, 1u);
-    CHECK(font.dot(0xFF, 0, 0));
+        if (font.glyph(0x7F)[y]) del_blank = false;
+    CHECK(del_blank);
 }
 
 // Позитив — выделение: тёмный знак на светлом поле (руководство, разд. 17.1).
@@ -223,7 +239,7 @@ void test_positive()
 
     const Renderer r = make(1);
     const Frame f(r, s);
-    CHECK_EQ(check_cell(f, r.font(), 0, 0, 0x41, true), 0u);
+    CHECK_EQ(check_cell(f, r, 0, 0, 0x41, true), 0u);
 }
 
 // Курсор — подстрочная черта (руководство, разд. 2.1: «указывается с помощью
@@ -240,24 +256,25 @@ void test_cursor()
     const unsigned last = font.cell_height() - 1;
 
     r.set_cursor(false);
-    CHECK_EQ(check_cell(Frame(r, s), font, 0, 0, 0x41, false), 0u);
+    CHECK_EQ(check_cell(Frame(r, s), r, 0, 0, 0x41, false), 0u);
 
     r.set_cursor(true);
     {
         const Frame f(r, s);
         // Нижняя строка знакоместа закрашена целиком, во всю его ширину.
         for (unsigned x = 0; x < font.cell_width(); ++x)
-            CHECK_EQ(f.at(x, last), FG);
+            CHECK_EQ(text_at(f, r, x, last), FG);
         // Сам знак курсор не трогает: строки выше остались как были.
         unsigned bad = 0;
         for (unsigned y = 0; y < font.height(); ++y)
             for (unsigned x = 0; x < font.width(); ++x) {
                 const uint32_t want = font.dot(0x41, x, y) ? FG : BG;
-                if (f.at(font.offset_x() + x, font.offset_y() + y) != want) ++bad;
+                if (text_at(f, r, font.offset_x() + x,
+                            font.offset_y() + y) != want) ++bad;
             }
         CHECK_EQ(bad, 0u);
         // Соседнее знакоместо курсором не задето.
-        CHECK_EQ(f.at(font.cell_width() + 3, last), BG);
+        CHECK_EQ(text_at(f, r, font.cell_width() + 3, last), BG);
     }
 
     // На выделенном знакоместе черта выходит тёмной на светлом — и всё равно
@@ -268,9 +285,12 @@ void test_cursor()
     p.at(1, 1);
     const Frame f(r, p);
     for (unsigned x = 0; x < font.cell_width(); ++x) {
-        CHECK_EQ(f.at(x, last), BG);
-        CHECK_EQ(f.at(x, 0), FG);      // остальное знакоместо — светлое поле
+        CHECK_EQ(text_at(f, r, x, last), BG);
+        // Остальное знакоместо — светлое поле; а вот за его краем снова
+        // тёмный растр: поля кадра выделением не задеты.
+        CHECK_EQ(text_at(f, r, x, 0), FG);
     }
+    CHECK_EQ(f.at(0, 0), BG);
 }
 
 // При увеличении каждая точка становится квадратом scale x scale.
@@ -287,33 +307,13 @@ void test_scale()
     unsigned mismatch = 0;
     for (unsigned y = 0; y < r1.font().cell_height(); ++y)
         for (unsigned x = 0; x < r1.font().cell_width(); ++x) {
-            const uint32_t want = f1.at(x, y);
+            const uint32_t want = text_at(f1, r1, x, y);
             for (unsigned dy = 0; dy < SY; ++dy)
                 for (unsigned dx = 0; dx < SX; ++dx)
-                    if (f3.at(x * SX + dx, y * SY + dy) != want) ++mismatch;
+                    if (text_at(f3, r3, x * SX + dx, y * SY + dy) != want)
+                        ++mismatch;
         }
     CHECK_EQ(mismatch, 0u);
-}
-
-// Крупные шрифты остаются доступными; у них знакоместо равно глифу.
-void test_large_font()
-{
-    const Font * big = Font::by_height(16);
-    CHECK(big != 0);
-    if (!big) return;
-
-    CHECK_EQ(big->width(), 8u);
-    CHECK_EQ(big->cell_width(), 8u);
-    CHECK_EQ(big->cell_height(), 16u);
-
-    Renderer r = make(1);
-    r.set_font(*big);
-    CHECK_EQ(r.width(), 640u);
-    CHECK_EQ(r.height(), 384u);
-
-    Screen s;
-    s.put(0x41);
-    CHECK_EQ(check_cell(Frame(r, s), *big, 0, 0, 0x41, false), 0u);
 }
 
 } // namespace
@@ -328,6 +328,5 @@ int main()
     test_positive();
     test_cursor();
     test_scale();
-    test_large_font();
     return test::summary("test_render");
 }

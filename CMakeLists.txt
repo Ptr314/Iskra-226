@@ -58,7 +58,7 @@ add_library(iskra_core STATIC
     src/core/screen.h           src/core/screen.cpp
 
     src/font/font.h             src/font/font.cpp
-    src/font/font_data.cpp      # генерируется tools/psf2c.py из src/font/*.psf
+    src/font/font_data.cpp      # генерируется tools/font2c.py из koi7-5x8.txt
 )
 target_include_directories(iskra_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(iskra_core PRIVATE iskra_warnings)

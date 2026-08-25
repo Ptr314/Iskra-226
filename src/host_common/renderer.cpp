@@ -35,6 +35,18 @@ void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch) const
     const unsigned cur_row = s.row();
     const unsigned cur_col = s.col();
 
+    // Поля вокруг текстового блока — часть растра трубки, а не пустота за
+    // краем кадра: их надо закрасить, иначе там останется мусор буфера.
+    // Закрашивается кадр целиком, вместе с местом под знаки: так короче, а
+    // лишний проход по 512x256 не стоит и десятой доли мига.
+    const unsigned mx = margin_x() * sx;
+    const unsigned my = margin_y() * sy;
+    if (mx || my)
+        for (unsigned y = 0; y < height(); ++y) {
+            uint32_t * line = out + y * pitch;
+            for (unsigned x = 0; x < width(); ++x) line[x] = bg_;
+        }
+
     for (unsigned r = 1; r <= SCREEN_ROWS; ++r) {
         for (unsigned c = 1; c <= SCREEN_COLS; ++c) {
             const Cell & cell = s.cell(r, c);
@@ -46,8 +58,8 @@ void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch) const
             const bool inv = cell.attr == ATTR_POSITIVE;
             const bool cursor_here = cursor_ && r == cur_row && c == cur_col;
 
-            uint32_t * cell_out = out + (r - 1) * ch * sy * pitch
-                                      + (c - 1) * cw * sx;
+            uint32_t * cell_out = out + (my + (r - 1) * ch * sy) * pitch
+                                      + mx + (c - 1) * cw * sx;
 
             for (unsigned y = 0; y < ch; ++y) {
                 uint32_t * line = cell_out + y * sy * pitch;

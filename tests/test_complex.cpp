@@ -150,17 +150,17 @@ void test_strings()
     const char * src =
         "10 DIM E\xC2\xA4""20,F\xC2\xA4(3)4\n"
         "20 E\xC2\xA4=\"ABCDEFGHIJ\":STR(E\xC2\xA4,1,2)=\"XY\"\n"
-        "30 PRINT STR(E\xC2\xA4,3,4);\"|\";STR(E\xC2\xA4,1,5)\n"
+        "30 PRINT STR(E\xC2\xA4,3,4);\"/\";STR(E\xC2\xA4,1,5)\n"
         "40 PRINT LEN(E\xC2\xA4);POS(E\xC2\xA4=\"C\");NUM(\"12A\")\n"
         "50 F\xC2\xA4(1)=\"AAAA\":F\xC2\xA4(2)=\"BBBB\":F\xC2\xA4(3)=\"CCCC\"\n"
-        "60 PRINT STR(F\xC2\xA4(),5,4);\"|\";STR(F\xC2\xA4(),1,12)\n";
+        "60 PRINT STR(F\xC2\xA4(),5,4);\"/\";STR(F\xC2\xA4(),1,12)\n";
     const std::string s = run(src, "строки");
     // STR( слева и справа от знака равенства в одной строке.
-    CHECK_STR(line_of(s, 1), "CDEF|XYCDE");
+    CHECK_STR(line_of(s, 1), "CDEF/XYCDE");
     CHECK_STR(line_of(s, 2), " 10  3  2");
     // «Символьный массив рассматривается как одна непрерывная строка»:
     // вырезка с 5-го байта попадает во второй элемент.
-    CHECK_STR(line_of(s, 3), "BBBB|AAAABBBBCCCC");
+    CHECK_STR(line_of(s, 3), "BBBB/AAAABBBBCCCC");
 }
 
 // --- функции, переходы, вложенные вызовы ------------------------------------
@@ -201,7 +201,7 @@ void test_bytes_and_print()
         "30 K\xC2\xA4=HEX(F0):OR(K\xC2\xA4,L\xC2\xA4):HEXPRINT STR(K\xC2\xA4,1,2)\n"
         "40 K\xC2\xA4=HEX(F0):XOR(K\xC2\xA4,FF):HEXPRINT STR(K\xC2\xA4,1,2)\n"
         "50 K\xC2\xA4=HEX(12):ROTATE(K\xC2\xA4,4):HEXPRINT STR(K\xC2\xA4,1,1)\n"
-        "60 M=1234.5:CONVERT M TO N\xC2\xA4,(#####.##):PRINT N\xC2\xA4;\"|\"\n"
+        "60 M=1234.5:CONVERT M TO N\xC2\xA4,(#####.##):PRINT N\xC2\xA4;\"/\"\n"
         "70 CONVERT N\xC2\xA4 TO P:PRINT P*2\n"
         "80 PRINT 1,2;3,,4\n"
         "90 PRINTUSING 100,7,8.25\n"
@@ -213,7 +213,7 @@ void test_bytes_and_print()
     CHECK_STR(line_of(s, 3), "0FDF");
     CHECK_STR(line_of(s, 4), "21");
     // CONVERT с образом заполняет незанятые разряды нулями.
-    CHECK_STR(line_of(s, 5), "01234.50        |");
+    CHECK_STR(line_of(s, 5), "01234.50        /");
     CHECK_STR(line_of(s, 6), " 2469");
     // Две запятые подряд пропускают зону; ширина зоны — 16 позиций.
     CHECK_STR(line_of(s, 7), " 1               2  3                            4");

@@ -44,7 +44,7 @@ enum Attr {
 };
 
 struct Cell {
-    uint8_t ch;     // код КОИ-8
+    uint8_t ch;     // код КОИ-7 Н2: экран семибитный, см. Screen::put
     uint8_t attr;
 };
 

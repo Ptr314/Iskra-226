@@ -102,6 +102,34 @@ bool utf8_to_koi8(const std::string & in, std::string & out)
     return ok;
 }
 
+uint8_t koi8_upper(uint8_t code)
+{
+    // В КОИ-8 регистр различает бит 0x20, но у кириллицы наоборот
+    // относительно латиницы: строчные лежат ниже (C0-DF), прописные выше.
+    if (code >= 'a' && code <= 'z') return static_cast<uint8_t>(code - 0x20);
+    if (code >= 0xC0 && code < 0xE0) return static_cast<uint8_t>(code + 0x20);
+    return code;
+}
+
+uint8_t koi8_to_koi7(uint8_t code)
+{
+    code = koi8_upper(code);
+    // Подчёркивание машине показать нечем: в позиции 5F у неё Ъ. Оставляем
+    // как есть — что напечатано, то и высветится, — а вот Ъ из КОИ-8 (FF)
+    // надо перевести на его настоящее место.
+    if (code == 0xFF) return 0x5F;
+    return static_cast<uint8_t>(code & 0x7F);
+}
+
+uint8_t koi7_to_koi8(uint8_t code)
+{
+    code = static_cast<uint8_t>(code & 0x7F);
+    if (code == 0x5F) return 0xFF;                          // Ъ
+    if (code == 0x7F) return 0x20;                          // пусто
+    if (code >= 0x60) return static_cast<uint8_t>(0xE0 + code - 0x60);
+    return code;
+}
+
 std::string koi8_to_utf8(const uint8_t * data, unsigned len)
 {
     std::string s;
