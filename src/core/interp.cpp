@@ -1194,6 +1194,84 @@ bool Interp::do_verify(Stream & st)
     return true;
 }
 
+// «Оператор COPY TO предназначен для копирования части или всего диска на
+// другой диск. Границы копируемой области (адреса граничных секторов) могут
+// задаваться в виде выражений. Если эти адреса не указаны, то копируется весь
+// диск полностью» (руководство, разд. 18.9.6).
+//
+// «В отличие от оператора MOVE, оператор COPY не удаляет при копировании
+// вычеркнутые файлы» — то есть это посекторное копирование как есть, и
+// каталог тут ни при чём.
+bool Interp::do_copy(Stream & st)
+{
+    Disk src;
+    if (!disk_prefix(st, true, src)) return false;
+
+    const unsigned total = host_.disk_sectors(src.drive);
+    unsigned from = 0, to = total ? total - 1 : 0;
+
+    // `TO` — байт D1. Пока выражения не разбирали, его видно сырым байтом;
+    // после разбора границ разделитель придётся брать уже у разборщика.
+    uint8_t b = 0;
+    bool has_to = false;
+    if (st.src.peek_raw_byte(b) && b == 0xD1) { st.src.skip(1); has_to = true; }
+
+    if (!has_to) {
+        Number a, c;
+        if (!st.ev.number(a)) return fail(st.ev.error());
+        Tok t;
+        if (!st.ev.parser().take(t, false) || t.t != Tok::COMMA)
+            return fail("COPY: нет второй границы");
+        if (!st.ev.number(c)) return fail(st.ev.error());
+        long x = 0, y = 0;
+        if (!a.floor_to_int(x) || !c.floor_to_int(y) || x < 0 || y < 0)
+            return fail("COPY: границы не целые неотрицательные");
+        if (x > y) return machine_error(err::UNKNOWN, "COPY: границы наоборот");
+        from = static_cast<unsigned>(x);
+        to = static_cast<unsigned>(y);
+        if (!st.ev.parser().take(t, false) || t.t != Tok::KW_TO)
+            return fail("COPY без TO");
+    }
+
+    Disk dst;
+    if (!disk_prefix(st, true, dst)) return false;
+
+    // «Содержимое 100-го сектора левого диска копируется в 50-й правого,
+    // 101-го — в 51-й и т. д.» Адреса приёмника книга разрешает не задавать;
+    // тогда естественно класть сектор на его собственное место.
+    unsigned start = from;
+    if (!st.src.at_end()) {
+        Number s;
+        if (!st.ev.number(s)) return fail(st.ev.error());
+        long v = 0;
+        if (!s.floor_to_int(v) || v < 0)
+            return fail("COPY: адрес приёмника не целый неотрицательный");
+        start = static_cast<unsigned>(v);
+    }
+
+    if (to >= total)
+        return machine_error(err::UNKNOWN, "COPY: за концом диска-источника");
+    const unsigned n = to - from + 1;
+    const unsigned dtotal = host_.disk_sectors(dst.drive);
+    if (start >= dtotal || n > dtotal - start)
+        return machine_error(err::UNKNOWN, "COPY: не вмещается на диск-приёмник");
+
+    // Тот же дисковод с наложением областей: если писать снизу вверх, хвост
+    // источника затрётся раньше, чем его прочитают.
+    const bool backwards = (src.drive == dst.drive && start > from);
+    uint8_t sec[Host::SECTOR_SIZE];
+    for (unsigned i = 0; i < n; ++i) {
+        const unsigned k = backwards ? n - 1 - i : i;
+        if (!host_.disk_read(src.drive, from + k, sec))
+            return machine_error(err::UNKNOWN,
+                                 "COPY: не читается сектор " + num_str(from + k));
+        if (!host_.disk_write(dst.drive, start + k, sec))
+            return machine_error(err::UNKNOWN,
+                                 "COPY: не пишется сектор " + num_str(start + k));
+    }
+    return true;
+}
+
 bool Interp::do_dskip(Stream & st, bool backwards)
 {
     Disk d;
@@ -3510,6 +3588,7 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x4A: return do_add(st);
         case 0x4D: return do_rotate(st);
         case 0x54: return do_select(st);
+        case 0x6D: return do_copy(st);
         case 0x27: case 0x3A: return do_deffn(st, len);
         // Определение функции пользователя при исполнении ничего не делает:
         // тело вычисляется по обращению FN<имя>( (руководство, разд. 4.8).

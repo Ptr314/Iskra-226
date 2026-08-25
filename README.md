@@ -55,7 +55,7 @@ iskra -i --run-file EDITOR.bin         пропуская ASMB и $GIO
 (`DATA SAVE DC OPEN`/`DATA SAVE DC`/`END`/`CLOSE`, `DATA LOAD DC`,
 `IF END THEN`, `DSKIP`, `SCRATCH`), и по абсолютным адресам секторов
 (`DATA SAVE/LOAD BA` блоками по 256 байт, `DATA SAVE/LOAD DA` записями,
-`VERIFY`). Программы — `SAVE DC` и `LOAD DC`.
+`VERIFY`, `COPY … TO …`). Программы — `SAVE DC` и `LOAD DC`.
 
 Дисководов четыре — те же адреса, что знает `SELECT`: `--d0` = `18F`,
 `--d1` = `18R`, `--d2` = `1CF`, `--d3` = `1CR`; `--r0`…`--r3` запрещают

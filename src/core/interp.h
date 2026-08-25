@@ -173,6 +173,8 @@ private:
     bool do_block_transfer(Stream & st, bool load);
     bool do_abs_record(Stream & st, bool load);
     bool do_verify(Stream & st);
+    // Копирование диска на диск (руководство, разд. 18.9.6).
+    bool do_copy(Stream & st);
     bool do_dload(Stream & st);
     // Значения списка `DATA SAVE DC`: массив целиком разворачивается в свои
     // элементы — «массивы записываются строка за строкой» (разд. 18.3).

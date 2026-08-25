@@ -449,6 +449,9 @@ bool disk_prefix(Decoder & d, ByteSource & src, bool with_device)
         Tok t;
         if (!d.parser().peek(t, false)) return false;
         if (t.t == Tok::COMMA) { d.parser().consume(); d.emit(","); }
+        // Иначе источник надо вернуть: дальше его читают сырыми байтами, а
+        // заглянутая лексема из него уже вынута (CLAUDE.md).
+        else d.parser().unpeek();
     }
     return true;
 }
@@ -1338,6 +1341,29 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             if (!src.take_raw_byte(eq) || eq != 0xD9) { error = "SCRATCH DISK: END без ="; return false; }
             d.emit("END=");
             if (!d.expr()) { error = d.error(); return false; }
+            return true;
+        }
+
+        case 0x6D: {                                   // COPY … TO …
+            d.emit("COPY ");
+            if (!disk_prefix(d, src, true)) { error = "приставка устройства"; return false; }
+            Tok t;
+            if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+            if (t.t != Tok::KW_TO) {
+                d.parser().unpeek();
+                d.emit("(");
+                if (!expr_list(d, src, error)) return false;
+                d.emit(")");
+                if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+            }
+            if (t.t != Tok::KW_TO) { error = "COPY без TO"; return false; }
+            d.parser().consume();
+            d.emit(" TO ");
+            if (!disk_prefix(d, src, true)) { error = "приставка устройства"; return false; }
+            if (src.at_end()) return true;
+            d.emit("(");
+            if (!d.expr()) { error = d.error(); return false; }
+            d.emit(")");
             return true;
         }
 

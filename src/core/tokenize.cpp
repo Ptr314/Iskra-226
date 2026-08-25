@@ -624,6 +624,9 @@ bool StmtEncoder::disk_prefix(Encoder & enc, std::vector<uint8_t> & out,
         Tok t;
         if (!enc.parser().peek(t, false)) return err(enc.error());
         if (t.t == Tok::COMMA) { enc.parser().consume(); out.push_back(0xDE); }
+        // Разделителя не оказалось — источник надо вернуть: дальше читает
+        // сам лексер, а он стоит за заглянутой лексемой (CLAUDE.md).
+        else enc.parser().unpeek();
     }
     return true;
 }
@@ -1032,6 +1035,43 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
             if (t.t == Tok::COMMA || t.t == Tok::END) continue;  // пропущенный аргумент
             if (!enc.expr()) return err(enc.error());
         }
+        return true;
+    }
+
+    if (lex_.take_word("COPY")) {
+        // «Оператор COPY TO предназначен для копирования части или всего
+        // диска на другой диск» (руководство, разд. 18.9.6).
+        // `COPY T#H4,(H1,H1) TO T#H5,(H1)` = `6D 02 DB 4C DE 4F DE 4F D1
+        // 02 DB 0C DE 4F` (LКОПИДИС 1260): `TO` — байт `D1`, скобки вокруг
+        // границ не кодируются вовсе, как и у `VERIFY`.
+        verb = 0x6D;
+        Encoder enc(lex_, out);
+        // Устройство источника может отсутствовать: `COPY (100,300) TO R(50)`
+        // берёт его из таблицы устройств.
+        bool bounds = lex_.take_char('(');
+        if (!bounds) {
+            if (!disk_prefix(enc, out, true)) return false;
+            bounds = lex_.take_char('(');
+        }
+        if (bounds) {
+            for (;;) {
+                if (!enc.expr()) return err(enc.error());
+                if (!take_sep(enc, Tok::COMMA)) break;
+                out.push_back(0xDE);
+            }
+            take_sep(enc, Tok::RPAR);
+        }
+        Tok t;
+        if (!enc.parser().take(t, false) || t.t != Tok::KW_TO)
+            return err("COPY без TO");
+        out.push_back(0xD1);
+
+        if (!lex_.take_char('(')) {
+            if (!disk_prefix(enc, out, true)) return false;
+            if (!lex_.take_char('(')) return true;
+        }
+        if (!enc.expr()) return err(enc.error());
+        take_sep(enc, Tok::RPAR);
         return true;
     }
 
