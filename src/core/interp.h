@@ -101,6 +101,7 @@ private:
     bool exec(unsigned verb, const uint8_t * ops, unsigned len);
 
     bool do_print(Stream & st);
+    bool do_printusing(Stream & st);
     bool do_select(Stream & st);
     bool do_open(Stream & st, bool with_device);
     bool do_dload(Stream & st);
@@ -152,6 +153,14 @@ private:
 
     void emit(const std::string & koi8);
     void emit_newline();
+    // Вывод группы PRINT таблицы устройств: «PRINT — устройство
+    // вывода для операторов PRINTUSING, HEXPRINT и MATPRINT»
+    // (руководство, разд. 11.5). По умолчанию это экран.
+    void emit_print(const std::string & koi8);
+    void emit_print_newline();
+    // Образ из строки с оператором `%`; false — такой строки нет
+    // или в ней нет `%`.
+    bool image_of_line(unsigned number, std::string & image) const;
     void emit_zone();
 
     bool jump(unsigned line_number);

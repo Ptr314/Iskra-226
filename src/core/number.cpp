@@ -494,6 +494,16 @@ const Number & Number::pi()
     return p;
 }
 
+void Number::to_digits(std::string & digits, int & point) const
+{
+    digits.assign(D, '0');
+    if (is_zero()) { point = 1; return; }
+    for (unsigned i = 0; i < D; ++i)
+        digits[i] = static_cast<char>('0' + d_[i]);
+    // Внутри значение равно d0.d1…d12 * 10^exp — на разряд больше слева.
+    point = exp_ + 1;
+}
+
 std::string Number::to_display() const
 {
     std::string s;

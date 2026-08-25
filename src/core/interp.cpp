@@ -7,6 +7,7 @@
 
 #include "core/catalog.h"
 #include "core/disk_record.h"
+#include "core/image.h"
 
 #include <cmath>
 #include <cstdio>
@@ -24,86 +25,23 @@ namespace {
     }
 }
 
-// Образ CONVERT: [+|-] [###] [.] [###] [^^^^] (руководство, разд. 13.6).
-// Знака нет — число пишется без знака; «+» — всегда + или −; «−» — пробел
-// или минус. Младшие разряды, не влезшие в образ, отбрасываются, а не
-// округляются. Слишком длинная целая часть — ошибка.
+// Образ CONVERT — одно описание формата и ничего кроме него
+// (руководство, разд. 13.6). Разбор и подстановка общие с PRINTUSING,
+// расходятся эти операторы в двух местах: CONVERT заполняет незанятые
+// разряды целой части нулями, а не пробелами, и не помещающееся число
+// считает ошибкой, а не печатает сам образ.
 bool format_by_image(const Number & value, const std::string & image,
                      std::string & out, std::string & error)
 {
-    unsigned sign_mode = 0;                   // 0 нет, 1 плюс, 2 минус
-    unsigned p = 0;
-    if (p < image.size() && (image[p] == '+' || image[p] == '-')) {
-        sign_mode = (image[p] == '+') ? 1 : 2;
-        ++p;
+    ImageField f;
+    if (!image_single_field(image, f)) {
+        error = "непонятный образ CONVERT: " + image;
+        return false;
     }
-
-    unsigned ip = 0, fp = 0;
-    while (p < image.size() && image[p] == '#') { ++ip; ++p; }
-    if (p < image.size() && image[p] == '.') {
-        ++p;
-        while (p < image.size() && image[p] == '#') { ++fp; ++p; }
-    }
-
-    bool exponential = false;
-    // В листингах показатель степени изображается как ^^^^, в книге тот же
-    // знак распознан как /\/\/\/\ — принимаем оба написания.
-    while (p < image.size() && (image[p] == '^' || image[p] == '\\' ||
-                                image[p] == '/')) {
-        exponential = true;
-        ++p;
-    }
-    if (p != image.size()) { error = "непонятный образ CONVERT: " + image; return false; }
-    if (!ip && !fp) { error = "в образе CONVERT нет ни одного знака #"; return false; }
-
-    Number v = value;
-    const bool negative = v.is_negative();
-    if (negative) v = v.negated();
-
-    std::string digits;
-    int exponent = 0;
-
-    if (exponential) {
-        // Мантисса приводится к виду с ip цифрами до точки.
-        const std::string d = v.to_display();
-        (void)d;
-        double x = v.to_double();
-        if (x != 0.0) {
-            while (x >= std::pow(10.0, static_cast<double>(ip))) { x /= 10.0; ++exponent; }
-            while (x < std::pow(10.0, static_cast<double>(ip - 1))) { x *= 10.0; --exponent; }
-        }
-        char buf[64];
-        std::sprintf(buf, "%.*f", static_cast<int>(fp) + 2, x);
-        digits = buf;
-    } else {
-        char buf[64];
-        std::sprintf(buf, "%.*f", static_cast<int>(fp) + 2, v.to_double());
-        digits = buf;
-    }
-
-    // Разделяем на целую и дробную части и отбрасываем лишние разряды.
-    std::string whole = digits, frac;
-    const std::size_t dot = digits.find('.');
-    if (dot != std::string::npos) {
-        whole = digits.substr(0, dot);
-        frac = digits.substr(dot + 1);
-    }
-    if (whole.size() > ip) { error = "число не помещается в образ CONVERT"; return false; }
-    while (whole.size() < ip) whole = "0" + whole;
-    frac.resize(fp, '0');
-
-    out.clear();
-    if (sign_mode == 1) out += negative ? '-' : '+';
-    else if (sign_mode == 2) out += negative ? '-' : ' ';
-
-    out += whole;
-    if (fp) { out += '.'; out += frac; }
-
-    if (exponential) {
-        char buf[16];
-        std::sprintf(buf, "E%c%02d", exponent < 0 ? '-' : '+',
-                     exponent < 0 ? -exponent : exponent);
-        out += buf;
+    if (!f.ip && !f.fp) { error = "в образе CONVERT нет ни одного знака #"; return false; }
+    if (!image_number(value, f, true, out)) {
+        error = "число не помещается в образ CONVERT";
+        return false;
     }
     return true;
 }
@@ -181,6 +119,24 @@ void Interp::emit_zone()
         return;
     }
     s.at(s.row(), next);
+}
+
+// Оператор `%` и оператор `PRINTUSING` печатают на устройство группы
+// PRINT, а не на консольное: «PRINT — устройство вывода для операторов
+// PRINTUSING, HEXPRINT и MATPRINT» (руководство, разд. 11.5). По умолчанию
+// это адрес 05, то есть экран; `SELECT PRINT 0C` уводит вывод на АЦПУ.
+void Interp::emit_print(const std::string & koi8)
+{
+    if (dev_.addr(DG_PRINT) == 0x05) { emit(koi8); return; }
+    for (std::size_t i = 0; i < koi8.size(); ++i)
+        host_.print_char(static_cast<uint8_t>(koi8[i]));
+}
+
+void Interp::emit_print_newline()
+{
+    if (dev_.addr(DG_PRINT) == 0x05) { emit_newline(); return; }
+    host_.print_char(CC_CR);
+    host_.print_char(CC_DOWN);
 }
 
 // --- присваивание -----------------------------------------------------------
@@ -384,6 +340,125 @@ bool Interp::do_print(Stream & st)
     // «курсор устанавливается в тридцатую позицию восьмой строки экрана»,
     // а печать следующего оператора идёт с этой позиции (пример 17.5).
     if (newline && !last_was_at) emit_newline();
+    return true;
+}
+
+// Образ печати лежит в операторе `%` отдельной строкой: он неисполняемый и
+// «может размещаться в любой строке программы» (руководство, разд. 16.1).
+// Операнд `%` — сырой текст, без длины и без префикса (docs/format.md,
+// разд. 5).
+bool Interp::image_of_line(unsigned number, std::string & image) const
+{
+    unsigned li = 0;
+    if (!img_.find(number, li)) return false;
+    const std::vector<uint8_t> & body = img_.line(li).body;
+    unsigned at = 0;
+    while (at < body.size()) {
+        unsigned verb = 0, ops = 0, len = 0;
+        if (!stmt_head(body, at, verb, ops, len)) return false;
+        if (verb == 0x3F) {
+            image.assign(reinterpret_cast<const char *>(&body[0]) + ops, len);
+            return true;
+        }
+        at = ops + len;
+    }
+    return false;
+}
+
+// «Оператор PRINTUSING и оператор задания формата % используются совместно
+// для управления размещением данных при печати» (руководство, гл. 16).
+// Первый операнд — либо номер строки с оператором `%`, либо сам образ
+// символьным значением: «формат печати может задаваться также
+// непосредственно в операторе PRINTUSING в виде символьной константы или
+// символьной переменной» (разд. 16.2).
+bool Interp::do_printusing(Stream & st)
+{
+    Value first;
+    if (!st.ev.expr(first)) return fail(st.ev.error());
+
+    std::string image;
+    if (first.is_str) {
+        image = first.str;
+    } else {
+        long n = 0;
+        if (!first.num.to_int(n) || n < 0)
+            return fail("PRINTUSING: номер строки образа не целый");
+        // Кода у этой ошибки мы не знаем — выдумывать его нельзя.
+        if (!image_of_line(static_cast<unsigned>(n), image))
+            return machine_error(err::UNKNOWN,
+                                 "PRINTUSING: в строке " + num_str(static_cast<unsigned>(n))
+                                 + " нет оператора %");
+    }
+
+    // Элементы печати «разделяются запятыми или точкой с запятой»
+    // (разд. 16.1). Запоминаем разделитель, стоящий ПЕРЕД элементом: именно
+    // он решает, переводить ли строку, когда образ пойдёт по второму разу.
+    std::vector<Value> items;
+    std::vector<bool> semi;
+    bool trailing_semi = false;
+    for (;;) {
+        Tok t;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        bool is_semi;
+        if (t.t == Tok::COMMA) is_semi = false;
+        else if (t.t == Tok::SEMI) is_semi = true;
+        else break;
+        st.ev.parser().consume();
+        if (st.src.at_end()) { trailing_semi = is_semi; break; }
+        Value v;
+        if (!st.ev.expr(v)) return fail(st.ev.error());
+        items.push_back(v);
+        semi.push_back(is_semi);
+    }
+
+    // Образ без единого описания формата печатается целиком: «оператор %
+    // состоит лишь из символов, отличных от символа #» (пример 16.4).
+    ImageField probe;
+    if (!image_next_field(image, 0, probe)) {
+        emit_print(image);
+        if (!trailing_semi) emit_print_newline();
+        return true;
+    }
+
+    unsigned pos = 0;
+    std::size_t next = 0;
+    for (;;) {
+        ImageField f;
+        if (!image_next_field(image, pos, f)) {
+            emit_print(image.substr(pos));
+            if (next >= items.size()) break;
+            // «Список элементов не исчерпан, но в операторе % нет больше
+            // описаний формата. Происходит переход на начало следующей
+            // строки» (пример 16.11) — если только его не подавили точкой
+            // с запятой (пример 16.12).
+            if (!semi[next]) emit_print_newline();
+            pos = 0;
+            continue;
+        }
+        if (next >= items.size()) {
+            // Элементов не хватило на образ. Книга такого случая не
+            // разбирает; печатаем остаток как есть, и незаполненные разряды
+            // видны знаками #, как и при переполнении.
+            emit_print(image.substr(pos));
+            break;
+        }
+
+        emit_print(image.substr(pos, f.at - pos));
+        const Value & v = items[next];
+        std::string text;
+        if (v.is_str) {
+            image_string(v.str, f, text);
+        } else if (!image_number(v.num, f, false, text)) {
+            // «Если попытаться напечатать число 5555 по формату ###, то
+            // вместо числа будет напечатано описание формата» (пример 16.7).
+            text = image.substr(f.at, f.len);
+        }
+        emit_print(text);
+        ++next;
+        pos = f.at + f.len;
+    }
+
+    if (!trailing_semi) emit_print_newline();
     return true;
 }
 
@@ -1631,6 +1706,7 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
 
     switch (verb) {
         case 0x36: return do_let(st);
+        case 0x28: return do_printusing(st);
         case 0x4C: return do_print(st);
         case 0x41: return do_input(st);
         case 0x0624: return do_linput(st);
