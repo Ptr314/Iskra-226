@@ -556,6 +556,53 @@ void test_mat_input()
     CHECK_STR(line_of(screen, 6), " 0  0");
 }
 
+// Пример 12.1 книги. `MAT CON` заменён циклом: его байт не установлен.
+// Печатная выдача там показывает `1 1 1` и для зонного формата, и для
+// плотного — скан потерял разбивку; правило же сказано словами:
+// «если за именем массива стоит запятая, элементы печатаются в зонном
+// формате; если точка с запятой — в плотном» (разд. 12.2.1).
+void test_mat_print()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM A(3,3),B(3)\n"
+        "20 FOR I=1TO3:FOR J=1TO3:A(I,J)=1:NEXT J:NEXT I\n"
+        "25 B(2)=-5\n"
+        "30 MAT PRINT A,B\n"
+        "40 MAT PRINT /05,A;\n";
+    if (!run_text(src, screen, error))
+        { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // «а) содержимое массива А в зонном формате» — зона та же, что у PRINT.
+    CHECK_STR(line_of(screen, 1), " 1               1               1");
+    CHECK_STR(line_of(screen, 3), " 1               1               1");
+    // «б) содержимое одномерного массива В» — «одномерные массивы печатаются
+    // в виде столбца».
+    CHECK_STR(line_of(screen, 4), " 0");
+    CHECK_STR(line_of(screen, 5), "-5");
+    CHECK_STR(line_of(screen, 6), " 0");
+    // «в) содержимое массива А в плотном формате».
+    CHECK_STR(line_of(screen, 7), " 1  1  1");
+    CHECK_STR(line_of(screen, 9), " 1  1  1");
+}
+
+// «Для символьных массивов размер зоны устанавливается равным максимальной
+// длине элемента».
+void test_mat_print_strings()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM A\xC2\xA4(3)4\n"
+        "20 A\xC2\xA4(1)=\"AA\":A\xC2\xA4(2)=\"BBBB\":A\xC2\xA4(3)=\"C\"\n"
+        "30 MAT PRINT A\xC2\xA4\n";
+    if (!run_text(src, screen, error))
+        { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    // Массив строк одномерный — печатается столбцом, элемент дополнен
+    // пробелами до своей длины.
+    CHECK_STR(line_of(screen, 1), "AA");
+    CHECK_STR(line_of(screen, 2), "BBBB");
+    CHECK_STR(line_of(screen, 3), "C");
+}
+
 } // namespace
 
 int main()
@@ -578,6 +625,8 @@ int main()
     test_tran_table();
     test_tran_short_table();
     test_tokenized();
+    test_mat_print();
+    test_mat_print_strings();
     test_mat_read();
     test_mat_read_runs_out();
     test_mat_read_strings();

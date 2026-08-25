@@ -1137,6 +1137,37 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             }
         }
 
+        case 0x0605: {                                 // MAT PRINT
+            d.emit("MAT PRINT ");
+            uint8_t b = 0;
+            if (src.peek_raw_byte(b) && b == 0xDC) {
+                src.skip(1);
+                uint8_t de = 0, a = 0;
+                if (!src.take_raw_byte(de) || de != 0xDE || !src.take_raw_byte(a)) {
+                    error = "MAT PRINT: нет адреса устройства";
+                    return false;
+                }
+                d.emit(std::string("/") + HEXD[a >> 4] + HEXD[a & 15]);
+                if (src.peek_raw_byte(b) && b == 0xDE) { src.skip(1); d.emit(","); }
+            }
+            for (;;) {
+                Tok t;
+                if (!d.parser().take(t, true)) { error = d.error(); return false; }
+                if (t.t != Tok::ARRAY && t.t != Tok::VAR) {
+                    error = "MAT PRINT: ждали массив";
+                    return false;
+                }
+                std::string nm;
+                if (!d.name(t.var, nm)) { error = "нет имени для индекса"; return false; }
+                d.emit(nm);
+                if (!src.peek_raw_byte(b)) return true;
+                if (b == 0xDD) { src.skip(1); d.emit(";"); }
+                else if (b == 0xDE) { src.skip(1); d.emit(","); }
+                else return true;
+                if (src.at_end()) return true;
+            }
+        }
+
         case 0x0603:                                   // MAT READ
         case 0x0604: {                                 // MAT INPUT
             d.emit(verb == 0x0603 ? "MAT READ " : "MAT INPUT ");
@@ -1394,6 +1425,11 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             d.emit("DATA SAVE DC ");
             if (verb == 0x77) d.emit("CLOSE ");
             if (!disk_prefix(d, src, false)) { error = "приставка устройства"; return false; }
+            if (verb == 0x77) {
+                uint8_t a = 0;
+                if (src.peek_raw_byte(a) && a == 0xCB) { src.skip(1); d.emit("ALL"); }
+                return true;
+            }
             if (src.at_end()) return true;
             uint8_t b = 0;
             if (src.peek_raw_byte(b) && b == 0xD7) { src.skip(1); d.emit("END"); return true; }

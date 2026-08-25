@@ -1382,6 +1382,35 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         return true;
     }
 
+    if (lex_.take_word("MAT PRINT")) {
+        // «MAT PRINT [/<устройство>,] <имя массива>[,|;] …» (разд. 12.2.1).
+        // Запятая за именем значит зонный формат, точка с запятой — плотный:
+        // `MAT PRINT A¤();` = `06 05 03 E0 <идекс> DD` (РЕГРЕСС 3195).
+        verb = 0x0605;
+        Encoder enc(lex_, out);
+        if (lex_.take_char('/')) {
+            out.push_back(0xDC);
+            unsigned a = 0;
+            if (!lex_.take_hex2(a, true)) return err("MAT PRINT: нет адреса устройства");
+            out.push_back(0xDE);
+            out.push_back(static_cast<uint8_t>(a));
+            if (lex_.take_char(',')) out.push_back(0xDE);
+        }
+        for (;;) {
+            Tok t;
+            lex_.expect_array();
+            if (!enc.parser().take(t, true)) return err(enc.error());
+            if (t.t != Tok::VAR && t.t != Tok::ARRAY)
+                return err("MAT PRINT: ждали массив");
+            out.push_back(0xE0);
+            out.push_back(static_cast<uint8_t>(t.var));
+            if (lex_.take_char(';')) out.push_back(0xDD);
+            else if (lex_.take_char(',')) out.push_back(0xDE);
+            else return true;
+            if (lex_.at_end() || lex_.at_colon()) return true;
+        }
+    }
+
     {
         // `MAT READ` и `MAT INPUT` — подкоды `06 03` и `06 04`
         // (docs/format.md, разд. 5, «Подкоды 06 03 и 06 04»). Грамматика у
@@ -1880,10 +1909,21 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
             if (kind == 5) { out.push_back(0xD7); return true; }   // END
             if (kind == 2) {
                 if (!disk_prefix(enc, out, false)) return false;
+                // `DATA SAVE DC CLOSE ALL` закрывает все файлы разом
+                // (пример 18.19); байт `CB` тот же, что у RETURN CLEAR ALL.
+                if (lex_.take_word("ALL")) out.push_back(0xCB);
                 return true;
             }
             // Устройство есть только там, где файл ищется по имени.
             if (!disk_prefix(enc, out, kind == 0 || kind == 4)) return false;
+
+            // `DATA SAVE DC #2,CLOSE` — та же форма, что `DATA SAVE DC
+            // CLOSE #2`, только приставка стоит раньше слова (пример 18.19).
+            if (verb == 0x76 && kind == 3 && lex_.take_word("CLOSE")) {
+                verb = 0x77;
+                if (lex_.take_word("ALL")) out.push_back(0xCB);
+                return true;
+            }
             if (kind == 4) {
                 if (!lex_.take_char('(')) return err("DATA SAVE DC OPEN без размера");
                 out.push_back(0xEB);

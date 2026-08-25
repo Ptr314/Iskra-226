@@ -891,6 +891,21 @@ bool Interp::do_dclose(Stream & st)
 {
     Disk d;
     if (!disk_prefix(st, false, d)) return false;
+
+    // «Оператор закрытия файла с параметром ALL, предназначенным для закрытия
+    // всех открытых файлов» (руководство, пример 18.19). Байт тот же `CB`,
+    // что у `RETURN CLEAR ALL`; в корпусе он есть — `INIT` 690.
+    uint8_t b = 0;
+    if (st.src.peek_raw_byte(b) && b == 0xCB) {
+        st.src.skip(1);
+        for (unsigned i = 0; i < DeviceTable::ROWS; ++i) {
+            DeviceRow & r = dev_.row(i);
+            r.bound = false;
+            r.first = r.current = r.last = 0;
+        }
+        return true;
+    }
+
     DeviceRow & r = dev_.row(d.row);
     r.bound = false;
     r.first = 0;
@@ -2535,6 +2550,108 @@ bool Interp::do_mat_read(Stream & st, bool from_keyboard)
     return true;
 }
 
+// «Оператор предназначен для печати содержимого числовых и символьных
+// массивов… Каждый массив печатается строка за строкой. Первый элемент каждой
+// строки массива печатается с новой строки. Если за именем массива стоит
+// запятая, элементы печатаются в зонном формате; если точка с запятой — в
+// плотном. Для символьных массивов размер зоны равен максимальной длине
+// элемента. Одномерные массивы печатаются в виде столбца» (разд. 12.2.1).
+//
+// Печатает на устройство группы `PRINT`, как `PRINTUSING` и `HEXPRINT`.
+bool Interp::do_mat_print(Stream & st)
+{
+    // «Если указан параметр <устройство>, печать осуществляется на нём»:
+    // приставка та же, что у `PRINT` (`МАТ PRINT/0C, А%, В`).
+    // Устройство действует только на этот оператор: «в противном случае — на
+    // устройстве, определённом последним выполненным оператором SELECT
+    // PRINT», то есть таблицу он не меняет.
+    uint8_t b = 0;
+    bool own_dev = false;
+    uint8_t dev_addr = 0;
+    if (st.src.peek_raw_byte(b) && b == 0xDC) {
+        st.src.skip(1);
+        Number a;
+        if (!st.ev.number(a)) return fail(st.ev.error());
+        long v = 0;
+        if (!a.floor_to_int(v) || v < 0 || v > 255)
+            return fail("MAT PRINT: адрес устройства вне 0…255");
+        own_dev = true;
+        dev_addr = static_cast<uint8_t>(v);
+        Tok t;
+        if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+        if (t.t == Tok::COMMA) st.ev.parser().consume();
+        else st.ev.parser().unpeek();
+    }
+    const uint8_t addr = own_dev ? dev_addr : dev_.addr(DG_PRINT);
+
+    while (!st.src.at_end()) {
+        Tok t;
+        if (!st.ev.parser().take(t, true)) return fail(st.ev.error());
+        if (t.t != Tok::ARRAY && t.t != Tok::VAR)
+            return fail("MAT PRINT: ждали массив");
+        const unsigned var = t.var;
+
+        bool dense = false;
+        if (st.src.peek_raw_byte(b) && (b == 0xDE || b == 0xDD)) {
+            dense = (b == 0xDD);
+            st.src.skip(1);
+        }
+
+        std::string err;
+        unsigned d1 = 0, d2 = 0, len = 0;
+        const bool is_str = store_.is_string(var);
+        if (is_str) {
+            len = store_.str_len(var);
+            if (!len) return fail("MAT PRINT: нулевая длина элемента");
+            d1 = static_cast<unsigned>(store_.str_field(var).size() / len);
+            d2 = 0;
+        } else {
+            if (!store_.array_dims(var, d1, d2, err)) return fail(err);
+        }
+
+        const unsigned cols = d2 ? d2 : 1;
+        for (unsigned r = 0; r < d1; ++r) {
+            std::string row;
+            for (unsigned c = 0; c < cols; ++c) {
+                std::string cell;
+                if (is_str) {
+                    const long idx = static_cast<long>(r * cols + c) + 1;
+                    VarStore::StrLoc loc;
+                    if (!store_.str_element(var, &idx, 1, loc, err)) return fail(err);
+                    cell = loc.data->substr(loc.off, loc.len);
+                } else {
+                    long idx[2];
+                    unsigned n = 1;
+                    if (d2) { idx[0] = r + 1; idx[1] = c + 1; n = 2; }
+                    else idx[0] = r + 1;
+                    Number * p = 0;
+                    if (!store_.slot(var, idx, n, p, err)) return fail(err);
+                    // «с учётом знака перед числом и пробела после числа».
+                    cell = p->to_display();
+                    cell += ' ';
+                }
+                if (c && !dense) {
+                    // Зона: у чисел та же, что у `PRINT`, у строк — длина
+                    // элемента.
+                    const unsigned zone = is_str ? len : ZONE;
+                    while (row.size() % zone) row += ' ';
+                }
+                row += cell;
+            }
+            if (addr == 0x05) {
+                emit(row);
+                emit_newline();
+            } else {
+                for (std::size_t i = 0; i < row.size(); ++i)
+                    host_.print_char(static_cast<uint8_t>(row[i]));
+                host_.print_char(CC_CR);
+                host_.print_char(CC_DOWN);
+            }
+        }
+    }
+    return true;
+}
+
 bool Interp::read_line(const std::string & prompt, bool has_prompt,
                        std::string & out)
 {
@@ -3870,6 +3987,7 @@ bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
         case 0x0602: return do_redim(st);
         case 0x0603: return do_mat_read(st, false);
         case 0x0604: return do_mat_read(st, true);
+        case 0x0605: return do_mat_print(st);
         case 0x0601: return do_mat(st);
         case 0x0606: return do_mat_copy(st);
         case 0x060A: return do_mat_search(st);

@@ -199,6 +199,8 @@ private:
     bool do_redim(Stream & st);
     // MAT READ и MAT INPUT: подкоды 06 03 и 06 04 (разд. 12.2.2 и 12.2.3).
     bool do_mat_read(Stream & st, bool from_keyboard);
+    // MAT PRINT: подкод 06 05 (руководство, разд. 12.2.1).
+    bool do_mat_print(Stream & st);
     bool do_mat(Stream & st);
     bool do_mat_copy(Stream & st);
     bool do_mat_search(Stream & st);
