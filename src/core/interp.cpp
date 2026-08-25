@@ -6,6 +6,8 @@
 #include "core/interp.h"
 
 #include "core/catalog.h"
+#include "core/detokenize.h"
+#include "core/koi8.h"
 #include "core/disk_record.h"
 #include "core/image.h"
 
@@ -128,19 +130,22 @@ void Interp::emit_zone()
 // PRINT, а не на консольное: «PRINT — устройство вывода для операторов
 // PRINTUSING, HEXPRINT и MATPRINT» (руководство, разд. 11.5). По умолчанию
 // это адрес 05, то есть экран; `SELECT PRINT 0C` уводит вывод на АЦПУ.
-void Interp::emit_print(const std::string & koi8)
+void Interp::emit_group(DeviceGroup g, const std::string & koi8)
 {
-    if (dev_.addr(DG_PRINT) == 0x05) { emit(koi8); return; }
+    if (dev_.addr(g) == 0x05) { emit(koi8); return; }
     for (std::size_t i = 0; i < koi8.size(); ++i)
         host_.print_char(static_cast<uint8_t>(koi8[i]));
 }
 
-void Interp::emit_print_newline()
+void Interp::emit_group_newline(DeviceGroup g)
 {
-    if (dev_.addr(DG_PRINT) == 0x05) { emit_newline(); return; }
+    if (dev_.addr(g) == 0x05) { emit_newline(); return; }
     host_.print_char(CC_CR);
     host_.print_char(CC_DOWN);
 }
+
+void Interp::emit_print(const std::string & koi8) { emit_group(DG_PRINT, koi8); }
+void Interp::emit_print_newline() { emit_group_newline(DG_PRINT); }
 
 // --- присваивание -----------------------------------------------------------
 
@@ -1276,6 +1281,153 @@ static std::string catalog_row(const std::string & name, const char * type,
 // LIST DC — выдача указателя каталога (руководство, разд. 5.1). Операнд
 // один и тот же, что у прочих дисковых глаголов, только короче: буква
 // устройства и ничего больше.
+// «При выполнении оператора RETURN CLEAR список адресов возврата
+// уменьшается на один адрес, соответствующий последнему обращению к данной
+// подпрограмме… Переход к оператору, следующему за оператором GOSUB, не
+// производится, а выполняется следующий за оператором RETURN CLEAR
+// оператор» (руководство, разд. 10.3). `ALL` — байт `CB` — стирает список
+// целиком; в книге эта форма не описана, но в корпусе встречается.
+bool Interp::do_return_clear(Stream & st, unsigned len)
+{
+    if (len) {
+        uint8_t b = 0;
+        if (!st.src.take_raw_byte(b) || b != 0xCB)
+            return fail("RETURN CLEAR: не ALL");
+        calls_.clear();
+        return true;
+    }
+    if (!calls_.empty()) calls_.pop_back();
+    return true;
+}
+
+// --- команды диалога внутри программы ---------------------------------------
+
+// Номера строк у этих операторов лежат сырыми парами BCD, как у GOTO.
+// Возвращает, сколько номеров прочитано (0, 1 или 2).
+unsigned Interp::line_range(Stream & st, unsigned & from, unsigned & to)
+{
+    from = 0;
+    to = 0;
+    uint8_t a = 0, b = 0;
+    if (!st.src.take_raw_byte(a) || !st.src.take_raw_byte(b)) return 0;
+    from = bcd2(a) * 100 + bcd2(b);
+    if (!st.src.peek_raw_byte(a) || a != 0xDE) return 1;
+    st.src.skip(1);
+    if (!st.src.take_raw_byte(a) || !st.src.take_raw_byte(b)) return 1;
+    to = bcd2(a) * 100 + bcd2(b);
+    return 2;
+}
+
+// `CLEAR` — всё; `CLEAR P [n1][,n2]` — только текст программы; `CLEAR V` —
+// все переменные, `CLEAR N` — только необщие (руководство, разд. 8.3).
+//
+// Коды в потоке: `14` это `P` — подтверждено диапазоном строк за ним
+// (`DASB2` 790 = `2C 05 14 95 00 DE 99 20`); без операндов — голый `CLEAR`
+// (`UDAW` 363). Коды `11` и `12` это `V` и `N`, но какой какой — корпус не
+// различает (CLAUDE.md, «Допущения»).
+bool Interp::do_clear(Stream & st)
+{
+    uint8_t code = 0;
+    if (!st.src.peek_raw_byte(code)) {
+        // «Экран и память машины очистятся» (разд. 3.2) — исполнять дальше
+        // нечего, программы больше нет.
+        img_.clear();
+        rescan();
+        clear_all();
+        dev_ = DeviceTable();
+        host_.screen().put(CC_CLEAR);
+        stopped_ = true;
+        return true;
+    }
+    st.src.skip(1);
+
+    if (code == 0x11) { store_.clear(); return true; }
+    if (code == 0x12) { store_.clear_non_common(); return true; }
+    if (code != 0x14) return fail("CLEAR: неизвестный вид, код " + num_str(code));
+
+    // «При выполнении оператора CLEAR P из памяти машины стирается только
+    // текст программы, и никаких других изменений не происходит».
+    unsigned from = 0, to = 0;
+    line_range(st, from, to);
+
+    // Строку, из которой стирают, может стереть и саму себя: после правки
+    // индексы съезжают, и текущую надо найти заново по номеру.
+    const bool direct = (li_ == DIRECT);
+    const unsigned here = direct ? 0 : img_.line(li_).number;
+    img_.erase_range(from, to);
+    rescan();
+    if (!direct) {
+        unsigned idx = 0;
+        if (!img_.find(here, idx)) { stopped_ = true; return true; }
+        li_ = idx;
+    }
+    return true;
+}
+
+// «Оператор RUN без указания номера строки обнуляет переменные», а с
+// номером «переменные сохраняют значения, присвоенные им ранее»
+// (руководство, разд. 4.1). Изнутри программы это перезапуск: своего цикла
+// исполнения тут заводить нельзя, поэтому просто передаём управление.
+bool Interp::do_run(Stream & st)
+{
+    unsigned from = 0, to = 0;
+    const unsigned n = line_range(st, from, to);
+    if (!n) {
+        clear_all();
+        if (!img_.line_count()) { stopped_ = true; return true; }
+        li_ = 0;
+        off_ = 0;
+        jumped_ = true;
+        return true;
+    }
+    return jump(from);
+}
+
+// `LIST [<устройство>] [<строка1>[,<строка2>]]` — тот же листинг, что в
+// диалоге, но на устройство группы LIST: «LIST — устройство вывода для
+// операторов LIST» (руководство, разд. 11.5).
+bool Interp::do_list(Stream & st)
+{
+    // Приставка устройства у этого LIST — только адрес: строки таблицы и
+    // дисковода тут ни при чём (`DASB2` 448 = `2E 06 DC DE 05 DE 95 02`).
+    uint8_t b = 0;
+    if (st.src.peek_raw_byte(b) && b == 0xDC) {
+        st.src.skip(1);
+        uint8_t de = 0, addr = 0;
+        if (!st.src.take_raw_byte(de) || de != 0xDE) return fail("LIST: после / нет DE");
+        if (!st.src.take_raw_byte(addr)) return fail("LIST: нет адреса устройства");
+        dev_.select(DG_LIST, addr, 0);
+        if (st.src.peek_raw_byte(b) && b == 0xDE) st.src.skip(1);
+    }
+
+    unsigned from = 0, to = 0;
+    const unsigned n = line_range(st, from, to);
+    if (n == 1) to = from;                      // одна строка — она и есть весь диапазон
+
+    // Имён переменных в потоке нет вовсе: детокенизация придумывает их сама
+    // (CLAUDE.md, «Обратная трансляция»).
+    NameTable names;
+    std::string whole, err;
+    detokenize(img_, names, whole, err);
+
+    for (unsigned i = 0; i < img_.line_count(); ++i) {
+        const unsigned num = img_.line(i).number;
+        if (from && num < from) continue;
+        if (to && num > to) continue;
+        std::string text, why;
+        if (!detokenize_line(img_.line(i), names, text, why)) {
+            // Ограничение эмулятора не прячем: видно и номер, и причину.
+            std::string koi;
+            utf8_to_koi8(why, koi);
+            emit_group(DG_LIST, num_str(num) + " ??? " + koi);
+        } else {
+            emit_group(DG_LIST, text);
+        }
+        emit_group_newline(DG_LIST);
+    }
+    return true;
+}
+
 bool Interp::do_list_dc(Stream & st)
 {
     Disk d;
@@ -2869,6 +3021,10 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x7A: return do_dskip(st, false);
         case 0x7B: return do_limits(st);
         case 0x7C: return do_list_dc(st);
+        case 0x30: return do_return_clear(st, len);
+        case 0x2C: return do_clear(st);
+        case 0x2F: return do_run(st);
+        case 0x2E: return do_list(st);
         case 0x81: return do_scratch(st);
         case 0x82: return do_scratch_disk(st);
 

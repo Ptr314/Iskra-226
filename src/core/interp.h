@@ -161,6 +161,13 @@ private:
     bool do_save_dc(Stream & st);
     bool do_load_dc(Stream & st);
     bool do_list_dc(Stream & st);
+    // Команды диалога, встреченные внутри программы (разд. 3 и 8.3).
+    bool do_return_clear(Stream & st, unsigned len);
+    bool do_clear(Stream & st);
+    bool do_run(Stream & st);
+    bool do_list(Stream & st);
+    // Один-два номера строк сырыми парами BCD; сколько прочитано.
+    unsigned line_range(Stream & st, unsigned & from, unsigned & to);
     bool do_deffn(Stream & st, unsigned len);
 
     // Приставка `<устройство>[¤][/адрес][#строка]` — в номер строки таблицы
@@ -206,6 +213,9 @@ private:
     // (руководство, разд. 11.5). По умолчанию это экран.
     void emit_print(const std::string & koi8);
     void emit_print_newline();
+    // То же для любой группы: `LIST` печатает на свою (разд. 11.5).
+    void emit_group(DeviceGroup g, const std::string & koi8);
+    void emit_group_newline(DeviceGroup g);
     // Образ из строки с оператором `%`; false — такой строки нет
     // или в ней нет `%`.
     bool image_of_line(unsigned number, std::string & image) const;

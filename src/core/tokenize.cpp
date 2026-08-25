@@ -1774,12 +1774,56 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
     }
     if (lex_.take_word("END"))  { verb = 0x59; return true; }
     // RETURN CLEAR — отдельный глагол, а не RETURN с параметром (EDITOR 100).
+    // Команды диалога внутри программы. `CLEAR` — после `RETURN CLEAR`,
+    // иначе тот разберётся как `RETURN` плюс отдельный `CLEAR`.
+    // Виды: `14` это `P` (за ним бывает диапазон строк, DASB2 790),
+    // `11` и `12` — `V` и `N`, без операндов — голый `CLEAR` (UDAW 363).
     if (lex_.take_word("RETURN CLEAR")) {
         verb = 0x30;
         if (lex_.take_word("ALL")) out.push_back(0xCB);
         return true;
     }
     if (lex_.take_word("RETURN")) { verb = 0x5E; return true; }
+
+    if (lex_.take_word("CLEAR")) {
+        verb = 0x2C;
+        if (lex_.at_end() || lex_.at_colon()) return true;
+        if (lex_.take_word("V")) { out.push_back(0x11); return true; }
+        if (lex_.take_word("N")) { out.push_back(0x12); return true; }
+        if (!lex_.take_word("P")) return err("CLEAR: непонятный вид");
+        out.push_back(0x14);
+        if (lex_.at_end() || lex_.at_colon()) return true;
+        unsigned n = 0;
+        if (!lex_.take_uint(n)) return err("CLEAR P: неверный номер строки");
+        if (!line_number(out, n)) return false;
+        if (!lex_.take_char(',')) return true;
+        out.push_back(0xDE);
+        if (!lex_.take_uint(n)) return err("CLEAR P: неверный номер строки");
+        return line_number(out, n);
+    }
+
+    // Плоский LIST — после `LIST DC`. Приставка устройства тут только
+    // адресом (`DASB2` 448 = `2E 06 DC DE 05 DE 95 02`), дальше один или
+    // два номера строк сырыми парами BCD.
+    if (lex_.take_word("LIST")) {
+        verb = 0x2E;
+        if (lex_.take_char('/')) {
+            unsigned addr = 0;
+            if (!lex_.take_hex2(addr)) return err("LIST: неверный адрес устройства");
+            out.push_back(0xDC);
+            out.push_back(0xDE);
+            out.push_back(static_cast<uint8_t>(addr));
+            if (lex_.take_char(',')) out.push_back(0xDE);
+        }
+        if (lex_.at_end() || lex_.at_colon()) return true;
+        unsigned n = 0;
+        if (!lex_.take_uint(n)) return err("LIST: неверный номер строки");
+        if (!line_number(out, n)) return false;
+        if (!lex_.take_char(',')) return true;
+        out.push_back(0xDE);
+        if (!lex_.take_uint(n)) return err("LIST: неверный номер строки");
+        return line_number(out, n);
+    }
 
     if (lex_.take_word("READ")) {
         // Только приёмники, вплотную (VICT 2200).

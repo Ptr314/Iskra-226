@@ -502,6 +502,56 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             d.emit(n);
             return true;
         }
+        case 0x2C: {                                   // CLEAR
+            d.emit("CLEAR");
+            uint8_t code = 0;
+            if (!src.peek_raw_byte(code)) return true;
+            src.skip(1);
+            if (code == 0x11) { d.emit(" V"); return true; }
+            if (code == 0x12) { d.emit(" N"); return true; }
+            if (code != 0x14) { error = "CLEAR: неизвестный вид"; return false; }
+            d.emit(" P");
+            if (src.at_end()) return true;
+            std::string n1;
+            if (!line_number(src, n1)) { error = "CLEAR P без номера строки"; return false; }
+            d.emit(n1);
+            uint8_t b = 0;
+            if (!src.peek_raw_byte(b) || b != 0xDE) return true;
+            src.skip(1);
+            d.emit(",");
+            std::string n2;
+            if (!line_number(src, n2)) { error = "CLEAR P без номера строки"; return false; }
+            d.emit(n2);
+            return true;
+        }
+
+        case 0x2E: {                                   // LIST
+            d.emit("LIST");
+            uint8_t b = 0;
+            if (src.peek_raw_byte(b) && b == 0xDC) {
+                src.skip(1);
+                uint8_t de = 0, addr = 0;
+                if (!src.take_raw_byte(de) || de != 0xDE) {
+                    error = "LIST: после / нет DE";
+                    return false;
+                }
+                if (!src.take_raw_byte(addr)) { error = "LIST без адреса"; return false; }
+                d.emit(" /" + std::string(1, HEXD[addr >> 4]) + HEXD[addr & 15]);
+                if (src.peek_raw_byte(b) && b == 0xDE) { src.skip(1); d.emit(","); }
+            }
+            if (src.at_end()) return true;
+            std::string n1;
+            if (!line_number(src, n1)) { error = "LIST без номера строки"; return false; }
+            d.emit(" " + n1);
+            if (!src.peek_raw_byte(b) || b != 0xDE) return true;
+            src.skip(1);
+            d.emit(",");
+            std::string n2;
+            if (!line_number(src, n2)) { error = "LIST без номера строки"; return false; }
+            d.emit(n2);
+            return true;
+        }
+
         case 0x2F: {
             d.emit("RUN");
             if (len) {
