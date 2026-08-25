@@ -1365,13 +1365,20 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
     }
 
     if (lex_.take_word("RESTORE")) {
-        // `[<а.в.>] DE <номер строки>` (EDITOR 4865, VICT 2190).
+        // `[<а.в.>] [DE <номер строки>]`. Парами подтверждена только форма с
+        // номером строки (EDITOR 4865, VICT 2190). Две другие книга описывает
+        // (разд. 4.9), и `SLIDE` 230 пользуется голым `RESTORE`, но в токенах
+        // их нет ни разу: принято, что запятая — тот же `DE`, а чего нет в
+        // тексте, того нет и в потоке. См. «Допущения» в CLAUDE.md.
         verb = 0x51;
         Encoder enc(lex_, out);
-        if (!lex_.take_char(',')) {
+        if (lex_.at_end() || lex_.at_colon()) return true;
+        bool comma = lex_.take_char(',');
+        if (!comma) {
             if (!enc.expr()) return err(enc.error());
-            if (!take_sep(enc, Tok::COMMA)) return err("RESTORE без запятой");
+            comma = take_sep(enc, Tok::COMMA);
         }
+        if (!comma) return true;
         out.push_back(0xDE);
         unsigned n = 0;
         if (!lex_.take_uint(n)) return err("RESTORE без номера строки");

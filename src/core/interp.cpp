@@ -66,6 +66,7 @@ bool stmt_head(const std::vector<uint8_t> & body, unsigned at,
 
 Interp::Interp(ProgramImage & img, Host & host)
     : img_(img), host_(host), store_(img.vars()), labels_ready_(false),
+      data_ready_(false), data_i_(0), data_off_(0),
       li_(0), off_(0), next_off_(0), jumped_(false), stopped_(false),
       max_steps_(0)
 {
@@ -1440,6 +1441,153 @@ void Interp::build_labels()
     }
 }
 
+// --- READ, DATA, RESTORE ----------------------------------------------------
+
+// «При выполнении оператора READ отыскивается оператор DATA, независимо от
+// того, в каком месте программы он находится» (руководство, разд. 4.9).
+// У машины операторы DATA связаны цепочкой прямо в потоке: два последних
+// байта операндов каждого — адрес следующего (docs/format.md, разд. 5).
+// Здесь тот же порядок восстанавливается просмотром программы.
+void Interp::build_data()
+{
+    data_.clear();
+    data_ready_ = true;
+    for (unsigned l = 0; l < img_.line_count(); ++l) {
+        const std::vector<uint8_t> & b = img_.line(l).body;
+        unsigned at = 0;
+        for (;;) {
+            unsigned verb = 0, ops_at = 0, len = 0;
+            if (!stmt_head(b, at, verb, ops_at, len)) break;
+            if (verb == 0x29 && len >= 2) {
+                DataStmt d;
+                d.line = l;
+                d.at = ops_at;
+                d.len = len - 2;         // хвост — указатель цепочки, не значение
+                data_.push_back(d);
+            }
+            at = ops_at + len;
+            if (at >= b.size()) break;
+        }
+    }
+}
+
+bool Interp::next_data(Value & out, bool & exhausted)
+{
+    exhausted = false;
+    if (!data_ready_) build_data();
+
+    while (data_i_ < data_.size()) {
+        const DataStmt & d = data_[data_i_];
+        if (data_off_ >= d.len) { ++data_i_; data_off_ = 0; continue; }
+
+        const std::vector<uint8_t> & b = img_.line(d.line).body;
+        // Значения идут вплотную, без разделителей, поэтому берётся ровно
+        // один операнд: полное выражение прочитало бы `E7` следующей
+        // константы как `AND`.
+        Stream ds(&b[d.at], d.len, &img_.vars(), store_);
+        ds.src.set_pos(data_off_);
+        if (!ds.ev.operand(out)) return fail(ds.ev.error());
+        data_off_ = ds.src.pos();
+        return true;
+    }
+    exhausted = true;
+    return false;
+}
+
+// «Переменные, которым нужно присвоить значения, содержащиеся в операторе
+// DATA, в том же порядке перечисляются в операторе READ» (разд. 4.9).
+// Приёмники идут вплотную, без разделителей (VICT 2200).
+bool Interp::do_read(Stream & st)
+{
+    while (!st.src.at_end()) {
+        Evaluator::Target t;
+        if (!st.ev.target(t, true)) return fail(st.ev.error());
+
+        Value v;
+        bool exhausted = false;
+        if (!next_data(v, exhausted)) {
+            if (!exhausted) return false;
+            // «При попытке считывания 13-й пары данных система выдаст
+            // сообщение об ошибке (ERR 27), поскольку в операторах DATA
+            // нет больше констант» (пример 4.21).
+            return machine_error(err::DATA_END, "в операторах DATA больше нет значений");
+        }
+        if (t.is_str != v.is_str)
+            return machine_error(err::UNKNOWN,
+                                 "тип значения в DATA не совпадает с приёмником");
+        if (!st.ev.store(t, v)) return fail(st.ev.error());
+    }
+    return true;
+}
+
+// «Оператор RESTORE без параметров устанавливает специальный указатель
+// начала считывания данных на первую константу первого оператора DATA в
+// программе» (разд. 4.9). Формы: `RESTORE`, `RESTORE <а.в.>`,
+// `RESTORE ,<строка>` и `RESTORE <а.в.>,<строка>`; в потоке запятая — `DE`,
+// номер строки — сырой двухбайтовый BCD.
+bool Interp::do_restore(Stream & st)
+{
+    if (!data_ready_) build_data();
+
+    long n = 1;
+    unsigned line = 0;
+    bool has_line = false;
+
+    bool comma = false;
+    if (!st.src.at_end()) {
+        uint8_t b = 0;
+        // Запятая формы `RESTORE ,<строка>` читается сырым байтом: в позиции
+        // операнда `DE` — не запятая, а однобайтовый литерал, и он съел бы
+        // старший байт номера строки (CLAUDE.md, ловушка 2).
+        if (st.src.peek_raw_byte(b) && b == 0xDE) {
+            st.src.skip(1);
+            comma = true;
+        } else {
+            Number v;
+            if (!st.ev.number(v)) return fail(st.ev.error());
+            // «Значение арифметического выражения должно быть в пределах
+            // от 1 до 9999».
+            if (!v.floor_to_int(n) || n < 1 || n > 9999)
+                return machine_error(err::UNKNOWN, "RESTORE: номер константы вне 1…9999");
+            // А вот после выражения разделитель читается уже в позиции
+            // операции — там `DE` запятая и есть.
+            Tok t;
+            if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+            if (t.t == Tok::COMMA) { st.ev.parser().consume(); comma = true; }
+            else st.ev.parser().unpeek();
+        }
+    }
+    if (comma) {
+        uint8_t a = 0, b = 0;
+        if (!st.src.take_raw_byte(a) || !st.src.take_raw_byte(b))
+            return fail("RESTORE: обрезан номер строки");
+        line = bcd2(a) * 100 + bcd2(b);
+        has_line = true;
+    }
+
+    unsigned start = 0;
+    if (has_line) {
+        // «отсчёт начинается с первой константы DATA указанной строки»
+        for (; start < data_.size(); ++start)
+            if (img_.line(data_[start].line).number == line) break;
+        if (start >= data_.size())
+            return machine_error(err::UNKNOWN,
+                                 "RESTORE: в строке " + num_str(line) + " нет оператора DATA");
+    }
+    restore_data(start);
+
+    // Отсчёт констант с единицы: `RESTORE 4,120` — на четвёртой.
+    for (long k = 1; k < n; ++k) {
+        Value v;
+        bool exhausted = false;
+        if (!next_data(v, exhausted)) {
+            if (!exhausted) return false;
+            return machine_error(err::DATA_END, "RESTORE: в операторах DATA меньше значений");
+        }
+    }
+    return true;
+}
+
 bool Interp::do_deffn(Stream & st, unsigned len)
 {
     // Само определение исполнения не требует: подпрограмма начинается
@@ -1663,8 +1811,7 @@ bool Interp::do_load_dc(Stream & st)
     // целиком, а с ней — циклы и адреса возвратов.
     const bool direct = li_ == DIRECT;
     img_ = next;
-    labels_.clear();
-    labels_ready_ = false;
+    rescan();
 
     if (direct) {
         // «В режиме непосредственного счёта оператор LOAD DC (LOAD DA) только
@@ -1699,14 +1846,18 @@ bool Interp::jump(unsigned line_number)
 
 bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
 {
-    // REM и % операнды не разбирают вовсе.
-    if (verb == 0x56 || verb == 0x3F) return true;
+    // REM и % операнды не разбирают вовсе. DATA при исполнении тоже не
+    // делает ничего: значения из него забирает READ, а сам он — «оператор
+    // задания констант» (руководство, разд. 4.9).
+    if (verb == 0x56 || verb == 0x3F || verb == 0x29) return true;
 
     Stream st(ops, len, &img_.vars(), store_);
 
     switch (verb) {
         case 0x36: return do_let(st);
         case 0x28: return do_printusing(st);
+        case 0x44: return do_read(st);
+        case 0x51: return do_restore(st);
         case 0x4C: return do_print(st);
         case 0x41: return do_input(st);
         case 0x0624: return do_linput(st);
@@ -1789,8 +1940,11 @@ void Interp::clear_all()
     store_.clear();
     loops_.clear();
     calls_.clear();
-    labels_.clear();
-    labels_ready_ = false;
+    rescan();
+    // «Оператор RESTORE без параметров устанавливает указатель начала
+    // считывания данных на первую константу первого оператора DATA»
+    // (руководство, разд. 4.9) — CLEAR и RUN без номера строки делают то же.
+    restore_data(0);
     trap_ = ErrorTrap();
     err_code_.clear();
 }
@@ -1851,6 +2005,10 @@ bool Interp::run_from(unsigned line_number, std::string & error)
 {
     error_.clear();
     err_code_.clear();
+    // Программу могли поправить между запусками, а метки и список DATA
+    // строятся её просмотром. Указатель начала считывания при этом
+    // сохраняется — как сохраняются и значения переменных (разд. 4.1).
+    rescan();
     unsigned idx = 0;
     if (!img_.find(line_number, idx)) {
         error = "нет строки " + num_str(line_number);
@@ -1866,6 +2024,7 @@ bool Interp::execute(const uint8_t * body, unsigned len, std::string & error)
 {
     error_.clear();
     err_code_.clear();
+    rescan();
     direct_.assign(body, body + len);
     li_ = DIRECT;
     off_ = 0;

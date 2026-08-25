@@ -14,6 +14,7 @@ namespace iskra {
 // Полной таблицы кодов в руководстве нет. Известно следующее:
 //
 //   03    математическая ошибка          книга, пример 11.11
+//   27    в DATA больше нет констант     книга, пример 4.21
 //   71    такой файл уже есть            EDITOR 7850…7885
 //   72    старый файл мал                EDITOR 7855 → 7673 → 7885
 //   73    такого файла нет               EDITOR 7855 → 7865
@@ -26,6 +27,7 @@ namespace iskra {
 namespace err {
 
 const char * const MATH        = "03";
+const char * const DATA_END    = "27";
 const char * const FILE_EXISTS = "71";
 const char * const FILE_SMALL  = "72";
 const char * const NO_FILE     = "73";

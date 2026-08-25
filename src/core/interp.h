@@ -102,6 +102,8 @@ private:
 
     bool do_print(Stream & st);
     bool do_printusing(Stream & st);
+    bool do_read(Stream & st);
+    bool do_restore(Stream & st);
     bool do_select(Stream & st);
     bool do_open(Stream & st, bool with_device);
     bool do_dload(Stream & st);
@@ -151,6 +153,19 @@ private:
     // один раз при первом вызове.
     void build_labels();
 
+    // Операторы DATA в порядке строк. У машины они связаны цепочкой прямо в
+    // потоке — два последних байта операндов каждого DATA указывают на
+    // следующий (docs/format.md, разд. 5); здесь это просто список, который
+    // строится заново после всякой правки программы.
+    void build_data();
+    // Очередное значение из операторов DATA. false и exhausted — данные
+    // кончились (ERR 27); false без exhausted — операнд не разобрался.
+    bool next_data(Value & out, bool & exhausted);
+    // Указатель начала считывания: оператор DATA и смещение в его операндах.
+    void restore_data(unsigned stmt) { data_i_ = stmt; data_off_ = 0; }
+    // Сбросить построенное просмотром программы — после её правки.
+    void rescan() { labels_.clear(); labels_ready_ = false; data_ready_ = false; }
+
     void emit(const std::string & koi8);
     void emit_newline();
     // Вывод группы PRINT таблицы устройств: «PRINT — устройство
@@ -196,6 +211,17 @@ private:
     // Метка помеченной подпрограммы → её DEFFN': строка и смещение в теле.
     std::map<unsigned, std::pair<unsigned, unsigned> > labels_;
     bool labels_ready_;
+
+    // Оператор DATA: строка, смещение операндов и их длина уже без
+    // двухбайтового хвоста цепочки.
+    struct DataStmt {
+        DataStmt() : line(0), at(0), len(0) {}
+        unsigned line, at, len;
+    };
+    std::vector<DataStmt> data_;
+    bool data_ready_;
+    unsigned data_i_;       // указатель начала считывания: какой DATA
+    unsigned data_off_;     // и смещение в его операндах
 
     unsigned li_;           // индекс текущей строки
     unsigned off_;          // смещение текущего оператора в теле строки

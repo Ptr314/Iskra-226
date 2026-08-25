@@ -479,9 +479,12 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
         ByteSource dsrc(ops, len - 2, &names.vars());
         Decoder dd(dsrc, names, out);
         dd.emit("DATA ");
+        // Берётся ровно один операнд, а не выражение: разделителей между
+        // значениями нет, и полный разбор прочитал бы `E7` следующей
+        // константы как `AND` — в позиции операции это она и есть.
         for (bool first = true; !dsrc.at_end(); first = false) {
             if (!first) dd.emit(",");
-            if (!dd.expr()) { error = dd.error(); return false; }
+            if (!dd.operand()) { error = dd.error(); return false; }
         }
         return true;
     }
@@ -659,18 +662,27 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             return true;
 
         case 0x51: {                                   // RESTORE
-            d.emit("RESTORE ");
+            // Все четыре формы разд. 4.9: без параметров, с номером
+            // константы, с номером строки и с обоими.
+            d.emit("RESTORE");
+            if (src.at_end()) return true;
+            d.emit(" ");
             Tok t;
-            if (!d.parser().peek(t, true)) { error = d.error(); return false; }
-            if (t.t != Tok::COMMA) {
-                if (!d.expr()) { error = d.error(); return false; }
-                if (!d.parser().take(t, false) || t.t != Tok::COMMA) {
-                    error = "RESTORE без запятой";
-                    return false;
-                }
+            bool comma = false;
+            uint8_t b = 0;
+            // Запятая в начале операндов — сырой `DE`: в позиции операнда
+            // разбор принял бы его за однобайтовый литерал и съел старший
+            // байт номера строки (VICT 2190 = `51 03 DE 20 40`).
+            if (src.peek_raw_byte(b) && b == 0xDE) {
+                src.skip(1);
+                comma = true;
             } else {
-                d.parser().consume();
+                if (!d.expr()) { error = d.error(); return false; }
+                if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+                if (t.t == Tok::COMMA) { d.parser().consume(); comma = true; }
+                else d.parser().unpeek();
             }
+            if (!comma) return true;
             d.emit(",");
             std::string n;
             if (!line_number(src, n)) { error = "RESTORE без номера строки"; return false; }

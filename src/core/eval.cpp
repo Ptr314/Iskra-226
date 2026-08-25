@@ -153,6 +153,25 @@ bool Evaluator::product(Value & out)
     }
 }
 
+// Ровно один операнд: без операций, без степени и без заглядывания вперёд.
+// Знак впереди всё же разбираем — как машина кодирует отрицательную
+// константу в `DATA`, неизвестно, а прочесть обе записи ничего не стоит.
+bool Evaluator::operand(Value & out)
+{
+    Tok t;
+    if (!ex_.peek(t, true)) return fail(ex_.error());
+    if (t.t == Tok::MINUS || t.t == Tok::PLUS) {
+        const bool neg = (t.t == Tok::MINUS);
+        ex_.consume();
+        if (!operand(out)) return false;
+        if (!neg) return true;
+        if (out.is_str) return fail("минус перед строкой");
+        out.num = out.num.negated();
+        return true;
+    }
+    return primary(out);          // заглянутую лексему primary() и заберёт
+}
+
 bool Evaluator::unary(Value & out)
 {
     Tok t;
