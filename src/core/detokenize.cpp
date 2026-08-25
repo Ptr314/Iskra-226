@@ -1027,17 +1027,31 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             return true;
         }
 
-        case 0x43: case 0x61: case 0x62: {             // AND( OR( XOR(
-            d.emit(verb == 0x43 ? "AND(" : (verb == 0x61 ? "OR(" : "XOR("));
-            if (!d.lvalue()) { error = d.error(); return false; }
-            Tok t;
-            if (!d.parser().take(t, false) || t.t != Tok::COMMA) {
-                error = "поразрядная операция без запятой";
-                return false;
+        case 0x43: case 0x61: case 0x62:               // AND( OR( XOR(
+        case 0x45: case 0x4A: {                        // BOOL и ADD
+            if (verb == 0x45) {
+                // Впереди цифра операции (LКОПДИСК 4243).
+                uint8_t x = 0;
+                if (!src.take_raw_byte(x)) { error = "BOOL без кода операции"; return false; }
+                d.emit("BOOL" + std::string(1, HEXD[x & 15]) + "(");
+            } else if (verb == 0x4A) {
+                uint8_t b = 0;
+                const bool c = src.peek_raw_byte(b) && b == 0xD4;
+                if (c) src.skip(1);
+                d.emit(c ? "ADDC(" : "ADD(");
+            } else {
+                d.emit(verb == 0x43 ? "AND(" : (verb == 0x61 ? "OR(" : "XOR("));
             }
-            uint8_t code = 0;
-            if (!src.take_raw_byte(code)) { error = "поразрядная операция без кода"; return false; }
-            d.emit("," + std::string(1, HEXD[code >> 4]) + HEXD[code & 15] + ")");
+            // Приёмник индексируется только по таблицам: за ним сразу идёт
+            // второй аргумент, и заглядывание приняло бы его индекс за
+            // список индексов приёмника (CLAUDE.md, ловушка 3 — та же, что
+            // у `BIN(` и `INIT`).
+            if (!d.lvalue(true)) { error = d.error(); return false; }
+            d.emit(",");
+            // Второй аргумент — либо однобайтовый литерал `DE hh`, либо
+            // вторая переменная; разделителя между ними в потоке нет.
+            if (!d.operand()) { error = d.error(); return false; }
+            d.emit(")");
             return true;
         }
 

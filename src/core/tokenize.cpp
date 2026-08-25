@@ -875,24 +875,44 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
     }
 
     // Поразрядные операции над байтами: `AND(B¤,DF)` = 43 03 23 DE DF
-    // (EDITOR 3469). Второй операнд — код байта, как у INIT(.
+    // (EDITOR 3469), `AND(A¤,B¤)` = 43 02 1E 15 (DISSM 23571). Разделителя
+    // между аргументами в потоке нет вовсе: `DE hh` — это и есть
+    // однобайтовый литерал, как у INIT(.
+    //
+    // `BOOL` перед ними: у него впереди ещё цифра операции
+    // (`BOOL 9(A¤,B¤)` = 45 03 09 53 55, LКОПДИСК 4243). `ADD` из той же
+    // семьи, но с необязательным `C` — байт `D4`, как у `ROTATE C`; в
+    // корпусе форма с `C` не встречается.
     {
-        static const struct { const char * word; uint8_t verb; } BITOPS[] = {
-            { "AND", 0x43 }, { "OR", 0x61 }, { "XOR", 0x62 }
+        static const struct { const char * word; uint8_t verb; int kind; } BITOPS[] = {
+            // kind: 0 — обычная, 1 — BOOL с цифрой, 2 — ADD с признаком C
+            { "BOOL", 0x45, 1 }, { "ADDC", 0x4A, 2 }, { "ADD", 0x4A, 0 },
+            { "AND", 0x43, 0 }, { "OR", 0x61, 0 }, { "XOR", 0x62, 0 }
         };
         for (unsigned k = 0; k < sizeof(BITOPS) / sizeof(BITOPS[0]); ++k) {
             if (!lex_.take_word(BITOPS[k].word)) continue;
             verb = BITOPS[k].verb;
             Encoder enc(lex_, out);
+            if (BITOPS[k].kind == 1) {
+                unsigned x = 0;
+                if (!lex_.take_hex_digit(x)) return err("BOOL без кода операции");
+                out.push_back(static_cast<uint8_t>(x));
+            } else if (BITOPS[k].kind == 2) {
+                out.push_back(0xD4);
+            }
             if (!lex_.take_char('(')) return err("поразрядная операция без скобки");
             if (!enc.lvalue()) return err(enc.error());
             if (!take_sep(enc, Tok::COMMA))
                 return err("поразрядная операция без запятой");
-            out.push_back(0xDE);
             unsigned code = 0;
-            if (!lex_.take_hex_byte(code)) return err("поразрядная операция без кода");
-            out.push_back(static_cast<uint8_t>(code));
-            if (!lex_.take_char(')')) return err("поразрядная операция: скобка не закрыта");
+            if (lex_.take_hex_byte(code)) {
+                out.push_back(0xDE);
+                out.push_back(static_cast<uint8_t>(code));
+            } else if (!enc.expr()) {
+                return err(enc.error());
+            }
+            if (!take_sep(enc, Tok::RPAR) && !lex_.take_char(')'))
+                return err("поразрядная операция: скобка не закрыта");
             return true;
         }
     }

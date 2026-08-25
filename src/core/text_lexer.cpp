@@ -108,6 +108,24 @@ bool TextLexer::take_uint(unsigned & out)
     return true;
 }
 
+bool TextLexer::take_hex_digit(unsigned & out)
+{
+    skip_spaces();
+    if (p_ >= end_) return false;
+    const char c = s_[p_];
+    int d;
+    if (c >= '0' && c <= '9') d = c - '0';
+    else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+    else return false;
+    // Дальше обязана стоять скобка: иначе это имя переменной.
+    unsigned q = p_ + 1;
+    while (q < end_ && s_[q] == ' ') ++q;
+    if (q >= end_ || s_[q] != '(') return false;
+    p_ = q;
+    out = static_cast<unsigned>(d);
+    return true;
+}
+
 bool TextLexer::take_hex_byte(unsigned & out)
 {
     skip_spaces();

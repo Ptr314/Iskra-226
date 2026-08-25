@@ -143,6 +143,13 @@ private:
     bool do_convert(Stream & st);
     bool do_bin(Stream & st);
     bool do_init(Stream & st);
+    // Операции над байтами (гл. 14). `AND`, `OR` и `XOR` — частные
+    // случаи `BOOL`: их таблицы истинности 8, E и 6.
+    bool do_bitop(Stream & st, unsigned x, bool from_stream);
+    bool do_add(Stream & st);
+    bool do_rotate(Stream & st);
+    // Второй аргумент: код байта либо вторая символьная переменная.
+    bool byte_arg(Stream & st, Value & out);
     bool do_let(Stream & st);
     bool do_for(Stream & st);
     bool do_next(Stream & st);

@@ -1913,6 +1913,205 @@ bool Interp::do_bin(Stream & st)
 
 // «Для задания одинаковых значений во все байты символьных переменных или их
 // подстрок» (руководство, разд. 13.3).
+// --- операции над байтами (руководство, гл. 14) -----------------------------
+
+namespace {
+    // «Значение х, представляемое в двоичном виде четырьмя разрядами,
+    // является результатом выполняемой операции» для пар аргументов
+    // (1,1), (1,0), (0,1), (0,0) — таблица 14.5. То есть разряд результата
+    // это просто разряд x под номером «аргумент1*2 + аргумент2».
+    uint8_t bool_byte(unsigned x, uint8_t a, uint8_t b)
+    {
+        uint8_t r = 0;
+        for (unsigned k = 0; k < 8; ++k) {
+            const unsigned i = (((a >> k) & 1u) << 1) | ((b >> k) & 1u);
+            if ((x >> i) & 1u) r |= static_cast<uint8_t>(1u << k);
+        }
+        return r;
+    }
+
+    // Циклический сдвиг поля на |k| разрядов: влево при k > 0, вправо при
+    // k < 0 (руководство, разд. 14.4). Границы байтов не учитываются.
+    void rotate_bits(std::string & f, unsigned off, unsigned len, long k)
+    {
+        if (!len || !k) return;
+        const bool left = k > 0;
+        const unsigned n = static_cast<unsigned>(left ? k : -k);
+        std::string in(f, off, len);
+        for (unsigned i = 0; i < len; ++i) {
+            const unsigned prev = (i + len - 1) % len;
+            const unsigned next = (i + 1) % len;
+            unsigned v;
+            if (n == 8) {
+                v = static_cast<unsigned char>(in[left ? next : prev]);
+            } else if (left) {
+                v = (static_cast<unsigned char>(in[i]) << n) |
+                    (static_cast<unsigned char>(in[next]) >> (8 - n));
+            } else {
+                v = (static_cast<unsigned char>(in[i]) >> n) |
+                    (static_cast<unsigned char>(in[prev]) << (8 - n));
+            }
+            f[off + i] = static_cast<char>(v & 0xFF);
+        }
+    }
+}
+
+// Второй аргумент поразрядных операторов: либо код байта, либо вторая
+// символьная переменная. Разделителя между ними в потоке нет вовсе —
+// `DE hh` это и есть однобайтовый литерал (`AND(B¤,DF)` = `43 03 23 DE DF`,
+// EDITOR 3469; `AND(A¤,B¤)` = `43 02 1E 15`, DISSM 23571).
+bool Interp::byte_arg(Stream & st, Value & out)
+{
+    if (!st.ev.operand(out)) return fail(st.ev.error());
+    if (out.is_str) return true;
+    long n = 0;
+    if (!out.num.floor_to_int(n) || n < 0 || n > 255)
+        return fail("код байта вне 0…255");
+    return true;
+}
+
+// «Логическая операция проводится отдельно над каждым разрядом одной
+// символьной переменной (аргументом 1) и соответствующим разрядом другой
+// символьной переменной либо константы. Результаты записываются в
+// соответствующие разряды <символьной переменной 1>» (разд. 14.3).
+//
+// `AND`, `OR` и `XOR` — частные случаи `BOOL`: «операторы BOOL 8 и AND,
+// BOOL Е и OR, BOOL 6 и XOR соответственно эквивалентны друг другу».
+bool Interp::do_bitop(Stream & st, unsigned x, bool from_stream)
+{
+    if (from_stream) {
+        uint8_t d = 0;
+        if (!st.src.take_raw_byte(d)) return fail("BOOL без кода операции");
+        if (d > 0x0F) return fail("BOOL: код операции больше F");
+        x = d;
+    }
+
+    Evaluator::Target dst;
+    if (!st.ev.target(dst, true)) return fail(st.ev.error());
+    if (!dst.is_str || !dst.data) return fail("поразрядная операция: приёмник не символьный");
+
+    Value arg;
+    if (!byte_arg(st, arg)) return false;
+
+    std::string & f = *dst.data;
+    if (arg.is_str) {
+        // Книга не говорит, что делать с хвостом более длинного приёмника;
+        // принято оставлять его как есть.
+        unsigned n = dst.len;
+        if (arg.str.size() < n) n = static_cast<unsigned>(arg.str.size());
+        for (unsigned i = 0; i < n; ++i)
+            f[dst.off + i] = static_cast<char>(
+                bool_byte(x, static_cast<unsigned char>(f[dst.off + i]),
+                          static_cast<unsigned char>(arg.str[i])));
+    } else {
+        // «В последнем случае логическая операция производится с содержимым
+        // разрядов всех байтов <символьной переменной 1>».
+        long v = 0;
+        arg.num.floor_to_int(v);
+        const uint8_t b = static_cast<uint8_t>(v);
+        for (unsigned i = 0; i < dst.len; ++i)
+            f[dst.off + i] = static_cast<char>(
+                bool_byte(x, static_cast<unsigned char>(f[dst.off + i]), b));
+    }
+    return true;
+}
+
+// «Содержимое аргументов складывается по правилам сложения двоичных чисел,
+// а результат заносится в содержимое первого аргумента» (разд. 14.1).
+// Без `C` переноса между байтами нет; с `C` границы байтов игнорируются.
+bool Interp::do_add(Stream & st)
+{
+    bool carry_mode = false;
+    uint8_t b = 0;
+    // Признак `C` — тот же байт `D4`, что у `ROTATE C`. В корпусе форма с
+    // `C` не встречается, байт взят по аналогии (CLAUDE.md, «Допущения»).
+    if (st.src.peek_raw_byte(b) && b == 0xD4) { st.src.skip(1); carry_mode = true; }
+
+    Evaluator::Target dst;
+    if (!st.ev.target(dst, true)) return fail(st.ev.error());
+    if (!dst.is_str || !dst.data) return fail("ADD: приёмник не символьный");
+
+    Value arg;
+    if (!byte_arg(st, arg)) return false;
+
+    std::string & f = *dst.data;
+    if (!arg.is_str) {
+        long v = 0;
+        arg.num.floor_to_int(v);
+        const unsigned add = static_cast<unsigned>(v) & 0xFF;
+        if (!carry_mode) {
+            // «hh складывается с содержимым каждого байта».
+            for (unsigned i = 0; i < dst.len; ++i)
+                f[dst.off + i] = static_cast<char>(
+                    (static_cast<unsigned char>(f[dst.off + i]) + add) & 0xFF);
+            return true;
+        }
+        // «Если параметр С присутствует, hh складывается только с
+        // содержимым последнего байта символьной переменной».
+        unsigned carry = add;
+        for (unsigned i = dst.len; i-- > 0 && carry; ) {
+            const unsigned s = static_cast<unsigned char>(f[dst.off + i]) + carry;
+            f[dst.off + i] = static_cast<char>(s & 0xFF);
+            carry = s >> 8;
+        }
+        return true;
+    }
+
+    // «Если длина символьных переменных различна, то переменная с меньшей
+    // длиной выравнивается по длине большей, т. е. складываются сначала
+    // последние байты переменных, потом предпоследние».
+    const unsigned m = static_cast<unsigned>(arg.str.size());
+    unsigned carry = 0;
+    for (unsigned k = 0; k < dst.len; ++k) {
+        const unsigned i = dst.len - 1 - k;
+        const unsigned add = (k < m) ? static_cast<unsigned char>(arg.str[m - 1 - k]) : 0u;
+        const unsigned s = static_cast<unsigned char>(f[dst.off + i]) + add + carry;
+        f[dst.off + i] = static_cast<char>(s & 0xFF);
+        carry = carry_mode ? (s >> 8) : 0u;
+    }
+    return true;
+}
+
+// «Оператор ROTATE предназначен для циклического сдвига содержимого
+// символьной переменной на 1—8 разрядов… Отсутствие параметра С обозначает
+// проведение операции с содержимым каждого байта; если параметр С задан,
+// границы между байтами игнорируются» (разд. 14.4).
+bool Interp::do_rotate(Stream & st)
+{
+    bool whole = false;
+    uint8_t b = 0;
+    if (st.src.peek_raw_byte(b) && b == 0xD4) { st.src.skip(1); whole = true; }
+
+    Tok t;
+    if (!st.ev.parser().take(t, true) || t.t != Tok::LPAR)
+        return fail("ROTATE без скобки");
+
+    Evaluator::Target dst;
+    if (!st.ev.target(dst, true)) return fail(st.ev.error());
+    if (!dst.is_str || !dst.data) return fail("ROTATE: не символьная переменная");
+
+    if (!st.ev.parser().take(t, false) || t.t != Tok::COMMA)
+        return fail("ROTATE без запятой");
+
+    Number n;
+    if (!st.ev.number(n)) return fail(st.ev.error());
+    long k = 0;
+    if (!n.floor_to_int(k)) return fail("ROTATE: сдвиг не целое число");
+    if (k < -8 || k > 8) return fail("ROTATE: сдвиг вне −8…8");
+
+    if (!st.ev.parser().take(t, false) || t.t != Tok::RPAR)
+        return fail("ROTATE: скобка не закрыта");
+
+    std::string & f = *dst.data;
+    if (whole) {
+        rotate_bits(f, dst.off, dst.len, k);
+    } else {
+        for (unsigned i = 0; i < dst.len; ++i)
+            rotate_bits(f, dst.off + i, 1, k);
+    }
+    return true;
+}
+
 bool Interp::do_init(Stream & st)
 {
     // Значение — код из двух шестнадцатеричных цифр, символ в кавычках либо
@@ -2561,6 +2760,12 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
         case 0x47: return do_convert(st);
         case 0x4B: return do_bin(st);
         case 0x64: return do_init(st);
+        case 0x43: return do_bitop(st, 0x8, false);   // AND
+        case 0x61: return do_bitop(st, 0xE, false);   // OR
+        case 0x62: return do_bitop(st, 0x6, false);   // XOR
+        case 0x45: return do_bitop(st, 0, true);      // BOOL
+        case 0x4A: return do_add(st);
+        case 0x4D: return do_rotate(st);
         case 0x54: return do_select(st);
         case 0x27: case 0x3A: return do_deffn(st, len);
         case 0x23: return do_gosubq(st);
