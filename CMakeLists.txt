@@ -103,6 +103,12 @@ add_executable(iskra-nohead src/host_headless/main.cpp)
 target_link_libraries(iskra-nohead PRIVATE iskra_headless iskra_host_common
                                            iskra_warnings)
 
+# shell32 — ради разбора командной строки в широких знаках: узкая приходит в
+# кодовой странице системы, и имя файла с кириллицей через неё не проходит.
+if(WIN32)
+    target_link_libraries(iskra-nohead PRIVATE shell32)
+endif()
+
 # MinGW: увести рантайм GCC внутрь exe, чтобы не таскать DLL. Отдельного
 # -static-libwinpthread в 4.9.2 нет, поэтому статичим всё разом: зависимостей,
 # кроме системных, у хоста без окна нет.

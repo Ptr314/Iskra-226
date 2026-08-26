@@ -9,10 +9,15 @@
 #include <string>
 #include <vector>
 
-// Единственное место во всём эмуляторе, где нужна платформа: диалоговый режим
-// в терминале должен знать, показывает ли терминал набранное сам.
+// Два места, где нужна платформа: диалоговый режим в терминале должен знать,
+// показывает ли терминал набранное сам, а командную строку под Windows
+// приходится брать широкой — узкая приходит в кодовой странице системы, и
+// кириллица через неё не проходит (см. main в конце файла).
 #ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
 #  include <io.h>
+#  include <windows.h>
+#  include <shellapi.h>
 #else
 #  include <unistd.h>
 #endif
@@ -23,6 +28,7 @@
 #include "core/koi8.h"
 #include "core/version.h"
 #include "font/font.h"
+#include "host_common/fileio.h"
 #include "host_common/printer.h"
 #include "host_headless/headless_host.h"
 
@@ -171,9 +177,11 @@ int cmd_chart()
     return 0;
 }
 
+// Имя приходит из командной строки в UTF-8, поэтому открывается оно общим
+// open_utf8: путь с кириллицей доходит и сюда.
 bool read_file_bytes(const char * path, std::string & out)
 {
-    std::FILE * f = std::fopen(path, "rb");
+    std::FILE * f = iskra::open_utf8(path, "rb");
     if (!f) return false;
     char buf[4096];
     std::size_t n;
@@ -754,9 +762,9 @@ int cmd_console(const iskra::DiskArgs & mounts)
     return 0;
 }
 
-} // namespace
-
-int main(int argc, char ** argv)
+// Разбор командной строки и вся работа. Аргументы приходят в UTF-8 — под
+// Windows их для этого берут широкими, ниже.
+int run(int argc, char ** argv)
 {
     // `-i` может стоять где угодно: выбираем его до разбора команды,
     // остальные аргументы остаются на своих местах.
@@ -819,3 +827,41 @@ int main(int argc, char ** argv)
 
     return usage();
 }
+
+} // namespace
+
+#ifdef _WIN32
+
+int main()
+{
+    // Узкие аргументы Windows отдаёт в кодовой странице системы, и имя файла
+    // с кириллицей через них не проходит: `--cat ОБРАЗ СТЬЮД` не находил
+    // файла. Берём широкие и переводим в UTF-8 — ровно так же, как окно.
+    int wargc = 0;
+    wchar_t ** wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    if (!wargv || wargc < 1) {
+        std::printf("не разобрать командную строку\n");
+        return 2;
+    }
+
+    std::vector<std::string> utf8(static_cast<std::size_t>(wargc));
+    std::vector<char *> argv(static_cast<std::size_t>(wargc) + 1, 0);
+    for (int i = 0; i < wargc; ++i) {
+        iskra::utf16_to_utf8(wargv[i], utf8[static_cast<std::size_t>(i)]);
+        // Строка своя и живёт до конца main, так что указатель на её байты
+        // отдавать наружу можно.
+        argv[static_cast<std::size_t>(i)] = &utf8[static_cast<std::size_t>(i)][0];
+    }
+    LocalFree(wargv);
+
+    return run(wargc, &argv[0]);
+}
+
+#else
+
+int main(int argc, char ** argv)
+{
+    return run(argc, argv);
+}
+
+#endif
