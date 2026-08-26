@@ -94,6 +94,18 @@ std::string first_line(const std::string & screen)
     return screen.substr(0, e);
 }
 
+std::string line_of(const std::string & screen, unsigned n)
+{
+    std::size_t p = 0;
+    for (unsigned i = 1; i < n; ++i) {
+        const std::size_t e = screen.find('\n', p);
+        if (e == std::string::npos) return std::string();
+        p = e + 1;
+    }
+    const std::size_t e = screen.find('\n', p);
+    return screen.substr(p, e - p);
+}
+
 // --- Таблицы переменных настоящих программ --------------------------------
 
 // Размеры массивов в оттранслированной форме нигде, кроме таблиц, не
@@ -234,6 +246,41 @@ void test_implicit_array()
     CHECK_STR(first_line(screen), " 7");
 }
 
+// **`MAT REDIM` символьного массива меняет и длину элемента.** У `EDITOR`
+// 1120 это `MAT REDIM V¤(5)253` над объявленным `V¤(20)64`, и следом
+// `DATA LOAD DA` читает в него запись из пяти значений по 253 байта. Пока
+// длина элемента оставалась табличной, поле выходило верного размера, а
+// элементов в нём насчитывалось двадцать — и чтение упиралось в «в записи
+// меньше значений, чем приёмников».
+//
+// Переопределение живёт в хранилище, а не в таблицах образа: те уходят на
+// дискету через `SAVE DC`.
+void test_mat_redim_string()
+{
+    // Поле забивается непробельным: LEN считает до последнего такого байта,
+    // и по пробелам размер поля не увидеть.
+    const char * src =
+        "10 DIM V¤(20)64\n"
+        "20 INIT(41)V¤()\n"
+        "30 PRINT LEN(STR(V¤(),1));LEN(V¤(1))\n"
+        "40 MAT REDIM V¤(5)253\n"
+        "50 INIT(42)V¤()\n"
+        "60 PRINT LEN(STR(V¤(),1));LEN(V¤(1))\n"
+        // Пятый элемент теперь начинается с 4*253+1 = 1013-го байта.
+        "70 V¤(5)=\"ПЯТЫЙ\"\n"
+        "80 PRINT STR(V¤(),1013,5);\".\"\n"
+        "90 MAT REDIM V¤(20)64\n"
+        "100 INIT(43)V¤()\n"
+        "110 PRINT LEN(STR(V¤(),1));LEN(V¤(1))\n";
+
+    std::string screen, error;
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(first_line(screen), " 1280  64");
+    CHECK_STR(line_of(screen, 2), " 1265  253");
+    CHECK_STR(line_of(screen, 3), "ПЯТЫЙ.");
+    CHECK_STR(line_of(screen, 4), " 1280  64");
+}
+
 void test_bounds()
 {
     std::string screen, error;
@@ -317,6 +364,7 @@ int main()
     test_two_dimensional();
     test_expression_index();
     test_implicit_array();
+    test_mat_redim_string();
     test_bounds();
     test_multiple_targets();
     test_input_into_array();

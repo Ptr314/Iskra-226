@@ -133,15 +133,32 @@ bool Interp::variable(unsigned index, Number & out) const
 // программа останавливается: принять код и промолчать значило бы соврать.
 // Прочие неизвестные адреса под ключ не подпадают: там устройства у хоста
 // просто нет, а это другое.
-bool Interp::device_skipped(unsigned addr) const
+// Пропускать ли отказ устройства при **выводе**. Ключ `-i` велит пропускать
+// то, чего здесь нет и не будет, — и отказ устройства сюда попадает по тому же
+// доводу, что `ASMB` с `$GIO`.
+//
+// Поначалу ключ покрывал одно только `/10`, у которого не разобрана
+// часть управляющих кодов. Оказалось, что телекоммуникационный интерфейс
+// `/34` — тот же случай: за ним сидит своя микроЭВМ (руководство,
+// разд. 1), и что она делает, задаёт микропрограмма, загруженная `$GIO`.
+// `EDITOR` 5940 её туда кладёт, а строкой ниже шлёт 3072 байта своего
+// знакогенератора. `$GIO` ключ уже пропускает — значит БИФ не
+// запрограммирован, и всё, что он сделал бы, вымысел; вставать на записи
+// в него незачем.
+//
+// **Чтение сюда не входит.** Отказ `DATA LOAD BT` останавливает программу
+// и с ключом: приёмник остался бы с прежним содержимым, а программа
+// считала бы его принятым — и прогон стал бы неправдоподобным молча,
+// а ключ заведён ровно против этого.
+bool Interp::skip_device_write() const
 {
-    return skip_machine_ && addr == 0x10;
+    return skip_machine_;
 }
 
 bool Interp::emit_to_device(const uint8_t * data, unsigned len)
 {
     if (!host_.device_write(static_cast<uint8_t>(print_dev_), data, len)) {
-        if (device_skipped(print_dev_)) return true;
+        if (skip_device_write()) return true;
         print_fail_ = true;
         return false;
     }
@@ -735,10 +752,12 @@ bool Interp::store_value(const Evaluator::Target & target, Stream & st,
     // строка за строкой (руководство, разд. 18.3 и 18.6).
     if (target.whole && !target.is_str) {
         const std::vector<VarInfo> & vi = store_.vars();
-        const unsigned d1 = (target.var < vi.size() && vi[target.var].dim1)
-                                ? vi[target.var].dim1 : 1;
-        const unsigned d2 = (target.var < vi.size() && vi[target.var].dim2)
-                                ? vi[target.var].dim2 : 1;
+        unsigned d1 = (target.var < vi.size() && vi[target.var].dim1)
+                          ? vi[target.var].dim1 : 1;
+        unsigned d2 = (target.var < vi.size() && vi[target.var].dim2)
+                          ? vi[target.var].dim2 : 1;
+        // `MAT REDIM` перекроил массив — его слово главнее табличного.
+        store_.live_dims(target.var, d1, d2);
         for (unsigned i = 1; i <= d1; ++i)
             for (unsigned j = 1; j <= d2; ++j) {
                 if (used >= vals.size()) return fail("в записи меньше значений, чем приёмников");
@@ -757,8 +776,14 @@ bool Interp::store_value(const Evaluator::Target & target, Stream & st,
     // массива записываются построчно» (руководство, разд. 18.6).
     if (target.whole && target.is_str) {
         const std::vector<VarInfo> & vi = store_.vars();
-        const unsigned n = (target.var < vi.size() && vi[target.var].dim1)
-                               ? vi[target.var].dim1 : 1;
+        unsigned n = (target.var < vi.size() && vi[target.var].dim1)
+                         ? vi[target.var].dim1 : 1;
+        unsigned d2 = 1;
+        // `EDITOR` 1120 перекраивает `V¤(20)64` в `V¤(5)253` и читает
+        // в него запись из пяти значений: считать по таблице значило бы
+        // ждать двадцать приёмников вместо пяти.
+        store_.live_dims(target.var, n, d2);
+        n *= d2;
         const unsigned len = store_.str_len(target.var);
         std::string & field = store_.str_field(target.var);
         for (unsigned i = 0; i < n; ++i) {
@@ -910,8 +935,9 @@ bool Interp::save_values(Stream & st, std::vector<Value> & vals)
             st.ev.parser().consume();
             const unsigned var = t.var;
             const std::vector<VarInfo> & vi = store_.vars();
-            const unsigned d1 = (var < vi.size() && vi[var].dim1) ? vi[var].dim1 : 1;
-            const unsigned d2 = (var < vi.size() && vi[var].dim2) ? vi[var].dim2 : 1;
+            unsigned d1 = (var < vi.size() && vi[var].dim1) ? vi[var].dim1 : 1;
+            unsigned d2 = (var < vi.size() && vi[var].dim2) ? vi[var].dim2 : 1;
+            store_.live_dims(var, d1, d2);      // `MAT REDIM` главнее
             for (unsigned i = 1; i <= d1; ++i) {
                 for (unsigned j = 1; j <= d2; ++j) {
                     long idx[2] = { static_cast<long>(i), static_cast<long>(j) };
@@ -1092,7 +1118,7 @@ bool Interp::do_block_transfer(Stream & st, bool load)
                 !host_.device_write(static_cast<uint8_t>(addr),
                                     reinterpret_cast<const uint8_t *>(v.str.data()),
                                     static_cast<unsigned>(v.str.size())) &&
-                !device_skipped(addr))
+                !skip_device_write())
                 return fail("DATA SAVE BT: устройства /" + hex2_str(addr) +
                             " у хоста нет");
         }
@@ -1965,8 +1991,24 @@ bool Interp::do_limits(Stream & st)
 
     unsigned code = 0;
     if (named) {
+        // **Имя — один операнд, индексируемый строго по таблицам.** За ним
+        // идут приёмники вплотную, без разделителей, и заглядывание вперёд
+        // примет индекс первого приёмника за список индексов имени — та же
+        // ловушка, что у `BIN(`, `INIT` и `KEYIN` (CLAUDE.md, ловушка 3).
+        // На ней вставал `EDITOR` 5820: `LIMITS T#D%(D),D¤,X,Y,Z,A`, где
+        // `D¤` — скаляр, а следом идёт индекс `X`.
         std::string name;
-        if (!st.ev.text(name)) return fail(st.ev.error());
+        if (t.t == Tok::STR) {
+            st.ev.parser().consume();
+            name = t.s;
+        } else {
+            Evaluator::Target from;
+            if (!st.ev.target(from, true)) return fail(st.ev.error());
+            Value v;
+            if (!st.ev.load(from, v)) return fail(st.ev.error());
+            if (!v.is_str) return fail("LIMITS: имя файла не символьное");
+            name = v.str;
+        }
         uint8_t nm[NAME_LEN];
         Catalog::make_name(name, nm);
 
@@ -1974,7 +2016,6 @@ bool Interp::do_limits(Stream & st)
         CatalogEntry e;
         std::string err;
         if (!cat.find(nm, e, err)) return fail(err);
-        st.ev.parser().unpeek();
         code = limits_code(e);
         if (e.exists()) {
             r.bound = true;
@@ -2478,11 +2519,12 @@ bool Interp::do_redim(Stream & st)
 
         std::string err;
         if (store_.is_string(var)) {
-            unsigned len = str_len ? str_len : store_.str_len(var);
-            const std::size_t total = static_cast<std::size_t>(len) * dim[0] *
-                                      (dim[1] ? dim[1] : 1);
-            if (total > 64u * 1024u) return fail("MAT REDIM: слишком большой массив");
-            store_.str_field(var).resize(total, ' ');
+            // Меняются **и число элементов, и длина элемента**: `EDITOR` 1120
+            // перекраивает `V¤(20)64` в `V¤(5)253` и читает в него запись из
+            // пяти значений по 253 байта. Считать по прежней длине элемента
+            // значило бы ждать двадцать приёмников вместо пяти.
+            if (!store_.str_redim(var, dim[0], dim[1], str_len, err))
+                return fail("MAT REDIM: " + err);
         } else {
             if (!store_.array_grow(var, dim[0], dim[1], err)) return fail(err);
         }
@@ -2558,12 +2600,9 @@ bool Interp::do_mat_read(Stream & st, bool from_keyboard)
 
             std::string err;
             if (store_.is_string(var)) {
-                const unsigned len = str_len ? str_len : store_.str_len(var);
-                const std::size_t total = static_cast<std::size_t>(len) * dim[0] *
-                                          (dim[1] ? dim[1] : 1);
-                if (total > 64u * 1024u)
-                    return fail("MAT READ/INPUT: слишком большой массив");
-                store_.str_field(var).resize(total, ' ');
+                // Как у `MAT REDIM`: меняется и число элементов, и длина.
+                if (!store_.str_redim(var, dim[0], dim[1], str_len, err))
+                    return fail("MAT READ/INPUT: " + err);
             } else {
                 if (!store_.array_grow(var, dim[0], dim[1], err)) return fail(err);
             }

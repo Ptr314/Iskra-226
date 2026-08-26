@@ -62,8 +62,9 @@ public:
     // Число элементов массива: dim1 * dim2, у одномерного — dim1.
     bool array_count(unsigned var, unsigned & n, std::string & error);
 
-    // Повторное описание символьной переменной очищает её поле.
-    void reset_string(unsigned var) { strs_.erase(var); }
+    // Повторное описание символьной переменной очищает её поле и снимает
+    // переопределение от `MAT REDIM`: размеры теперь берутся из `DIM`.
+    void reset_string(unsigned var) { strs_.erase(var); str_dims_.erase(var); }
 
     // Символьная переменная — поле байт постоянной длины, заполненное
     // пробелами. Массив строк — одно непрерывное поле: «символьный массив
@@ -83,11 +84,31 @@ public:
     // Длина одного элемента символьной переменной.
     unsigned str_len(unsigned var) const;
 
+    // `MAT REDIM` символьного массива: новые размерности и, если задана,
+    // новая длина элемента. Поле пересобирается под них.
+    //
+    // Переопределение держится **при себе, а не в таблицах образа**: они
+    // уходят на дискету через `SAVE DC`, и переписывать их из-за временной
+    // перекройки массива нельзя. У числовых массивов так с самого начала —
+    // их размерности живут в `arrays_`.
+    bool str_redim(unsigned var, unsigned dim1, unsigned dim2, unsigned len,
+                   std::string & error);
+
+    // Действующие размерности символьного массива.
+    void str_dims(unsigned var, unsigned & dim1, unsigned & dim2) const;
+
+    // Размерности массива, какими они стали после `DIM` и `MAT REDIM`.
+    // Если ни того, ни другого не было, d1 и d2 остаются как их задал
+    // вызывающий: у него своё умолчание, и менять его тут нечестно.
+    // Одномерный массив отдаёт d2 == 1.
+    void live_dims(unsigned var, unsigned & d1, unsigned & d2) const;
+
     void clear()
     {
         nums_.clear();
         arrays_.clear();
         strs_.clear();
+        str_dims_.clear();
     }
 
     // CLEAR N перед загрузкой сегмента: «стирает все переменные, не
@@ -119,10 +140,18 @@ private:
         std::vector<Number> cells;
     };
 
+    // Что `MAT REDIM` перекроил у символьного массива. Нулевая длина
+    // значит «длина элемента прежняя».
+    struct StrDim {
+        StrDim() : dim1(0), dim2(0), len(0) {}
+        unsigned dim1, dim2, len;
+    };
+
     const std::vector<VarInfo> & vars_;
     std::map<unsigned, Number> nums_;
     std::map<unsigned, Array> arrays_;
     std::map<unsigned, std::string> strs_;
+    std::map<unsigned, StrDim> str_dims_;
     unsigned boundary_;          // первая необщая переменная после COM CLEAR
     bool has_boundary_;
 };

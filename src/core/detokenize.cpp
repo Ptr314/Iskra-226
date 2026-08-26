@@ -1502,10 +1502,16 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
                 || ((t.t == Tok::VAR || t.t == Tok::ARRAY)
                     && t.var < names.vars().size() && names.vars()[t.var].is_string);
             if (named) {
-                // Имя — один операнд: за ним идут приёмники вплотную, без
-                // разделителей, и выражение приняло бы их индексы за своё
-                // продолжение.
-                if (!d.operand()) { error = d.error(); return false; }
+                // Имя — один операнд, и **индексируется он строго по
+                // таблицам**: за ним идут приёмники вплотную, без
+                // разделителей, и заглядывание вперёд примет индекс первого
+                // приёмника за список индексов имени. Литерал такой беды не
+                // знает, а переменную приходится брать приёмником.
+                if (t.t == Tok::STR) {
+                    if (!d.operand()) { error = d.error(); return false; }
+                } else {
+                    if (!d.lvalue(true)) { error = d.error(); return false; }
+                }
                 d.emit(",");
             }
             return lvalue_list(d, src, error);

@@ -251,8 +251,9 @@ void test_print_missing_device()
 // У графического устройства `10` разобрана часть управляющих кодов —
 // `03`, `0D`, `0E`, `0F` (`docs/format.md`, разд. 5), — а на остальных
 // программа останавливается. Ключ `-i` велит такое пропускать, как `ASMB`
-// и `$GIO`. Прочие неизвестные адреса ключ не покрывает: там устройства
-// просто нет.
+// и `$GIO`, и **то же самое с любым устройством, которого у хоста нет**:
+// за `/34` сидит своя микроЭВМ, а её микропрограмму (`$GIO`) ключ уже
+// пропустил, так что вывод туда всё равно ушёл бы в никуда.
 void test_print_graphics_device_skipped()
 {
     const char * src = "10 PRINT /10,HEX(01)\n20 PRINT \"ДОШЛИ\"\n";
@@ -276,17 +277,35 @@ void test_print_graphics_device_skipped()
         CHECK_STR(line_of(host.dump(), 1), "ДОШЛИ");
     }
     {
-        // А вот `/34` под ключ не подпадает.
+        // `/34` под ключ подпадает так же: вывод в устройство, которого нет.
         HeadlessHost host;
         std::string koi8, error;
-        utf8_to_koi8("10 PRINT /34,\"КУДА-ТО\"\n", koi8);
+        utf8_to_koi8("10 PRINT /34,\"КУДА-ТО\"\n"
+                     "20 DATA SAVE BT /34,\"И ТУДА ЖЕ\"\n"
+                     "30 PRINT \"ДОШЛИ\"\n", koi8);
+        NameTable names;
+        ProgramImage img;
+        if (!tokenize(koi8, img, names, error)) { CHECK(false); return; }
+        Interp interp(img, host);
+        interp.set_skip_machine(true);
+        CHECK(interp.run(error));
+        CHECK_STR(line_of(host.dump(), 1), "ДОШЛИ");
+    }
+    {
+        // **Чтение ключ не покрывает.** Приёмник остался бы с прежним
+        // содержимым, а программа считала бы его принятым — прогон стал бы
+        // неправдоподобным молча, а ключ заведён ровно против этого.
+        HeadlessHost host;
+        std::string koi8, error;
+        utf8_to_koi8("10 DIM R\xC2\xA4""4\n"
+                     "20 DATA LOAD BT /35,R\xC2\xA4\n", koi8);
         NameTable names;
         ProgramImage img;
         if (!tokenize(koi8, img, names, error)) { CHECK(false); return; }
         Interp interp(img, host);
         interp.set_skip_machine(true);
         CHECK(!interp.run(error));
-        CHECK(error.find("/34") != std::string::npos);
+        CHECK(error.find("/35") != std::string::npos);
     }
 }
 

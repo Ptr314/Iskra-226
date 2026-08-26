@@ -119,6 +119,32 @@ void test_len()
     CHECK_STR(line_of(screen, 1), " 8  6  1");
 }
 
+// **У неявных функций нет своей закрывающей скобки.** В тексте `LEN(A¤)`
+// она есть, а в потоке её нет вовсе: `B=LEN(A¤)` = `36 04 00 D9 ED 01`.
+// Значит всякий `D0` после аргумента принадлежит кому-то снаружи, и трогать
+// его нельзя. Ровно на этом вставал `EDITOR` 5705 — `STR(B9¤,1,LEN B9¤)`:
+// скобку `STR(` съедала `LEN`, а `STR(` потом сообщала, что не закрыта.
+void test_implicit_inside()
+{
+    std::string screen, error;
+    const char * src =
+        "10 DIM B¤8,C¤4\n"
+        "20 B¤=\"1CF\":C¤=HEX(41424344)\n"
+        "30 PRINT STR(B¤,1,LEN(B¤));\".\"\n"
+        "40 PRINT STR(B¤,1,NUM(B¤));\".\"\n"
+        "50 PRINT STR(C¤,1,VAL(C¤)-64);\".\"\n"
+        "60 PRINT STR(C¤,1,VAL(C¤,2)/4200);\".\"\n"
+        "70 PRINT STR(B¤,1,POS(B¤=\"C\"));\".\"\n"
+        "80 PRINT (LEN(B¤)+1)*2\n";
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "1CF.");
+    CHECK_STR(line_of(screen, 2), "1.");
+    CHECK_STR(line_of(screen, 3), "A.");
+    CHECK_STR(line_of(screen, 4), "ABC.");
+    CHECK_STR(line_of(screen, 5), "1C.");
+    CHECK_STR(line_of(screen, 6), " 8");
+}
+
 // Разд. 13.6: три примера NUM из руководства.
 void test_num()
 {
@@ -663,6 +689,7 @@ int main()
     test_substring();
     test_substring_assignment();
     test_len();
+    test_implicit_inside();
     test_num();
     test_val();
     test_pos();

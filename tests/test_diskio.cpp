@@ -192,6 +192,30 @@ void test_limits()
     CHECK_STR(line_of(screen, 2), " 0  0  0  0");
 }
 
+// **Имя файла у `LIMITS` — один операнд, индексируемый по таблицам.** За ним
+// идут четыре приёмника вплотную, без разделителей, и заглядывание вперёд
+// примет индекс первого из них за список индексов имени: `EDITOR` 5820
+// (`LIMITS T#D%(D),D¤,X,Y,Z,A`) на этом вставал с сообщением «список
+// индексов не закрыт». Та же ловушка, что у `BIN(`, `INIT` и `KEYIN`.
+void test_limits_named_by_variable()
+{
+    const char * src =
+        "10 DIM N$8\n"
+        "20 N$=\"ANKETA\"\n"
+        "30 LIMITS T#0,N$,X,Y,Z,C\n"
+        "40 PRINT X;Y;Z;C\n"
+        // И то же самое там, где строка таблицы задана выражением.
+        "50 DIM R%(4)\n"
+        "60 R%(2)=0:D=2\n"
+        "70 LIMITS T#R%(D),N$,X,Y,Z,C\n"
+        "80 PRINT X;Y;Z;C\n";
+
+    std::string screen, error;
+    if (!run_text(src, screen, error)) { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), " 5  24  4  2");
+    CHECK_STR(line_of(screen, 2), " 5  24  4  2");
+}
+
 // Строка таблицы устройств выбирается программой, а не выдаётся системой:
 // два файла открыты одновременно в разных строках.
 void test_two_rows()
@@ -653,6 +677,7 @@ int main()
     test_skip();
     test_skip_end();
     test_limits();
+    test_limits_named_by_variable();
     test_two_rows();
     test_tokens_match_text();
     test_scratch();

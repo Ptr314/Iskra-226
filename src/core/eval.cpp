@@ -6,6 +6,7 @@
 #include "core/eval.h"
 
 #include <cmath>
+#include <cstdio>
 
 namespace iskra {
 
@@ -315,6 +316,14 @@ bool Evaluator::substr(Value & out, VarStore::StrLoc & loc)
 }
 
 // Неявные функции: скобок в потоке нет вовсе, аргумент один.
+//
+// **Закрывающую скобку трогать нельзя.** В тексте `LEN(A¤)` она есть, а в
+// потоке её нет: `B=LEN(A¤)` = `36 04 00 D9 ED 01`, и `D0` там не
+// появляется (то же у `NUM`, `VAL` и `POS`). Значит всякий `D0`, который
+// виден после аргумента, принадлежит кому-то снаружи — и съесть его значит
+// сломать того, кто его ждёт. Ровно так `EDITOR` 5705 и вставал:
+// `STR(B9¤,1,LEN B9¤)` — скобку `STR(` съедала `LEN`, а `STR(` потом
+// сообщала, что не закрыта.
 bool Evaluator::implicit(Value & out, Tok::Type fn)
 {
     Value a;
@@ -351,8 +360,6 @@ bool Evaluator::implicit(Value & out, Tok::Type fn)
                 return fail("непонятный знак отношения");
             if (hit) { found = static_cast<unsigned>(i + 1); break; }
         }
-        if (!ex_.peek(t, false)) return fail(ex_.error());
-        if (t.t == Tok::RPAR) ex_.consume();
         out.num = Number::from_int(static_cast<long>(found));
         return true;
     }
@@ -376,13 +383,9 @@ bool Evaluator::implicit(Value & out, Tok::Type fn)
             if (two.t != Tok::HASH) return fail("у VAL( второй аргумент может быть только 2");
             if (a.str.size() < 2) return fail("VAL( с двумя байтами от строки короче двух");
             r = r * 256 + static_cast<unsigned char>(a.str[1]);
-            if (!ex_.peek(t, false)) return fail(ex_.error());
         }
         out.num = Number::from_int(static_cast<long>(r));
     }
-
-    // Скобка в тексте есть, в потоке её нет — просто съедаем.
-    if (t.t == Tok::RPAR) ex_.consume();
     return true;
 }
 
@@ -497,7 +500,12 @@ bool Evaluator::primary(Value & out)
 
         default: break;
     }
-    return fail("операнд ещё не вычисляется: " + t.s);
+    // У многих лексем текста нет вовсе, и сообщение выходило пустым.
+    // Называем тогда хотя бы номер — так же, как это делает транслятор.
+    if (!t.s.empty()) return fail("операнд ещё не вычисляется: " + t.s);
+    char b[32];
+    std::sprintf(b, "лексема %d", static_cast<int>(t.t));
+    return fail(std::string("операнд ещё не вычисляется: ") + b);
 }
 
 // --- приёмники --------------------------------------------------------------

@@ -120,6 +120,11 @@ void VarStore::clear_non_common()
         if (is_common(it->first)) ++it;
         else strs_.erase(it++);
     }
+    for (std::map<unsigned, StrDim>::iterator it = str_dims_.begin();
+         it != str_dims_.end(); ) {
+        if (is_common(it->first)) ++it;
+        else str_dims_.erase(it++);
+    }
 }
 
 bool VarStore::array_grow(unsigned var, unsigned dim1, unsigned dim2,
@@ -189,9 +194,62 @@ unsigned VarStore::str_len(unsigned var) const
 {
     unsigned len = 16;                          // длина по умолчанию
     if (var < vars_.size() && vars_[var].str_len) len = vars_[var].str_len;
+    // `MAT REDIM` перекроил — его слово главнее описания из таблиц.
+    std::map<unsigned, StrDim>::const_iterator it = str_dims_.find(var);
+    if (it != str_dims_.end() && it->second.len) len = it->second.len;
     if (len < 1) len = 1;
     if (len > 253) len = 253;                   // предел из разд. 4.2
     return len;
+}
+
+// Действующие размерности символьного массива: сперва то, что перекроил
+// `MAT REDIM`, потом описание из таблиц образа.
+void VarStore::str_dims(unsigned var, unsigned & dim1, unsigned & dim2) const
+{
+    dim1 = 10;
+    dim2 = 0;
+    if (var < vars_.size()) {
+        if (vars_[var].dim1) dim1 = vars_[var].dim1;
+        dim2 = vars_[var].dim2;
+    }
+    std::map<unsigned, StrDim>::const_iterator it = str_dims_.find(var);
+    if (it != str_dims_.end()) {
+        if (it->second.dim1) dim1 = it->second.dim1;
+        dim2 = it->second.dim2;
+    }
+}
+
+void VarStore::live_dims(unsigned var, unsigned & d1, unsigned & d2) const
+{
+    std::map<unsigned, StrDim>::const_iterator s = str_dims_.find(var);
+    if (s != str_dims_.end()) {
+        if (s->second.dim1) d1 = s->second.dim1;
+        d2 = s->second.dim2 ? s->second.dim2 : 1;
+        return;
+    }
+    std::map<unsigned, Array>::const_iterator a = arrays_.find(var);
+    if (a != arrays_.end()) {
+        if (a->second.dim1) d1 = a->second.dim1;
+        d2 = a->second.dim2 ? a->second.dim2 : 1;
+    }
+}
+
+bool VarStore::str_redim(unsigned var, unsigned dim1, unsigned dim2,
+                         unsigned len, std::string & error)
+{
+    if (!dim1) dim1 = 10;
+    StrDim & d = str_dims_[var];
+    d.dim1 = dim1;
+    d.dim2 = dim2;
+    if (len) d.len = len;
+
+    const std::size_t total = static_cast<std::size_t>(str_len(var)) * dim1 *
+                              (dim2 ? dim2 : 1);
+    if (total > 64u * 1024u) return err(error, "слишком большой массив");
+    // Содержимое сохраняется: «MAT REDIM меняет размерности уже
+    // существующего массива» (руководство, разд. 12.2.4).
+    str_field(var).resize(total, ' ');
+    return true;
 }
 
 std::string & VarStore::str_field(unsigned var)
@@ -200,9 +258,11 @@ std::string & VarStore::str_field(unsigned var)
     if (it != strs_.end()) return it->second;
 
     unsigned count = 1;
-    if (var < vars_.size() && vars_[var].is_array) {
-        const VarInfo & v = vars_[var];
-        count = (v.dim1 ? v.dim1 : 10) * (v.dim2 ? v.dim2 : 1);
+    if ((var < vars_.size() && vars_[var].is_array) ||
+        str_dims_.find(var) != str_dims_.end()) {
+        unsigned d1 = 10, d2 = 0;
+        str_dims(var, d1, d2);
+        count = d1 * (d2 ? d2 : 1);
     }
     // «Начальное значение символьных переменных — пробел» (разд. 4.3).
     strs_[var] = std::string(static_cast<std::size_t>(str_len(var)) * count, ' ');
@@ -221,10 +281,7 @@ bool VarStore::str_element(unsigned var, const long * idx, unsigned n,
     }
 
     unsigned d1 = 10, d2 = 0;
-    if (var < vars_.size()) {
-        if (vars_[var].dim1) d1 = vars_[var].dim1;
-        d2 = vars_[var].dim2;
-    }
+    str_dims(var, d1, d2);
     std::size_t at = 0;
     if (!offset(d1, d2, idx, n, at, error)) return false;
 

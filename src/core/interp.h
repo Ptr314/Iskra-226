@@ -202,7 +202,7 @@ private:
 
     // --- графика ---------------------------------------------------------
     // Разобрать операнд-буфер: символьная переменная целиком.
-    bool device_skipped(unsigned addr) const;
+    bool skip_device_write() const;
     bool emit_to_device(const uint8_t * data, unsigned len);
     bool raw_comma(Stream & st);
     bool gbuf_operand(Stream & st, const char * who, unsigned & var,
