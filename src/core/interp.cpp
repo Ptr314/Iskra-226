@@ -84,6 +84,7 @@ Interp::Interp(ProgramImage & img, Host & host)
       funcs_ready_(false), fn_depth_(0),
       data_ready_(false), data_i_(0), data_off_(0), end_seen_(false),
       li_(0), off_(0), next_off_(0), jumped_(false), stopped_(false),
+      stop_reason_(SR_NONE), can_continue_(false), sf_armed_(false),
       max_steps_(0), shown_(0), skip_machine_(false), print_dev_(0),
       print_fail_(false),
       plot_x_(0), plot_y_(0), plot_step_x_(0), plot_step_y_(0), plot_size_(1)
@@ -2798,8 +2799,26 @@ bool Interp::read_line(const std::string & prompt, bool has_prompt,
     for (;;) {
         uint8_t code = 0;
         if (!host_.wait_key(code)) return fail("нет данных на клавиатуре");
-        if (code == 0x0D || code == 0x0A) break;
-        if (code == 0x08) {                       // ВШ — забой
+
+        // Клавиша специальных функций с текстовой константой подставляет
+        // его в набираемую строку: «нажатие клавиши … при выполнении
+        // оператора INPUT (LINPUT) … приведёт к тому, что символы … станут
+        // частью вводимой строки текста» (разд. 10.6). Переход к
+        // подпрограмме отсюда мы не делаем: он потребовал бы вложенного
+        // счёта прямо посреди ввода.
+        if (host_.key_was_special()) {
+            std::string text;
+            if (sf_text(code, text)) {
+                out += text;
+                emit(text);
+            } else {
+                host_.screen().put(CC_BELL);
+            }
+            continue;
+        }
+
+        if (code == KEY_CR) break;
+        if (code == KEY_BACKSPACE) {
             if (!out.empty()) {
                 out.resize(out.size() - 1);
                 host_.screen().put(CC_LEFT);
@@ -2808,6 +2827,9 @@ bool Interp::read_line(const std::string & prompt, bool has_prompt,
             }
             continue;
         }
+        // Прочие клавиши редактирования тут не работают: строка ввода — не
+        // строка программы, и правит её машина иначе.
+        if (is_edit_key(code)) continue;
         out += static_cast<char>(code);
         host_.screen().put(code);
     }
@@ -4222,6 +4244,11 @@ bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
                 if (v.is_str) { emit(v.str); emit_newline(); }
             }
             stopped_ = true;
+            // «После выполнения оператора останова машина переходит в режим
+            // непосредственного счёта. Для продолжения выполнения программы
+            // необходимо нажать клавишу CONTINUE» (разд. 11.1).
+            stop_reason_ = SR_STOP;
+            can_continue_ = true;
             return true;
 
         case 0x59:                                     // END
@@ -4264,9 +4291,10 @@ void Interp::clear_all()
     err_code_.clear();
 }
 
-bool Interp::loop(std::string & error)
+bool Interp::loop(std::string & error, unsigned long limit)
 {
     unsigned long steps = 0;
+    unsigned long done = 0;
 
     while (!stopped_) {
         if (li_ != DIRECT && li_ >= img_.line_count()) break;
@@ -4309,14 +4337,149 @@ bool Interp::loop(std::string & error)
         // Хост спрашивается, только когда есть что показать, плюс изредка:
         // иначе окно не отвечало бы на события, и закрыть его во время
         // прогона было бы нельзя.
+        if (limit && ++done >= limit) {
+            stop_reason_ = SR_HALT;
+            can_continue_ = true;
+            break;
+        }
+
         if (host_.screen().dirty() || host_.raster().dirty() ||
             (++shown_ & 0xFF) == 0) {
             if (!host_.present()) break;        // окно закрыли
+
+            // Клавиши управления машиной программе не достаются вовсе, и
+            // спрашивать их приходится тут: `HALT` обязан прерывать счёт и
+            // тогда, когда программа клавиатуру не опрашивает. Отсчёт от
+            // этого места и продолжит `CONTINUE`: `off_` уже сдвинут за
+            // исполненный оператор.
+            const ControlKey ck = host_.take_control_key();
+            if (ck == CK_HALT) {
+                stop_reason_ = SR_HALT;
+                can_continue_ = true;
+                break;
+            }
+            if (ck == CK_RESET) {
+                // «Клавиша сброса RESET … используется для прекращения
+                // выполнения машиной операций и очистки экрана» (разд. 2.1).
+                // Продолжать после неё нельзя (разд. 11.1).
+                host_.screen().put(CC_CLEAR);
+                stop_reason_ = SR_RESET;
+                can_continue_ = false;
+                break;
+            }
         }
     }
 
     host_.present();
     return true;
+}
+
+bool Interp::resume(std::string & error)
+{
+    error_.clear();
+    err_code_.clear();
+    if (!can_continue_) {
+        error = "продолжать нечего";
+        return false;
+    }
+    stopped_ = false;
+    stop_reason_ = SR_NONE;
+    can_continue_ = false;
+    return loop(error);
+}
+
+bool Interp::step(std::string & error)
+{
+    error_.clear();
+    err_code_.clear();
+    if (!can_continue_) {
+        error = "продолжать нечего";
+        return false;
+    }
+    stopped_ = false;
+    stop_reason_ = SR_NONE;
+    can_continue_ = false;
+    return loop(error, 1);
+}
+
+// «Оператор DEFFN' с номером от нуля до 31 также может использоваться для
+// задания текстовой константы. В этом случае нажатие определённой клавиши
+// специальных функций вызовет печать текстовой константы, записанной в
+// соответствующем операторе DEFFN'» (руководство, разд. 10.6).
+//
+// Подпрограммой такое определение не является, и `build_labels()` его не
+// берёт: у него свой глагол `3A`, а операнды — метка, четыре байта рабочего
+// поля и ровно один литерал (`docs/format.md`, разд. 5).
+bool Interp::sf_text(unsigned label, std::string & out)
+{
+    for (unsigned l = 0; l < img_.line_count(); ++l) {
+        const std::vector<uint8_t> & b = img_.line(l).body;
+        unsigned at = 0;
+        for (;;) {
+            unsigned verb = 0, ops_at = 0, len = 0;
+            if (!stmt_head(b, at, verb, ops_at, len)) break;
+            if (verb == 0x3A && len > 5 && b[ops_at] == label) {
+                Stream st(&b[ops_at + 5], len - 5, &img_.vars(), store_, &fnres_);
+                Value v;
+                if (!st.ev.operand(v)) return false;
+                if (!v.is_str) return false;
+                out = v.str;
+                return true;
+            }
+            at = ops_at + len;
+            if (at >= b.size()) break;
+        }
+    }
+    return false;
+}
+
+// «Клавиши специальных функций могут быть использованы для перехода к
+// помеченным подпрограммам без параметров, номера которых находятся в
+// диапазоне от 0 до 31» (разд. 10.5). Возврат из такой подпрограммы
+// приводит в режим непосредственного счёта, поэтому в список адресов
+// кладётся пустая прямая строка.
+bool Interp::sf_call(unsigned label, std::string & error)
+{
+    error.clear();
+    error_.clear();
+    err_code_.clear();
+    if (!labels_ready_) build_labels();
+
+    std::map<unsigned, std::pair<unsigned, unsigned> >::const_iterator it =
+        labels_.find(label);
+    if (it == labels_.end()) {
+        error = "клавиша " + num_str(label) + " не определена";
+        return false;
+    }
+
+    const std::vector<uint8_t> & db = img_.line(it->second.first).body;
+    unsigned verb = 0, ops_at = 0, dlen = 0;
+    if (!stmt_head(db, it->second.second, verb, ops_at, dlen)) {
+        error = "DEFFN' испорчен";
+        return false;
+    }
+    if (dlen < 5) { error = "DEFFN' без адреса возврата"; return false; }
+    if (dlen > 5) {
+        // «Переход к помеченным подпрограммам без параметров» — с
+        // параметрами клавишей её не позвать: передавать нечего.
+        error = "у подпрограммы " + num_str(label) + " есть параметры";
+        return false;
+    }
+
+    direct_.clear();
+    calls_.push_back(std::make_pair(DIRECT, 0u));
+    li_ = it->second.first;
+    off_ = ops_at + dlen;
+    stopped_ = false;
+    stop_reason_ = SR_NONE;
+    can_continue_ = false;
+    return loop(error);
+}
+
+unsigned Interp::current_line() const
+{
+    if (li_ == DIRECT || li_ >= img_.line_count()) return 0;
+    return img_.line(li_).number;
 }
 
 bool Interp::run(std::string & error)
@@ -4327,6 +4490,12 @@ bool Interp::run(std::string & error)
     li_ = 0;
     off_ = 0;
     stopped_ = false;
+    stop_reason_ = SR_NONE;
+    can_continue_ = false;
+    // «Использовать клавиши специальных функций для перехода к
+    // подпрограммам можно только после того, как … программа начала
+    // выполняться» (разд. 10.5).
+    sf_armed_ = true;
     return loop(error);
 }
 
@@ -4346,6 +4515,9 @@ bool Interp::run_from(unsigned line_number, std::string & error)
     li_ = idx;
     off_ = 0;
     stopped_ = false;
+    stop_reason_ = SR_NONE;
+    can_continue_ = false;
+    sf_armed_ = true;
     return loop(error);
 }
 
@@ -4358,6 +4530,8 @@ bool Interp::execute(const uint8_t * body, unsigned len, std::string & error)
     li_ = DIRECT;
     off_ = 0;
     stopped_ = false;
+    stop_reason_ = SR_NONE;
+    can_continue_ = false;
     return loop(error);
 }
 

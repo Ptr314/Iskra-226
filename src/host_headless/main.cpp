@@ -576,8 +576,9 @@ public:
     bool disk_write(unsigned drive, unsigned sector, const uint8_t * buf)
     { return disks_.write(drive, sector, buf); }
 
-    bool wait_key(uint8_t & code)
+    bool wait_input(uint8_t & code, iskra::ControlKey & ck)
     {
+        ck = iskra::CK_NONE;
         while (pos_ >= pending_.size())
             if (!next_line()) return false;
         code = static_cast<uint8_t>(pending_[pos_++]);
@@ -647,7 +648,13 @@ private:
         for (std::size_t i = 0; i < pending_.size(); ++i)
             pending_[i] = static_cast<char>(
                 iskra::koi8_upper(static_cast<uint8_t>(pending_[i])));
-        pending_ += '\r';
+        // Клавиша CR/LF, а не код возврата каретки: у клавиатуры «Искры»
+        // свои коды (`docs/format.md`, разд. 12). Забой терминала переводим
+        // туда же — построчный ввод ждёт именно клавишу.
+        for (std::size_t i = 0; i < pending_.size(); ++i)
+            if (pending_[i] == '\b' || pending_[i] == '\x7F')
+                pending_[i] = static_cast<char>(iskra::KEY_BACKSPACE);
+        pending_ += static_cast<char>(iskra::KEY_CR);
         pos_ = 0;
         return true;
     }

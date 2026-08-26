@@ -39,7 +39,9 @@ public:
     Screen & screen() { return screen_; }
     bool present();
     bool poll_key(uint8_t & code);
-    bool wait_key(uint8_t & code);
+    bool key_was_special() const { return special_; }
+    ControlKey take_control_key();
+    bool wait_input(uint8_t & code, ControlKey & ck);
 
     unsigned disk_sectors(unsigned drive) const { return disks_.sectors(drive); }
     bool disk_read(unsigned drive, unsigned sector, uint8_t * buf)
@@ -63,6 +65,14 @@ public:
     Raster * plot_surface(uint8_t addr);
 
 private:
+    // Нажатие по положению клавиши: зона 8, редактирование и управление
+    // машиной. Знаки идут другим путём, через WM_CHAR. true — клавиша наша,
+    // и системе её отдавать не надо.
+    bool key_down(unsigned vk);
+
+    void push_key(uint8_t code, bool special);
+    void push_word(const char * word);
+
     void pump();                  // разобрать накопившиеся сообщения
     void redraw();                // пересобрать кадр из знакомест
     void redraw_plot();           // пересобрать лист графопостроителя
@@ -77,7 +87,10 @@ private:
     std::vector<uint32_t> frame_;
     std::vector<uint32_t> plot_frame_;
     std::vector<uint8_t> keys_;
+    std::vector<uint8_t> keys_sf_;   // признак «клавиша спецфункций»
     std::size_t key_pos_;
+    bool special_;                   // была ли ею последняя прочитанная
+    ControlKey control_;             // ящик на одну клавишу управления
 
     void * hwnd_;
     void * plot_hwnd_;

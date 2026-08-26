@@ -76,6 +76,7 @@ add_library(iskra_host_common STATIC
     src/host_common/fileio.h      src/host_common/fileio.cpp
     src/host_common/disk_files.h  src/host_common/disk_files.cpp
     src/host_common/disk_args.h   src/host_common/disk_args.cpp
+    src/host_common/keywords.h    src/host_common/keywords.cpp
 )
 target_link_libraries(iskra_host_common PUBLIC iskra_core)
 target_link_libraries(iskra_host_common PRIVATE iskra_warnings)

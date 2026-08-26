@@ -33,8 +33,20 @@ public:
     bool poll_key(uint8_t & code);
     bool key_was_special() const { return special_; }
     // Ждать тут нечего: очередь задана заранее, и пустая очередь — это конец
-    // сценария, а не «пока не нажали».
-    bool wait_key(uint8_t & code) { return poll_key(code); }
+    // сценария, а не «пока не нажали». Клавиш управления машиной в сценарии
+    // нет: их подаёт feed_control_key(), и ящик спрашивают отдельно.
+    bool wait_input(uint8_t & code, ControlKey & ck)
+    {
+        ck = take_control_key();
+        if (ck != CK_NONE) { code = 0; return true; }
+        return poll_key(code);
+    }
+    ControlKey take_control_key()
+    {
+        const ControlKey c = control_;
+        control_ = CK_NONE;
+        return c;
+    }
     unsigned disk_sectors(unsigned drive) const;
     bool disk_read(unsigned drive, unsigned sector, uint8_t * buf);
     bool disk_write(unsigned drive, unsigned sector, const uint8_t * buf);
@@ -47,6 +59,9 @@ public:
     void feed_special_key(uint8_t code);
 
     void feed_keys(const uint8_t * codes, unsigned len);
+
+    // Клавиша управления машиной: очереди у неё нет, ящик на одну.
+    void feed_control_key(ControlKey c) { control_ = c; }
 
     // Время идёт только тогда, когда его двигают: прогоны воспроизводимы.
     void advance_ms(uint32_t ms) { ticks_ += ms; }
@@ -72,6 +87,7 @@ private:
     std::vector<uint8_t> keys_;
     std::vector<uint8_t> keys_sf_;      // признак «клавиша спецфункции»
     bool special_;
+    ControlKey control_;
     unsigned key_pos_;
     std::vector<uint8_t> printer_;
     std::vector<uint8_t> disks_[2];

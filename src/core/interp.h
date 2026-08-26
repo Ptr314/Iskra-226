@@ -70,6 +70,44 @@ public:
     // программе, как на машине.
     bool execute(const uint8_t * body, unsigned len, std::string & error);
 
+    // Почему счёт остановился. `STOP` и клавиша HALT оставляют программу
+    // продолжаемой, `RESET` — нет.
+    enum StopReason { SR_NONE = 0, SR_STOP, SR_HALT, SR_RESET };
+    StopReason stop_reason() const { return stop_reason_; }
+
+    // «Для продолжения выполнения программы необходимо нажать клавишу
+    // CONTINUE, после чего выполнение программы продолжится со следующего
+    // за оператором STOP оператора» (руководство, разд. 11.1).
+    bool can_continue() const { return can_continue_; }
+
+    // Продолжить нельзя после правки текста программы, RESET, CLEAR V и
+    // CLEAR N (там же). Об этом говорит диалог — он и зовёт.
+    void forget_continue() { can_continue_ = false; }
+
+    // Продолжить счёт с оператора, на котором он стоит.
+    bool resume(std::string & error);
+
+    // Один оператор — это вторая половина клавиши HALT/STEP.
+    bool step(std::string & error);
+
+    // Номер строки, на которой стоит счёт; ноль — вне программы.
+    unsigned current_line() const;
+
+    // --- Клавиши специальных функций, разд. 10.5 и 10.6 ------------------
+    // «Нажатие определённой клавиши специальных функций вызовет печать
+    // текстовой константы, записанной в соответствующем операторе DEFFN'»
+    // (разд. 10.6). false — определения с текстом у этой метки нет.
+    bool sf_text(unsigned label, std::string & out);
+
+    // Переход к помеченной подпрограмме нажатием клавиши. «Использовать
+    // клавиши специальных функций для перехода к подпрограммам можно только
+    // после того, как записанная в памяти машины программа начала
+    // выполняться … до тех пор, пока не будет изменён текст программы»
+    // (разд. 10.5).
+    bool sf_call(unsigned label, std::string & error);
+    bool sf_armed() const { return sf_armed_; }
+    void forget_sf() { sf_armed_ = false; }
+
     // Состояние между командами диалога: переменные, таблица устройств,
     // циклы и возвраты живут в исполнителе и переживают правку текста.
     VarStore & vars() { return store_; }
@@ -339,7 +377,8 @@ private:
 
     bool jump(unsigned line_number);
     bool fail(const std::string & m);
-    bool loop(std::string & error);
+    // limit — сколько операторов исполнить; ноль значит «пока не кончится».
+    bool loop(std::string & error, unsigned long limit = 0);
     const std::vector<uint8_t> & body_at(unsigned li) const;
 
     // Строка вне программы: её тело живёт здесь, а li_ равен DIRECT.
@@ -400,6 +439,9 @@ private:
     unsigned next_off_;     // смещение следующего оператора
     bool jumped_;
     bool stopped_;
+    StopReason stop_reason_;
+    bool can_continue_;
+    bool sf_armed_;
     unsigned long max_steps_;
     // Счётчик для редких обращений к хосту: окно надо дёргать и тогда,
     // когда показывать нечего, — иначе оно не отвечает на события.

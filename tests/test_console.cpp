@@ -35,7 +35,7 @@ std::string session_on(HeadlessHost & host, const char * const * lines,
         std::string koi8;
         utf8_to_koi8(lines[i], koi8);
         keys += koi8;
-        keys += '\r';
+        keys += static_cast<char>(KEY_CR);
     }
     host.feed_keys(reinterpret_cast<const uint8_t *>(keys.data()),
                    static_cast<unsigned>(keys.size()));

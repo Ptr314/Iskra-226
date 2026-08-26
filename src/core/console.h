@@ -50,8 +50,26 @@ private:
     void prompt();
     void report(const std::string & message);
 
-    // Ввод строки с эхом и забоем. false — нажатий больше не будет.
+    // Ввод строки с правкой — зоны 6 и 7 клавиатуры (руководство, разд. 3.3).
+    // false — нажатий больше не будет.
     bool read_line(std::string & out);
+
+    // Перерисовать набираемую строку и поставить курсор на cur-й знак.
+    void render(const std::string & buf, unsigned cur);
+
+    // Приглашение набора: `:` в обычном режиме, `*` в режиме правки
+    // (руководство, разд. 3.3).
+    void show_mark();
+
+    // Текст строки программы для RECALL; false — такой строки нет.
+    bool line_text(unsigned number, std::string & out) const;
+
+    // Клавиша управления машиной, нажатая во время набора. Возвращает
+    // false, если после неё набор надо начать заново.
+    bool control(ControlKey ck, std::string & buf, unsigned & cur);
+
+    // Останов и продолжение счёта — клавиши HALT/STEP и CONTINUE.
+    void after_run(bool ok, const std::string & error);
 
     // Команды режима непосредственного счёта. false значит «слово не наше»
     // либо «хвост непонятен» — строка уходит транслятору, и об ошибке
@@ -74,6 +92,17 @@ private:
     Host & host_;
     NameTable names_;
     Interp interp_;
+
+    // Состояние набираемой строки: где она начинается на экране, сколько
+    // знаков нарисовано и в каком режиме идёт набор.
+    unsigned edit_row_;
+    unsigned edit_col_;
+    unsigned shown_len_;
+    bool editing_;
+
+    // «Последняя введённая строка … может быть вновь вызвана на экран для
+    // редактирования и повторного ввода» (разд. 3.3).
+    std::string last_line_;
 };
 
 } // namespace iskra

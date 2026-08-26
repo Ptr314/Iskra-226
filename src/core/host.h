@@ -7,6 +7,7 @@
 
 #include <cstdint>
 
+#include "core/keys.h"
 #include "core/raster.h"
 #include "core/screen.h"
 
@@ -67,15 +68,36 @@ public:
     // у хостов, где таких клавиш нет, всегда false.
     virtual bool key_was_special() const { return false; }
 
-    // Ждать нажатия. Ждёт хост, а не ядро: у окна это прокрутка событий, у
-    // хоста без окна — заготовленная очередь, и false значит «ввода больше
-    // не будет» (конец сценария, закрытое окно). Ядру в обоих случаях
-    // остаётся одно и то же — прекратить чтение.
-    virtual bool wait_key(uint8_t & code)
+    // Клавиши управления машиной — HALT/STEP, CONTINUE, RESET, STMT NUMBER.
+    // Кодов у них нет вовсе (`docs/format.md`, разд. 12), и программе они не
+    // достаются, поэтому идут не очередью нажатий, а отдельным ящиком на
+    // одну клавишу: `HALT` обязан прерывать счёт и тогда, когда программа
+    // клавиатуру не опрашивает. Спрашивает исполнитель по ходу прогона и
+    // диалог между нажатиями; ящик при этом опустошается.
+    virtual ControlKey take_control_key() { return CK_NONE; }
+
+    // Ждать нажатия либо клавиши управления. Ждёт хост, а не ядро: у окна
+    // это прокрутка событий, у хоста без окна — заготовленная очередь, и
+    // false значит «ввода больше не будет» (конец сценария, закрытое окно).
+    // Ядру в обоих случаях остаётся одно и то же — прекратить чтение.
+    virtual bool wait_input(uint8_t & code, ControlKey & ck)
     {
         for (;;) {
+            ck = take_control_key();
+            if (ck != CK_NONE) { code = 0; return true; }
             if (poll_key(code)) return true;
             if (!present()) return false;
+        }
+    }
+
+    // Ждать именно нажатия: клавиши управления машиной программе не видны,
+    // и `INPUT` их пропускает. Не виртуальный — ждёт всё равно wait_input().
+    bool wait_key(uint8_t & code)
+    {
+        for (;;) {
+            ControlKey ck = CK_NONE;
+            if (!wait_input(code, ck)) return false;
+            if (ck == CK_NONE) return true;
         }
     }
 

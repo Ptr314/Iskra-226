@@ -3,6 +3,7 @@
 // Part of the Iskra-226 project: https://github.com/Ptr314/Iskra-226
 // Description: хост с окном на чистом Win32 — ни одной сторонней библиотеки
 
+#include "host_common/keywords.h"
 #include "host_win32/win32_host.h"
 
 #include <windows.h>
@@ -77,8 +78,8 @@ void ask_for_real_pixels()
 } // namespace
 
 Win32Host::Win32Host()
-    : key_pos_(0), hwnd_(0), plot_hwnd_(0), closed_(false), cursor_on_(false),
-      start_ms_(GetTickCount())
+    : key_pos_(0), special_(false), control_(CK_NONE), hwnd_(0), plot_hwnd_(0),
+      closed_(false), cursor_on_(false), start_ms_(GetTickCount())
 {
 }
 
@@ -296,16 +297,42 @@ long long Win32Host::handle(void * hwnd_raw, unsigned msg,
     case WM_CHAR: {
         // Окно заведено широким, поэтому wParam — единица UTF-16. Кириллица
         // приходит сюда с любой раскладки, и это единственный путь, которым
-        // знаки попадают в машину: переводить нажатия по положению клавиш
-        // «Искре» незачем, у неё своя клавиатура.
+        // **знаки** попадают в машину: переводить их по положению клавиш
+        // «Искре» незачем, у неё своя раскладка.
         const uint32_t cp = static_cast<uint32_t>(wp);
-        if (cp == 0x1B || cp == 0x09) return 0;    // отмена и табуляция — не наши
+        // Всё, что ниже пробела, — не знаки, а управляющие коды, которые
+        // система выдаёт заодно с Enter, Backspace, Esc и Ctrl+буквой. У
+        // клавиатуры «Искры» коды этих клавиш свои, и разбираются они по
+        // положению, в key_down().
+        if (cp < 0x20 || cp == 0x7F) return 0;
         uint8_t code = 0;
         // Строчных букв у машины нет ни одной: клавиша выдаёт прописную
         // (core/koi8.h, «семибитная граница машины»).
-        if (unicode_to_koi8(cp, code)) keys_.push_back(koi8_upper(code));
+        if (unicode_to_koi8(cp, code)) push_key(koi8_upper(code), false);
         return 0;
     }
+
+    case WM_SYSCHAR: {
+        // Alt со знаковой клавишей — верхний регистр зоны 1: «нажатием
+        // каждой клавиши вводится то или иное ключевое слово Бейсика»
+        // (разд. 2.1). Ключ — знак, а не положение: на «Искре» русская и
+        // латинская буквы сидят на одной клавише, а на PC разъезжаются по
+        // раскладкам, и по знаку они сходятся обратно.
+        uint8_t ch = 0;
+        if (!unicode_to_koi8(static_cast<uint32_t>(wp), ch)) break;
+        const char * word = keyword_for_char(koi8_upper(ch));
+        if (!word) break;
+        push_word(word);
+        return 0;
+    }
+
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        // F10 и всё, что с Alt, система шлёт как WM_SYSKEYDOWN. Разбираем
+        // оба одинаково, но неразобранное отдаём системе: иначе пропало бы
+        // Alt+F4, единственный общесистемный способ закрыть окно.
+        if (key_down(static_cast<unsigned>(wp))) return 0;
+        break;
 
     case WM_CLOSE:
         // Закрытый лист графопостроителя эмулятор не останавливает: это
@@ -323,6 +350,115 @@ long long Win32Host::handle(void * hwnd_raw, unsigned msg,
 
     done = false;
     return 0;
+}
+
+void Win32Host::push_key(uint8_t code, bool special)
+{
+    keys_.push_back(code);
+    keys_sf_.push_back(special ? 1 : 0);
+}
+
+// Клавиша верхнего регистра вводит целое слово Бейсика, и своего кода у
+// слова нет: машина показывает его на экране, как набранное по буквам. Так
+// и кладём — знаками в ту же очередь.
+void Win32Host::push_word(const char * word)
+{
+    if (!word) return;
+    for (const char * p = word; *p; ++p)
+        push_key(static_cast<uint8_t>(*p), false);
+}
+
+// Клавиатура «Искры» — восемь зон (руководство, разд. 2.1), и три из них
+// на обычной клавиатуре взять неоткуда: 32 клавиши специальных функций,
+// шесть клавиш перемещения курсора и клавиши управления машиной.
+//
+// Зона 8 ложится на верхний ряд один в один: Esc, двенадцать
+// функциональных и три справа — ровно шестнадцать клавиш, а Shift даёт
+// верхний банк, как и на машине. Номера при этом совпадают: F5 — это
+// клавиша 5.
+//
+// PrintScreen в Windows 11 по умолчанию забирает себе система, поэтому у
+// клавиш 13–15 есть дубли на Ctrl+F1…Ctrl+F3.
+bool Win32Host::key_down(unsigned vk)
+{
+    const bool shift = GetKeyState(VK_SHIFT) < 0;
+    const bool ctrl  = GetKeyState(VK_CONTROL) < 0;
+    const bool alt   = GetKeyState(VK_MENU) < 0;
+
+    // Клавиши управления машиной идут первыми: у них кодов нет вовсе, и
+    // ложатся они в отдельный ящик. Ctrl+Break — привычный на PC «останови
+    // счёт»; сброс сделан нарочно неудобным, он стирает экран.
+    if (ctrl && vk == VK_PAUSE) {
+        control_ = alt ? CK_RESET : CK_HALT;
+        return true;
+    }
+    if (ctrl && !alt && vk == VK_RETURN) { control_ = CK_CONTINUE;    return true; }
+    if (ctrl && !alt && vk == 'N')       { control_ = CK_STMT_NUMBER; return true; }
+
+    // С Alt дальше идут только слова Бейсика. Знаковые клавиши разбираются
+    // по знаку, в WM_SYSCHAR; здесь остаются арифметические клавиши
+    // цифрового блока — на них сидит зона 5, и по знаку её от зоны 1 не
+    // отличить. Всё прочее с Alt отдаём системе: Alt+F4 обязан работать.
+    if (alt) {
+        PadFunc pf = PAD_MUL;
+        switch (vk) {
+        case VK_MULTIPLY: pf = PAD_MUL; break;
+        case VK_ADD:      pf = PAD_ADD; break;
+        case VK_SUBTRACT: pf = PAD_SUB; break;
+        case VK_DIVIDE:   pf = PAD_DIV; break;
+        default: return false;
+        }
+        push_word(keyword_for_pad(pf));
+        return true;
+    }
+
+    const unsigned bank = shift ? 16 : 0;
+    int sf = -1;                    // номер клавиши спецфункций, -1 — не она
+
+    if (vk == VK_ESCAPE) sf = 0;
+    else if (vk >= VK_F1 && vk <= VK_F12) {
+        const unsigned n = vk - VK_F1 + 1;
+        // Ctrl+F1…F3 — дубли клавиш 13–15; прочие с Ctrl не наши.
+        if (ctrl) { if (n > 3) return false; sf = static_cast<int>(n + 12); }
+        else sf = static_cast<int>(n);
+    }
+    else if (vk == VK_SNAPSHOT) sf = 13;
+    else if (vk == VK_SCROLL)   sf = 14;
+    else if (vk == VK_PAUSE)    sf = 15;
+
+    if (sf >= 0) {
+        push_key(static_cast<uint8_t>(sf + bank), true);
+        return true;
+    }
+
+    uint8_t code = 0;
+    switch (vk) {
+    case VK_LEFT:   code = ctrl ? KEY_LEFT5  : KEY_LEFT;  break;
+    case VK_RIGHT:  code = ctrl ? KEY_RIGHT5 : KEY_RIGHT; break;
+    case VK_UP:     code = KEY_UP;     break;
+    case VK_DOWN:   code = KEY_DOWN;   break;
+    case VK_INSERT: code = KEY_INSERT; break;
+    case VK_DELETE: code = KEY_DELETE; break;
+    case VK_END:    code = KEY_ERASE;  break;
+    case VK_BACK:   code = ctrl ? KEY_LINE_ERASE : KEY_BACKSPACE; break;
+    case VK_RETURN: code = KEY_CR; break;
+    // Буквы берём по положению, а не по знаку: иначе Ctrl+E отвалился бы
+    // на русской раскладке.
+    case 'E':       if (!ctrl) return false; code = KEY_EDIT;   break;
+    case 'R':       if (!ctrl) return false; code = KEY_RECALL; break;
+    }
+    if (!code) return false;
+
+    push_key(code, false);
+    return true;
+}
+
+ControlKey Win32Host::take_control_key()
+{
+    pump();
+    const ControlKey c = control_;
+    control_ = CK_NONE;
+    return c;
 }
 
 void Win32Host::pump()
@@ -357,17 +493,21 @@ bool Win32Host::poll_key(uint8_t & code)
     pump();
     if (key_pos_ >= keys_.size()) {
         keys_.clear();
+        keys_sf_.clear();
         key_pos_ = 0;
         return false;
     }
+    special_ = keys_sf_[key_pos_] != 0;
     code = keys_[key_pos_++];
     return true;
 }
 
-bool Win32Host::wait_key(uint8_t & code)
+bool Win32Host::wait_input(uint8_t & code, ControlKey & ck)
 {
     for (;;) {
         if (!present()) return false;
+        ck = take_control_key();
+        if (ck != CK_NONE) { code = 0; return true; }
         if (poll_key(code)) return true;
         // Ждём события системы, но не дольше полумига: иначе курсор замрёт,
         // пока никто не трогает клавиатуру.

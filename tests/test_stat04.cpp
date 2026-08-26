@@ -11,6 +11,7 @@
 #include "core/names.h"
 #include "core/tokenize.h"
 #include "core/interp.h"
+#include "core/keys.h"
 #include "core/koi8.h"
 #include "host_headless/headless_host.h"
 
@@ -112,7 +113,7 @@ bool run(ProgramImage & img, const char * df, const char * p, std::string & scre
     for (int i = 0; i < 2; ++i) {
         std::string koi8;
         utf8_to_koi8(i == 0 ? df : p, koi8);
-        koi8 += '\r';
+        koi8 += static_cast<char>(KEY_CR);
         host.feed_keys(reinterpret_cast<const uint8_t *>(koi8.data()),
                        static_cast<unsigned>(koi8.size()));
     }

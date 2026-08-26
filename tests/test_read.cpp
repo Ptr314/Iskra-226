@@ -9,6 +9,7 @@
 
 #include "check.h"
 #include "core/interp.h"
+#include "core/keys.h"
 #include "core/koi8.h"
 #include "core/names.h"
 #include "core/tokenize.h"
@@ -25,6 +26,10 @@ bool run_program(ProgramImage & img, const char * input, std::string & screen,
     if (input) {
         std::string keys;
         utf8_to_koi8(input, keys);
+        // Конец набора в сценариях пишется как `\\r`, а у клавиши
+        // CR/LF свой код (`core/keys.h`).
+        for (std::size_t i = 0; i < keys.size(); ++i)
+            if (keys[i] == '\r') keys[i] = static_cast<char>(KEY_CR);
         host.feed_keys(reinterpret_cast<const uint8_t *>(keys.data()),
                        static_cast<unsigned>(keys.size()));
     }

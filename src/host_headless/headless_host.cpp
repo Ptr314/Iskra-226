@@ -12,7 +12,7 @@
 namespace iskra {
 
 HeadlessHost::HeadlessHost()
-    : special_(false), key_pos_(0), ticks_(0)
+    : special_(false), control_(CK_NONE), key_pos_(0), ticks_(0)
 {
 }
 

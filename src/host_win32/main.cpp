@@ -60,7 +60,26 @@ std::string usage()
          "                           $GIO и вывод на устройство, которого у\n"
          "                           хоста нет, — вместо остановки. Чтение с\n"
          "                           такого устройства останавливает всё равно\n"
-         "\nЗапись на дискету идёт прямо в файл образа.";
+         "\nЗапись на дискету идёт прямо в файл образа.\n"
+         "\nКлавиатура «Искры» разложена по обычной так:\n"
+         "\n  Esc, F1…F12, PrtScr, ScrLk, Pause   клавиши спецфункций 0…15\n"
+         "  с Shift                             они же, 16…31\n"
+         "  Ctrl+F1…F3                          дубли 13…15 — на случай,\n"
+         "                                      если PrtScr забрала система\n"
+         "  ←  →                                курсор на позицию\n"
+         "  Ctrl+←  Ctrl+→                      курсор на пять позиций\n"
+         "  ↑  ↓                                курсор на строку экрана\n"
+         "  Insert, Delete, End                 INSERT, DELETE, ERASE\n"
+         "  Ctrl+E, Ctrl+R                      EDIT, RECALL\n"
+         "  Backspace, Ctrl+Backspace           BACKSPACE, LINE ERASE\n"
+         "  Enter                               CR/LF\n"
+         "  Ctrl+Break                          HALT/STEP\n"
+         "  Ctrl+Enter                          CONTINUE\n"
+         "  Ctrl+Alt+Break                      RESET\n"
+         "  Ctrl+N                              STMT NUMBER\n"
+         "  Alt+<клавиша>                       слово Бейсика верхнего\n"
+         "                                      регистра: Alt+J и Alt+Й дают\n"
+         "                                      FOR, Alt+S — SELECT\n";
     return s;
 }
 

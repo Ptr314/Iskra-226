@@ -9,6 +9,7 @@
 
 #include "check.h"
 #include "core/interp.h"
+#include "core/keys.h"
 #include "core/koi8.h"
 #include "core/names.h"
 #include "core/tokenize.h"
@@ -55,7 +56,7 @@ bool run_text_input(const char * utf8, const char ** lines, unsigned n,
         if (!k.empty())
             host.feed_keys(reinterpret_cast<const uint8_t *>(k.data()),
                            static_cast<unsigned>(k.size()));
-        const uint8_t cr = 0x0D;
+        const uint8_t cr = KEY_CR;
         host.feed_keys(&cr, 1);
     }
     Interp interp(img, host);
