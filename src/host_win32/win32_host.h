@@ -10,6 +10,7 @@
 
 #include "core/host.h"
 #include "host_common/disk_files.h"
+#include "host_common/printer.h"
 #include "host_common/renderer.h"
 
 namespace iskra {
@@ -51,8 +52,13 @@ public:
 
     uint32_t ticks_ms() const;
 
+    // Печать на АЦПУ. Лента показывается своим окном и, если задан ключ
+    // `--printer`, уходит ещё и в файл.
+    void print_char(uint8_t ch);
+
     // --- Своё ------------------------------------------------------------
     DiskFiles & disks() { return disks_; }
+    Printer & tape() { return tape_; }
     Renderer & renderer() { return render_; }
 
     // Обработчик оконных сообщений; открыт только ради статического моста.
@@ -65,6 +71,10 @@ public:
     Raster * plot_surface(uint8_t addr);
 
 private:
+    // Лента заводится так же лениво — по первому напечатанному знаку.
+    bool open_paper();
+    void redraw_paper();
+
     // Нажатие по положению клавиши: зона 8, редактирование и управление
     // машиной. Знаки идут другим путём, через WM_CHAR. true — клавиша наша,
     // и системе её отдавать не надо.
@@ -84,8 +94,15 @@ private:
     Renderer render_;
     DiskFiles disks_;
 
+    // Лента АЦПУ — те же знакоместа: у печати свой знакогенератор нам
+    // взять неоткуда, а перевод строки и прокрутку Screen уже умеет.
+    // Видно последние 24 строки; вся лента целиком — в файле `--printer`.
+    Screen paper_;
+    Printer tape_;
+
     std::vector<uint32_t> frame_;
     std::vector<uint32_t> plot_frame_;
+    std::vector<uint32_t> paper_frame_;
     std::vector<uint8_t> keys_;
     std::vector<uint8_t> keys_sf_;   // признак «клавиша спецфункций»
     std::size_t key_pos_;
@@ -94,6 +111,7 @@ private:
 
     void * hwnd_;
     void * plot_hwnd_;
+    void * paper_hwnd_;
     bool closed_;
 
     // Курсор мигает сам: у хоста часы, ядру про это знать незачем.

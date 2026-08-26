@@ -55,7 +55,11 @@ std::string usage()
     "Названный без ключа, он идёт в дисковод 0 — тот же, что --d0.\n"
     "\n";
     s += iskra::DiskArgs::help();
-    s += "\n  --text ЛИСТИНГ           положить текстовую программу в память,\n"
+    s += "\n  --printer ФАЙЛ           увести ленту АЦПУ ещё и в файл,\n"
+         "                           дозаписью и в UTF-8. Само окно ленты\n"
+         "                           открывается по первому же напечатанному\n"
+         "                           знаку\n"
+         "  --text ЛИСТИНГ           положить текстовую программу в память,\n"
          "                           как если бы её набрали с клавиатуры\n"
          "  --scale N                целое увеличение кадра 560x256. Без\n"
          "                           ключа берётся наибольшее, влезающее в экран\n"
@@ -99,6 +103,7 @@ int run(int argc, wchar_t ** argv, std::string & error)
     unsigned scale = 0;      // 0 — подобрать под экран
     bool skip_machine = false;
     std::string listing;
+    std::string printer;
 
     for (std::size_t i = 0; i < args.size(); ++i) {
         bool handled = false;
@@ -108,6 +113,8 @@ int run(int argc, wchar_t ** argv, std::string & error)
         const std::string & arg = args[i];
         if (arg == "--text" && i + 1 < args.size()) {
             listing = args[++i];
+        } else if (arg == "--printer" && i + 1 < args.size()) {
+            printer = args[++i];
         } else if (arg == "--scale" && i + 1 < args.size()) {
             scale = static_cast<unsigned>(std::atoi(args[++i].c_str()));
             if (!scale) scale = 1;
@@ -130,6 +137,10 @@ int run(int argc, wchar_t ** argv, std::string & error)
     }
 
     iskra::Win32Host host;
+
+    // Файл ленты открывается до окна: не открылся — говорим сразу, а не
+    // посреди печати.
+    if (!printer.empty() && !host.tape().open(printer, error)) return 1;
 
     // Образы подставляются до окна: тогда в заголовке видно, что в дисководе
     // 0, а беда с образом не оставляет после себя пустого окна.

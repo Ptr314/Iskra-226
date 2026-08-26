@@ -79,6 +79,7 @@ void ask_for_real_pixels()
 
 Win32Host::Win32Host()
     : key_pos_(0), special_(false), control_(CK_NONE), hwnd_(0), plot_hwnd_(0),
+      paper_hwnd_(0),
       closed_(false), cursor_on_(false), start_ms_(GetTickCount())
 {
 }
@@ -218,6 +219,57 @@ Raster * Win32Host::plot_surface(uint8_t addr)
     return Host::plot_surface(addr);
 }
 
+// АЦПУ. Знакогенератора у печати мы не знаем и взять его неоткуда, поэтому
+// лента показывается теми же знакоместами, что и экран: перевод строки,
+// возврат каретки и прокрутку `Screen` уже умеет, а больше печать ничего и
+// не шлёт. Видно последние 24 строки; вся лента — в файле `--printer`.
+void Win32Host::print_char(uint8_t ch)
+{
+    tape_.put(ch);
+    open_paper();
+    paper_.put(ch);
+}
+
+// Лента заводится по первому же напечатанному знаку. Пока программа не
+// печатает, третьего окна на экране нет.
+bool Win32Host::open_paper()
+{
+    if (paper_hwnd_) return true;
+    if (!hwnd_) return false;
+
+    const unsigned fw = render_.width(), fh = render_.height();
+    RECT rc;
+    client_rect(fw, fh, fitting_scale(fw, fh), rc);
+    AdjustWindowRect(&rc, WS_OVERLAPPEDWINDOW, FALSE);
+
+    std::vector<wchar_t> title;
+    utf8_to_utf16("Искра 226 — АЦПУ", title);
+
+    HWND hwnd = CreateWindowExW(0, CLASS_NAME, &title[0], WS_OVERLAPPEDWINDOW,
+                                CW_USEDEFAULT, CW_USEDEFAULT,
+                                rc.right - rc.left, rc.bottom - rc.top,
+                                0, 0, GetModuleHandleW(0), 0);
+    if (!hwnd) return false;
+
+    SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    paper_hwnd_ = hwnd;
+    redraw_paper();
+    ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
+    return true;
+}
+
+// Знакоместа цветами бумаги и без курсора: печатает АЦПУ, а не трубка.
+void Win32Host::redraw_paper()
+{
+    if (!paper_hwnd_) return;
+    if (paper_frame_.size() != render_.pixels())
+        paper_frame_.assign(render_.pixels(), 0);
+    render_.draw_paper(paper_, &paper_frame_[0], render_.width());
+    paper_.clear_dirty();
+    InvalidateRect(static_cast<HWND>(paper_hwnd_), 0, FALSE);
+}
+
 void Win32Host::paint(void * hwnd_raw, void * hdc_raw,
                       const std::vector<uint32_t> & frame)
 {
@@ -280,8 +332,9 @@ long long Win32Host::handle(void * hwnd_raw, unsigned msg,
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
-        const bool is_plot = (hwnd_raw == plot_hwnd_);
-        const std::vector<uint32_t> & f = is_plot ? plot_frame_ : frame_;
+        const std::vector<uint32_t> & f =
+            hwnd_raw == plot_hwnd_  ? plot_frame_  :
+            hwnd_raw == paper_hwnd_ ? paper_frame_ : frame_;
         if (!f.empty()) paint(hwnd_raw, hdc, f);
         EndPaint(hwnd, &ps);
         return 0;
@@ -337,12 +390,16 @@ long long Win32Host::handle(void * hwnd_raw, unsigned msg,
     case WM_CLOSE:
         // Закрытый лист графопостроителя эмулятор не останавливает: это
         // бумага, а не машина. Заведётся заново при следующем выводе.
-        if (hwnd_raw == plot_hwnd_) { DestroyWindow(hwnd); return 0; }
+        if (hwnd_raw == plot_hwnd_ || hwnd_raw == paper_hwnd_) {
+            DestroyWindow(hwnd);
+            return 0;
+        }
         closed_ = true;
         return 0;
 
     case WM_DESTROY:
         if (hwnd_raw == plot_hwnd_) { plot_hwnd_ = 0; return 0; }
+        if (hwnd_raw == paper_hwnd_) { paper_hwnd_ = 0; return 0; }
         closed_ = true;
         hwnd_ = 0;
         return 0;
@@ -483,6 +540,7 @@ bool Win32Host::present()
         redraw();
     }
     if (plotter_.dirty()) redraw_plot();
+    if (paper_.dirty()) redraw_paper();
 
     if (screen_.take_bells()) MessageBeep(MB_OK);
     return true;

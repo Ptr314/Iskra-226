@@ -41,6 +41,15 @@ void Renderer::draw_raster(const Raster & g, uint32_t * out, unsigned pitch) con
 void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch,
                     const Raster * g) const
 {
+    draw_cells(s, out, pitch, g, fg_, bg_, cursor_);
+}
+
+// Экран и лента АЦПУ отличаются только цветами и курсором, поэтому проход
+// один. Графика накладывается лишь на экран: у бумаги растра нет.
+void Renderer::draw_cells(const Screen & s, uint32_t * out, unsigned pitch,
+                          const Raster * g, uint32_t fg, uint32_t bg,
+                          bool cursor) const
+{
     const unsigned cw = font_->cell_width();
     const unsigned ch = font_->cell_height();
     const unsigned gw = font_->width();
@@ -65,7 +74,7 @@ void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch,
             uint32_t * line = out + y * pitch;
             const unsigned gy = frame_height() - 1 - y / sy;
             for (unsigned x = 0; x < width(); ++x)
-                line[x] = (g && g->at(x / sx, gy)) ? fg_ : bg_;
+                line[x] = (g && g->at(x / sx, gy)) ? fg : bg;
         }
 
     for (unsigned r = 1; r <= SCREEN_ROWS; ++r) {
@@ -77,7 +86,7 @@ void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch,
             // Поля знакоместа переставляются вместе со знаком, иначе
             // выделенная строка вышла бы в полоску.
             const bool inv = cell.attr == ATTR_POSITIVE;
-            const bool cursor_here = cursor_ && r == cur_row && c == cur_col;
+            const bool cursor_here = cursor && r == cur_row && c == cur_col;
 
             uint32_t * cell_out = out + (my + (r - 1) * ch * sy) * pitch
                                       + mx + (c - 1) * cw * sx;
@@ -105,7 +114,7 @@ void Renderer::draw(const Screen & s, uint32_t * out, unsigned pitch,
                     // знака; сложение теряло бы линию в светлых местах.
                     if (g && g->at(margin_x() + (c - 1) * cw + x, gyy))
                         lit = (overlay_ == OVERLAY_XOR) ? !lit : true;
-                    const uint32_t color = lit ? fg_ : bg_;
+                    const uint32_t color = lit ? fg : bg;
                     for (unsigned k = 0; k < sx; ++k) line[x * sx + k] = color;
                 }
                 // При увеличении строка развёртки повторяется как есть.

@@ -23,6 +23,7 @@
 #include "core/koi8.h"
 #include "core/version.h"
 #include "font/font.h"
+#include "host_common/printer.h"
 #include "host_headless/headless_host.h"
 
 #include "core/catalog.h"
@@ -64,6 +65,9 @@ int usage()
         "  iskra-nohead --run-text ФАЙЛ [ВВОД…]  исполнить текстовый листинг\n"
         "  iskra-nohead --console [ОБРАЗ]   диалоговый режим в терминале\n"
         "\nКлючи:\n"
+        "  --printer ФАЙЛ            увести ленту АЦПУ в файл, дозаписью\n"
+        "                            и в UTF-8. Без ключа лента\n"
+        "                            печатается после прогона\n"
         "  -i                        пропускать то, чего здесь нет: ASMB,\n"
         "                            $GIO и вывод на устройство, которого у\n"
         "                            хоста нет, — вместо остановки. Чтение с\n"
@@ -456,7 +460,47 @@ int cmd_cat(const char * path, const char * name)
 // останавливаться на них. Живёт глобально — его понимают все команды.
 bool g_skip_machine = false;
 
-int run_program(iskra::ProgramImage & img, iskra::HeadlessHost & host,
+// Ключ `--printer`: файл ленты. Тоже глобально, по той же причине.
+std::string g_printer_path;
+
+// Хост командной строки — безоконный, но с приёмником печати. У самого
+// `HeadlessHost` его нет: он для автотестов и файлов не открывает.
+class CliHost : public iskra::HeadlessHost
+{
+public:
+    void print_char(uint8_t ch) { tape_.put(ch); }
+    iskra::Printer & tape() { return tape_; }
+
+private:
+    iskra::Printer tape_;
+};
+
+bool open_tape(CliHost & host)
+{
+    if (g_printer_path.empty()) return true;
+    std::string error;
+    if (host.tape().open(g_printer_path, error)) return true;
+    std::printf("%s\n", error.c_str());
+    return false;
+}
+
+// Всё, что ушло на АЦПУ. Без этого напечатанное пропадало бы молча:
+// `SELECT PRINT 0C` в корпусе не редкость, а своего окна у ленты здесь нет.
+void dump_tape(iskra::Printer & tape)
+{
+    if (tape.empty()) return;
+    if (tape.to_file()) {
+        std::printf("\nАЦПУ: напечатано %u байт, лента в файле\n",
+                    static_cast<unsigned>(tape.tape().size()));
+        return;
+    }
+    out("\n--- АЦПУ ---\n");
+    std::string text = tape.utf8();
+    if (text.empty() || text[text.size() - 1] != '\n') text += '\n';
+    out(text);
+}
+
+int run_program(iskra::ProgramImage & img, CliHost & host,
                 char ** input, int inputs)
 {
     for (int i = 0; i < inputs; ++i) {
@@ -479,6 +523,7 @@ int run_program(iskra::ProgramImage & img, iskra::HeadlessHost & host,
     out(host.dump());
     dump_raster(host.raster(), "растр экрана");
     dump_raster(host.plotter(), "лист графопостроителя");
+    dump_tape(host.tape());
     if (!ok) {
         std::printf("\nостановлено: %s\n", error.c_str());
         return 1;
@@ -502,13 +547,15 @@ int cmd_run_file(const char * path, char ** input, int inputs)
         std::printf("разбор: %s\n", error.c_str());
         return 1;
     }
-    iskra::HeadlessHost host;
+    CliHost host;
+    if (!open_tape(host)) return 1;
     return run_program(img, host, input, inputs);
 }
 
 int cmd_run(const char * path, const char * name, char ** input, int inputs)
 {
-    iskra::HeadlessHost host;
+    CliHost host;
+    if (!open_tape(host)) return 1;
     if (!mount_disk(host, path)) return 1;
 
     iskra::CatalogEntry e;
@@ -551,7 +598,8 @@ int cmd_run_text(const char * path, char ** input, int inputs)
         std::printf("трансляция: %s\n", error.c_str());
         return 1;
     }
-    iskra::HeadlessHost host;
+    CliHost host;
+    if (!open_tape(host)) return 1;
     return run_program(img, host, input, inputs);
 }
 
@@ -560,7 +608,7 @@ int cmd_run_text(const char * path, char ** input, int inputs)
 // читаются со стандартного ввода, а на стандартный вывод уходят те строки
 // экрана, которые с прошлого раза изменились. Прокрутка при этом
 // перепечатывает весь экран — так и должно быть, ведь изменились все строки.
-class TermHost : public iskra::HeadlessHost
+class TermHost : public CliHost
 {
 public:
     TermHost() : shown_(iskra::SCREEN_ROWS), pos_(0), open_(NONE),
@@ -692,10 +740,14 @@ int cmd_console(const iskra::DiskArgs & mounts)
         return 1;
     }
 
+    if (!open_tape(host)) return 1;
+
     iskra::ProgramImage img;
     iskra::Console con(img, host);
     con.interp().set_skip_machine(g_skip_machine);
-    if (!con.run(error)) {
+    const bool ok = con.run(error);
+    dump_tape(host.tape());
+    if (!ok) {
         std::printf("%s\n", error.c_str());
         return 1;
     }
@@ -711,7 +763,16 @@ int main(int argc, char ** argv)
     std::vector<char *> rest;
     rest.push_back(argv[0]);
     for (int i = 1; i < argc; ++i) {
-        if (std::string(argv[i]) == "-i") { g_skip_machine = true; continue; }
+        const std::string a = argv[i];
+        if (a == "-i") { g_skip_machine = true; continue; }
+        if (a == "--printer") {
+            if (i + 1 >= argc) {
+                std::printf("--printer: не задан файл ленты\n");
+                return 1;
+            }
+            g_printer_path = argv[++i];
+            continue;
+        }
         rest.push_back(argv[i]);
     }
     argv = &rest[0];

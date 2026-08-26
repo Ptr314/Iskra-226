@@ -122,7 +122,17 @@ public:
     // графопостроителя, где знаков экрана нет вовсе.
     void draw_raster(const Raster & g, uint32_t * out, unsigned pitch) const;
 
+    // Лента АЦПУ: те же знакоместа, но цветами бумаги и без курсора.
+    // Печать идёт на бумагу, а не на люминофор, и мигать там нечему.
+    void draw_paper(const Screen & s, uint32_t * out, unsigned pitch) const
+    { draw_cells(s, out, pitch, 0, ink_, paper_, false); }
+
 private:
+    // Общий проход: экран и лента отличаются только цветами и курсором.
+    void draw_cells(const Screen & s, uint32_t * out, unsigned pitch,
+                    const Raster * g, uint32_t fg, uint32_t bg,
+                    bool cursor) const;
+
     const Font * font_;
     unsigned scale_x_;
     unsigned scale_y_;
