@@ -670,6 +670,12 @@ bool Interp::do_select(Stream & st)
             row = r;
             addr = a;
             disk = true;
+        } else if (code == 0x01 || code == 0x02 || code == 0x03) {
+            // «Углы могут задаваться в градусах, радианах или градах»
+            // (разд. 4.6). Адреса за этими кодами нет; коды прочитаны в
+            // таблице ключевых слов интерпретатора.
+            dev_.set_angle(code == 0x01 ? ANG_DEG
+                         : code == 0x02 ? ANG_RAD : ANG_GRAD);
         } else if (code == 0x05) {
             uint8_t p = 0;
             unsigned pause = 0;
@@ -705,7 +711,7 @@ bool Interp::do_select(Stream & st)
             dev_.select_row(row, static_cast<uint8_t>(addr), removable);
         } else if (code == 0x0A) {
             dev_.select_disk(static_cast<uint8_t>(addr), removable);
-        } else if (code != 0x05) {
+        } else if (code != 0x05 && code > 0x03) {
             DeviceGroup g;
             if (!group_of_code(code, g))
                 return fail("SELECT: неизвестная группа устройств, код "
@@ -2320,9 +2326,10 @@ bool Interp::do_tran(Stream & st)
 // --- матричные операторы ----------------------------------------------------
 
 // `MAT <массив>=ZER` и `MAT <массив>=<массив>`: `E0 <индекс> D9 <EF | E0
-// <индекс>>` (STAT03 240). Других форм в корпусе нет вовсе — ни `CON`, ни
-// `IDN`, ни арифметики, ни `INV`/`TRN`: их байты не установлены, и
-// транслятор их кодировать отказывается.
+// <индекс>>` (STAT03 240). Байты `F0` `CON` и `EE` `IDN` прочитаны в таблице
+// ключевых слов интерпретатора (docs/format.md, разд. 4), в корпусе их нет
+// ни разу. `TRN` и `INV` берут аргумент в скобках, и разметка его
+// неизвестна — транслятор их кодировать отказывается.
 bool Interp::do_mat(Stream & st)
 {
     uint8_t b = 0, dst = 0;
@@ -2338,6 +2345,30 @@ bool Interp::do_mat(Stream & st)
         unsigned d1 = 0, d2 = 0;
         if (!store_.array_dims(dst, d1, d2, err)) return fail(err);
         if (!store_.array_alloc(dst, d1, d2, err)) return fail(err);
+        return true;
+    }
+
+    if (b == 0xF0 || b == 0xEE) {
+        // «MAT CON — каждый элемент матрицы = 1» (разд. 12.2.10);
+        // «MAT IDN предназначен для превращения квадратной матрицы С в
+        // единичную. Если матрица С не является квадратной, то выполнение
+        // программы прекращается с сообщением об ошибке» (разд. 12.2.12).
+        if (store_.is_string(dst)) return fail("MAT: массив не числовой");
+        unsigned d1 = 0, d2 = 0;
+        if (!store_.array_dims(dst, d1, d2, err)) return fail(err);
+        if (b == 0xEE && (!d2 || d1 != d2))
+            return machine_error(err::UNKNOWN, "MAT =IDN: матрица не квадратная");
+        if (!store_.array_alloc(dst, d1, d2, err)) return fail(err);
+
+        const unsigned rows = d1, cols = d2 ? d2 : 1;
+        for (unsigned i = 1; i <= rows; ++i)
+            for (unsigned j = 1; j <= cols; ++j) {
+                long idx[2] = { static_cast<long>(i), static_cast<long>(j) };
+                Number * cell = 0;
+                if (!store_.slot(dst, idx, d2 ? 2u : 1u, cell, err))
+                    return fail(err);
+                if (b == 0xF0 || i == j) *cell = Number::from_int(1);
+            }
         return true;
     }
 
@@ -4185,6 +4216,10 @@ bool Interp::exec(unsigned verb, const uint8_t * ops, unsigned len)
     if (verb == 0x56 || verb == 0x3F || verb == 0x29) return true;
 
     Stream st(ops, len, &img_.vars(), store_, &fnres_);
+    // Единица измерения угла живёт в таблице устройств, а тригонометрию
+    // считает вычислитель: он про таблицу не знает, и единицу ему
+    // приходится ставить на каждом операторе (`SELECT D/R/G`, разд. 4.6).
+    st.ev.set_angle(static_cast<unsigned>(dev_.angle()));
     const bool ok = dispatch(verb, st, ops, len);
     // «Если ошибка математическая, то выполняется оператор возврата RETURN»
     // (пример 11.11) — значит у неё есть код и её ловит ON ERROR. Вычислитель

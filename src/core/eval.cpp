@@ -390,6 +390,23 @@ bool Evaluator::implicit(Value & out, Tok::Type fn)
 }
 
 // Функция со скобкой: аргументы через запятую, закрывается D0.
+// Угол в радианы и обратно. «Углы могут задаваться в градусах, радианах или
+// градах» (руководство, разд. 4.6); единицу держит таблица устройств, а
+// вычислителю её ставит исполнитель.
+double Evaluator::to_radians(double v) const
+{
+    if (angle_ == 1) return v * 3.14159265358979323846 / 180.0;
+    if (angle_ == 2) return v * 3.14159265358979323846 / 200.0;
+    return v;
+}
+
+double Evaluator::from_radians(double v) const
+{
+    if (angle_ == 1) return v * 180.0 / 3.14159265358979323846;
+    if (angle_ == 2) return v * 200.0 / 3.14159265358979323846;
+    return v;
+}
+
 bool Evaluator::call(Value & out, Tok::Type fn)
 {
     Number args[3];
@@ -429,6 +446,39 @@ bool Evaluator::call(Value & out, Tok::Type fn)
         case Tok::FN_EXP:
             out.num = Number::from_double(std::exp(a.to_double()));
             return true;
+
+        // «Углы могут задаваться в градусах, радианах или градах»
+        // (разд. 4.6): перед синусом угол приводится к радианам, а обратные
+        // функции возвращают его обратно в текущих единицах.
+        case Tok::FN_SIN:
+            out.num = Number::from_double(std::sin(to_radians(a.to_double())));
+            return true;
+        case Tok::FN_COS:
+            out.num = Number::from_double(std::cos(to_radians(a.to_double())));
+            return true;
+        case Tok::FN_TAN: {
+            const double c = std::cos(to_radians(a.to_double()));
+            if (c == 0.0) return math_fail("тангенс прямого угла");
+            out.num = Number::from_double(
+                std::sin(to_radians(a.to_double())) / c);
+            return true;
+        }
+        case Tok::FN_ASIN: {
+            const double x = a.to_double();
+            if (x < -1.0 || x > 1.0) return math_fail("ARCSIN вне -1…1");
+            out.num = Number::from_double(from_radians(std::asin(x)));
+            return true;
+        }
+        case Tok::FN_ACOS: {
+            const double x = a.to_double();
+            if (x < -1.0 || x > 1.0) return math_fail("ARCCOS вне -1…1");
+            out.num = Number::from_double(from_radians(std::acos(x)));
+            return true;
+        }
+        case Tok::FN_ATAN:
+            out.num = Number::from_double(from_radians(std::atan(a.to_double())));
+            return true;
+
         default: break;
     }
     return fail("функция ещё не вычисляется");
@@ -486,6 +536,8 @@ bool Evaluator::primary(Value & out)
 
         case Tok::FN_ABS: case Tok::FN_INT: case Tok::FN_SGN:
         case Tok::FN_SQR: case Tok::FN_LOG: case Tok::FN_EXP:
+        case Tok::FN_SIN: case Tok::FN_COS: case Tok::FN_TAN:
+        case Tok::FN_ASIN: case Tok::FN_ACOS: case Tok::FN_ATAN:
             return call(out, t.t);
 
         case Tok::FN_STR: {

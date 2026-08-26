@@ -88,7 +88,9 @@ bool looks_like_operand(uint8_t b)
         case 0xF0:                                 // FN<имя>( — своя функция
         case 0xF1:                                 // #PI
         case 0xF2: case 0xF3: case 0xF4: case 0xF5:
-        case 0xF6: case 0xF7: case 0xF8:           // функции
+        case 0xF6: case 0xF7: case 0xF8:
+        case 0xF9: case 0xFA: case 0xFB:
+        case 0xFC: case 0xFD: case 0xFE:           // функции
             return true;
         default:
             return false;
@@ -191,6 +193,7 @@ bool ByteSource::next(Tok & t, bool operand_expected)
             // Связки условий. Оба байта двузначны: в позиции
             // операнда это числовые константы. Сверено на паре
             // «текст + токены» (EDITOR 360, 1360).
+            case 0xE5: t.t = Tok::XOR; return true;
             case 0xE6: t.t = Tok::OR; return true;
             case 0xE7: t.t = Tok::AND; return true;
             case 0xDE: t.t = Tok::COMMA; return true;
@@ -247,6 +250,12 @@ bool ByteSource::next(Tok & t, bool operand_expected)
         case 0xF6: t.t = Tok::FN_SQR; return true;
         case 0xF7: t.t = Tok::FN_LOG; return true;
         case 0xF8: t.t = Tok::FN_EXP; return true;
+        case 0xF9: t.t = Tok::FN_SIN;  return true;
+        case 0xFA: t.t = Tok::FN_COS;  return true;
+        case 0xFB: t.t = Tok::FN_TAN;  return true;
+        case 0xFC: t.t = Tok::FN_ASIN; return true;
+        case 0xFD: t.t = Tok::FN_ACOS; return true;
+        case 0xFE: t.t = Tok::FN_ATAN; return true;
 
         case 0xE2: {                                   // HEX( — длина и данные
             if (i_ >= n_) return fail("HEX( оборвался");

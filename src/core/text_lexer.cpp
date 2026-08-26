@@ -17,17 +17,16 @@ namespace iskra {
 
 const Keyword KEYWORDS[] = {
     // Функции: за именем следует открывающая скобка, она входит в лексему.
-    // Тригонометрия: имена языка есть (разд. 4.7), а байты токенов не
-    // установлены — свободны `F9`–`FC`, и какое имя за каким, корпус не
-    // показывает (docs/format.md, разд. 5). Слова всё равно должны быть в
-    // таблице: без них `COS(X)` разбирается как переменная `C` и хвост
-    // `OS(X)`, то есть молча неправильно. Пусть лучше будет честный отказ.
-    { "ARCTAN", Tok::UNKNOWN,  true  },
-    { "ARCSIN", Tok::UNKNOWN,  true  },
-    { "ARCCOS", Tok::UNKNOWN,  true  },
-    { "SIN",    Tok::UNKNOWN,  true  },
-    { "COS",    Tok::UNKNOWN,  true  },
-    { "TAN",    Tok::UNKNOWN,  true  },
+    // Тригонометрия (разд. 4.7). Байты прочитаны в таблице ключевых слов
+    // интерпретатора: `F9`…`FE` подряд за `F8 EXP(` (docs/format.md,
+    // разд. 4). Длинные имена — раньше коротких: иначе `ARCSIN` разберётся
+    // как переменная `ARC` и хвост.
+    { "ARCTAN", Tok::FN_ATAN,  true  },
+    { "ARCSIN", Tok::FN_ASIN,  true  },
+    { "ARCCOS", Tok::FN_ACOS,  true  },
+    { "SIN",    Tok::FN_SIN,   true  },
+    { "COS",    Tok::FN_COS,   true  },
+    { "TAN",    Tok::FN_TAN,   true  },
     { "ROUND",  Tok::FN_ROUND, true  },
     { "RND",    Tok::FN_RND,   true  },
     { "XOR",    Tok::XOR,      false },   // связки условий

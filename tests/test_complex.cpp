@@ -127,6 +127,65 @@ void test_arithmetic()
     CHECK_STR(line_of(s, 3), " 2.2360679775 -1");
 }
 
+// --- тригонометрия и единицы измерения угла ---------------------------------
+
+// Байты `F9`…`FE` прочитаны в таблице ключевых слов интерпретатора
+// (`docs/format.md`, разд. 4); пары «текст + токены» с тригонометрией в
+// корпусе нет и не будет. Единица угла — из таблицы устройств: «углы могут
+// задаваться в градусах, радианах или градах» (руководство, разд. 4.6).
+void test_trig()
+{
+    const char * src =
+        "10 SELECT D\n"
+        "20 PRINT SIN(30);COS(60);TAN(45)\n"
+        "30 PRINT ARCSIN(.5);ARCCOS(.5);ARCTAN(1)\n"
+        "40 SELECT R\n"
+        "50 PRINT SIN(#PI/6);ARCTAN(1)*4\n"
+        "60 SELECT G\n"
+        "70 PRINT SIN(100);ARCTAN(1)\n";
+    const std::string s = run(src, "тригонометрия");
+    CHECK_STR(line_of(s, 1), " .5  .5  1");
+    CHECK_STR(line_of(s, 2), " 30  60  45");
+    // В радианах ARCTAN(1)*4 — это #PI.
+    CHECK_STR(line_of(s, 3), " .5  3.14159265359");
+    // В градах прямой угол — сто.
+    CHECK_STR(line_of(s, 4), " 1  50");
+}
+
+// Связка `XOR` — байт `E5`, оттуда же. Заодно проверяется, что связки
+// равноправны и считаются слева направо (разд. 4.5).
+void test_xor()
+{
+    const char * src =
+        "10 IF 1=1 XOR 1=2 THEN 30\n"
+        "20 PRINT \"НЕТ\";:GOTO 40\n"
+        "30 PRINT \"ДА\";\n"
+        "40 IF 1=1 XOR 1=1 THEN 60\n"
+        "50 PRINT \" НЕТ\";:GOTO 70\n"
+        "60 PRINT \" ДА\";\n"
+        "70 END\n";
+    const std::string s = run(src, "связка XOR");
+    CHECK_STR(line_of(s, 1), "ДА НЕТ");
+}
+
+// `MAT CON` и `MAT IDN` — байты `F0` и `EE` из той же таблицы. Пример 12.12
+// книги слово в слово.
+void test_mat_con_idn()
+{
+    const char * src =
+        "10 DIM A(3,3),B(2,2)\n"
+        "20 MAT A=IDN\n"
+        "30 MAT PRINT A;\n"
+        "40 MAT B=CON\n"
+        "50 MAT PRINT B;\n";
+    const std::string s = run(src, "MAT CON и IDN");
+    CHECK_STR(line_of(s, 1), " 1  0  0");
+    CHECK_STR(line_of(s, 2), " 0  1  0");
+    CHECK_STR(line_of(s, 3), " 0  0  1");
+    CHECK_STR(line_of(s, 4), " 1  1");
+    CHECK_STR(line_of(s, 5), " 1  1");
+}
+
 // --- массивы, индексы-выражения, MAT REDIM ----------------------------------
 
 void test_arrays()
@@ -315,6 +374,9 @@ void test_deep_nesting()
 int main()
 {
     test_arithmetic();
+    test_trig();
+    test_xor();
+    test_mat_con_idn();
     test_arrays();
     test_strings();
     test_control();

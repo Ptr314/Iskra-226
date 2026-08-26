@@ -23,6 +23,9 @@ struct Tok {
         EQ, NE, LT, LE, GT, GE,
         AND, OR, XOR,   // логические связки условий
         FN_ABS, FN_INT, FN_SGN, FN_SQR, FN_LOG, FN_EXP, FN_ROUND, FN_RND,
+        // Тригонометрия, токены `F9`…`FE` подряд. Угол — в единицах,
+        // заданных `SELECT D/R/G` (руководство, разд. 4.6).
+        FN_SIN, FN_COS, FN_TAN, FN_ASIN, FN_ACOS, FN_ATAN,
         FN_HEX,         // строка байт уже разобрана в s
         FN_AT, FN_TAB,
         FN_STR,                 // STR( — первая запятая в потоке не кодируется

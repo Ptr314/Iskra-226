@@ -274,6 +274,12 @@ bool Decoder::token(const Tok & t, bool operand_expected, bool & stop)
         case Tok::FN_SQR: return call("SQR", 1, 1, true);
         case Tok::FN_LOG: return call("LOG", 1, 1, true);
         case Tok::FN_EXP: return call("EXP", 1, 1, true);
+        case Tok::FN_SIN:  return call("SIN", 1, 1, true);
+        case Tok::FN_COS:  return call("COS", 1, 1, true);
+        case Tok::FN_TAN:  return call("TAN", 1, 1, true);
+        case Tok::FN_ASIN: return call("ARCSIN", 1, 1, true);
+        case Tok::FN_ACOS: return call("ARCCOS", 1, 1, true);
+        case Tok::FN_ATAN: return call("ARCTAN", 1, 1, true);
         case Tok::FN_RND: return call("RND", 1, 1, true);
         case Tok::FN_ROUND: return call("ROUND", 2, 2, true);
         case Tok::FN_TAB: return call("TAB", 1, 1, true);
@@ -313,6 +319,7 @@ bool Decoder::token(const Tok & t, bool operand_expected, bool & stop)
         case Tok::GE: emit(">="); return true;
         case Tok::AND: emit("AND"); return true;
         case Tok::OR:  emit("OR"); return true;
+        case Tok::XOR: emit("XOR"); return true;
 
         case Tok::SLASH:
             // В позиции операнда `/` — адрес устройства, а не деление.
@@ -1346,6 +1353,10 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
                     d.emit("#" + dec(row)
                            + std::string(1, HEXD[addr >> 4]) + HEXD[addr & 15]);
                     disk = true;
+                } else if (code == 0x01 || code == 0x02 || code == 0x03) {
+                    // Единицы измерения углов (разд. 4.6): адреса за ними
+                    // не идёт.
+                    d.emit(code == 0x01 ? "D" : code == 0x02 ? "R" : "G");
                 } else if (code == 0x05) {             // P<цифра>
                     d.emit("P");
                     uint8_t p = 0;
@@ -1720,6 +1731,8 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             uint8_t b = 0;
             if (src.peek_raw_byte(b) && b == 0xD9) src.skip(1);
             if (src.peek_raw_byte(b) && b == 0xEF) { src.skip(1); d.emit("ZER"); return true; }
+            if (src.peek_raw_byte(b) && b == 0xF0) { src.skip(1); d.emit("CON"); return true; }
+            if (src.peek_raw_byte(b) && b == 0xEE) { src.skip(1); d.emit("IDN"); return true; }
             if (!d.parser().take(t, true) || t.t != Tok::ARRAY) {
                 error = "MAT: ждали массив";
                 return false;

@@ -41,7 +41,7 @@ class Evaluator
 {
 public:
     Evaluator(TokenSource & src, VarStore & vars)
-        : ex_(src), src_(src), vars_(vars), fn_(0), code_(0),
+        : ex_(src), src_(src), vars_(vars), fn_(0), angle_(0), code_(0),
           stop_gt_(false) {}
 
     // Полное выражение, включая связки условий.
@@ -84,6 +84,11 @@ public:
     // Кому передавать обращения FN<имя>(. Ноль значит «функций нет» —
     // так вычислитель работает вне программы.
     void set_functions(FnResolver * f) { fn_ = f; }
+
+    // Единица измерения угла для тригонометрии: 0 радианы, 1 градусы,
+    // 2 грады (`SELECT D/R/G`, руководство, разд. 4.6). Ставит исполнитель:
+    // сама таблица устройств вычислителю не видна.
+    void set_angle(unsigned a) { angle_ = a; }
 
     // Внутри группы `PLOT` байт `D4` — закрывающая скобка группы, а не
     // знак «больше» (docs/format.md, разд. 5, «Подкод 06 00 — это PLOT»).
@@ -128,6 +133,8 @@ private:
     bool primary(Value & out);
 
     bool call(Value & out, Tok::Type fn);
+    double to_radians(double v) const;
+    double from_radians(double v) const;
     bool user_call(Value & out, unsigned name);
     bool indices(long * idx, unsigned & n);
     bool substr(Value & out, VarStore::StrLoc & loc);
@@ -138,6 +145,7 @@ private:
     TokenSource & src_;
     VarStore & vars_;
     FnResolver * fn_;
+    unsigned angle_;
     const char * code_;    // код ошибки машины, если она машинная
     bool stop_gt_;         // `D4` — конец элемента группы `PLOT`, а не «>»
     std::string lit_;      // литерал под STR("…",…), чтобы было откуда резать

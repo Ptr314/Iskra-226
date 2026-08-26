@@ -322,6 +322,12 @@ bool Encoder::primary()
         case Tok::FN_SQR: return call(0xF6, 1, 1);
         case Tok::FN_LOG: return call(0xF7, 1, 1);
         case Tok::FN_EXP: return call(0xF8, 1, 1);
+        case Tok::FN_SIN:  return call(0xF9, 1, 1);
+        case Tok::FN_COS:  return call(0xFA, 1, 1);
+        case Tok::FN_TAN:  return call(0xFB, 1, 1);
+        case Tok::FN_ASIN: return call(0xFC, 1, 1);
+        case Tok::FN_ACOS: return call(0xFD, 1, 1);
+        case Tok::FN_ATAN: return call(0xFE, 1, 1);
         // ROUND( — два аргумента, вторая запятая кодируется (EDITOR 4132).
         case Tok::FN_ROUND: return call(0xD8, 2, 2);
         case Tok::FN_RND: return call(0xF4, 1, 1);   // EDITOR 4543
@@ -471,12 +477,10 @@ bool Encoder::expr()
         if (!ex_.peek(t, false)) return fail(ex_.error());
         if (t.t == Tok::AND) { ex_.consume(); emit(0xE7); }
         else if (t.t == Tok::OR) { ex_.consume(); emit(0xE6); }
-        else if (t.t == Tok::XOR) {
-            // В корпусе XOR связкой не встречается ни разу, и байт для него
-            // неизвестен (docs/format.md, разд. 4). Выдумывать нельзя:
-            // выдуманный байт уехал бы на дискету через SAVE DC.
-            return fail("байт связки XOR неизвестен, кодировать нечем");
-        }
+        // `E5` `XOR`, `E6` `OR`, `E7` `AND` идут в таблице ключевых слов
+        // интерпретатора подряд (docs/format.md, разд. 4). В корпусе связка
+        // `XOR` не встречается ни разу — байт взят из таблицы, не выдуман.
+        else if (t.t == Tok::XOR) { ex_.consume(); emit(0xE5); }
         else return true;
         if (!compare()) return false;
     }
@@ -1514,8 +1518,9 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
     }
 
     if (lex_.take_word("MAT")) {
-        // `MAT <массив>=<что>`; ZER — байт EF (STAT03 240). CON и IDN в
-        // корпусе не встречаются, их коды не установлены.
+        // `MAT <массив>=<что>`; `EF` `ZER` (STAT03 240), `F0` `CON` и
+        // `EE` `IDN` — из таблицы ключевых слов интерпретатора
+        // (docs/format.md, разд. 4). В корпусе последних двух нет ни разу.
         verb = 0x0601;
         Encoder enc(lex_, out);
         Tok t;
@@ -1528,8 +1533,13 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         if (!enc.parser().take(t, false) || t.t != Tok::EQ) return err("MAT без =");
         out.push_back(0xD9);
         if (lex_.take_word("ZER")) { out.push_back(0xEF); return true; }
-        if (lex_.take_word("CON") || lex_.take_word("IDN"))
-            return err("MAT: код CON и IDN не установлен");
+        if (lex_.take_word("CON")) { out.push_back(0xF0); return true; }
+        if (lex_.take_word("IDN")) { out.push_back(0xEE); return true; }
+        // `TRN` и `INV` берут аргумент в скобках, и как он кодируется —
+        // неизвестно: в корпусе их нет, а выдуманная разметка уехала бы на
+        // дискету через SAVE DC.
+        if (lex_.take_word("TRN") || lex_.take_word("INV"))
+            return err("MAT: разметка операндов TRN и INV неизвестна");
         lex_.expect_array();
         if (!enc.parser().take(t, true)) return err(enc.error());
         if (t.t != Tok::VAR && t.t != Tok::ARRAY) return err("MAT: ждали массив");
@@ -2062,16 +2072,19 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
                         break;
                     }
                 if (!named) {
-                    // Единицы измерения углов: в тексте читаются однозначно,
-                    // а какой у них код в потоке — неизвестно (SC_TRIG в
-                    // core/devtable.h заведён именно поэтому).
-                    if (lex_.take_word("D") || lex_.take_word("G")
-                        || lex_.take_word("R"))
-                        return err("SELECT D/G/R: код единиц углов неизвестен");
-                    if (!lex_.take_word("P")) return err("SELECT: неизвестная группа");
-                    out.push_back(0x05);
-                    unsigned d = 0;
-                    if (lex_.take_digit(d)) out.push_back(static_cast<uint8_t>(d));
+                    // Единицы измерения углов (разд. 4.6). Адреса за ними
+                    // не идёт; коды из таблицы ключевых слов интерпретатора.
+                    if (lex_.take_word("D")) out.push_back(0x01);
+                    else if (lex_.take_word("R")) out.push_back(0x02);
+                    else if (lex_.take_word("G")) out.push_back(0x03);
+                    else {
+                        if (!lex_.take_word("P"))
+                            return err("SELECT: неизвестная группа");
+                        out.push_back(0x05);
+                        unsigned d = 0;
+                        if (lex_.take_digit(d))
+                            out.push_back(static_cast<uint8_t>(d));
+                    }
                 }
             }
             if (disk) {

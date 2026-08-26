@@ -159,13 +159,19 @@ void test_text_forms()
     CHECK(run_text("10 SELECT P1\n20 SELECT P\n", d, err));
     CHECK_EQ(d.pause(), 0u);
 
-    // Единицы измерения углов (разд. 4.6). В тексте они читаются однозначно,
-    // но какой у них код в потоке токенов — неизвестно, а программа теперь
-    // исполняется токенами. Поэтому транслятор обязан отказать прямо, а не
-    // выдумать байт (docs/format.md, разд. 4; SC_TRIG в core/devtable.h).
-    CHECK(!run_text("10 SELECT D\n", d, err));
-    CHECK(err.find("единиц углов") != std::string::npos);
-    CHECK(!run_text("10 SELECT G\n", d, err));
+    // Единицы измерения углов (разд. 4.6): `01` `D`, `02` `R`, `03` `G` —
+    // коды прочитаны в таблице ключевых слов интерпретатора
+    // (docs/format.md, разд. 4). Адреса за ними не идёт.
+    CHECK(run_text("10 SELECT D\n", d, err));
+    CHECK_EQ(static_cast<unsigned>(d.angle()), static_cast<unsigned>(ANG_DEG));
+    CHECK(run_text("10 SELECT G\n", d, err));
+    CHECK_EQ(static_cast<unsigned>(d.angle()), static_cast<unsigned>(ANG_GRAD));
+    CHECK(run_text("10 SELECT R\n", d, err));
+    CHECK_EQ(static_cast<unsigned>(d.angle()), static_cast<unsigned>(ANG_RAD));
+    // И вместе с другой группой через запятую.
+    CHECK(run_text("10 SELECT D,PRINT 0C\n", d, err));
+    CHECK_EQ(static_cast<unsigned>(d.angle()), static_cast<unsigned>(ANG_DEG));
+    CHECK_EQ(static_cast<unsigned>(d.addr(DG_PRINT)), 0x0Cu);
 
     // Само хранение режима от кодировки не зависит и проверяется напрямую.
     {
@@ -266,7 +272,8 @@ void test_tokens_list()
 void test_unknown_group()
 {
     TokenBuilder b;
-    static const int l10[] = { 0x54, 0x01, 0x01 };                 // SELECT <?>
+    // `54 01 04` — код группы `04` в таблице интерпретатора пуст.
+    static const int l10[] = { 0x54, 0x01, 0x04 };                 // SELECT <?>
     b.add_line(10, l10, 3);
 
     ProgramImage img;

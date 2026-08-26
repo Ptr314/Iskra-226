@@ -30,7 +30,9 @@ const char * group_name(unsigned code)
         case SC_TAPE:  return "TAPE";
         case SC_DISK:  return "DISK";
         case SC_CO:    return "CO";
-        case SC_TRIG:  return "D/R/G";
+        case SC_DEG:   return "D";
+        case SC_RAD:   return "R";
+        case SC_GRAD:  return "G";
         default:       return "?";
     }
 }
