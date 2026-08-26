@@ -176,6 +176,25 @@ void test_list_range()
     CHECK_STR(line_of(screen, 3), "");
 }
 
+// `LIST S` — не признак у `LIST`, а свой глагол `33`: так говорит таблица
+// ключевых слов интерпретатора (`docs/format.md`, разд. 4). Единственное
+// вхождение в корпусе — `L2` 2541. Выдача идёт кадрами по 23 строки, и
+// между кадрами машина ждёт CR/LF; нажатий в сценарии нет, поэтому первый
+// же кадр её и обрывает.
+void test_list_paged()
+{
+    std::string screen, error;
+    const char * src =
+        "10 LIST S 30,40\n"
+        "20 END\n"
+        "30 A=1\n"
+        "40 B=2\n";
+    if (!run_text(src, screen, error))
+        { std::printf("  %s\n", error.c_str()); CHECK(false); return; }
+    CHECK_STR(line_of(screen, 1), "30 A=1");
+    CHECK_STR(line_of(screen, 2), "40 A0=2");
+}
+
 // Один номер — одна строка.
 void test_list_one()
 {
@@ -421,6 +440,7 @@ int main()
     test_run_bare();
     test_list_range();
     test_list_one();
+    test_list_paged();
     test_return_clear();
     test_return_clear_nested();
     test_return_clear_all();

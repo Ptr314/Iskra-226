@@ -304,7 +304,9 @@ private:
     bool do_return_clear(Stream & st, unsigned len);
     bool do_clear(Stream & st);
     bool do_run(Stream & st);
-    bool do_list(Stream & st);
+    // paged — форма `LIST S`, глагол `33`: «в 23 строки экрана» (разд. 3.4).
+    bool do_list(Stream & st, bool paged);
+    bool do_save_da(Stream & st);
     // Один-два номера строк сырыми парами BCD; сколько прочитано.
     unsigned line_range(Stream & st, unsigned & from, unsigned & to);
     // Обмен программой через символьный буфер (EDITOR 5195, ASMBBAS 9056).

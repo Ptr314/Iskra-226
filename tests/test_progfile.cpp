@@ -346,6 +346,48 @@ void test_load_da()
     CHECK_STR(line_of(screen, 2), want);
 }
 
+// `SAVE DA` пишет программу в подряд идущие секторы, начиная с указанного,
+// и кладёт в приёмник адрес сектора за последним занятым (разд. 18.9.2).
+// Глагол `73` прочитан в таблице ключевых слов интерпретатора; в корпусе
+// оператора нет ни разу.
+void test_save_da()
+{
+    HeadlessHost host;
+    if (!fresh_disk(host)) { CHECK(false); return; }
+
+    // Программа пишет сама себя на 100-й сектор: каталог там ничего не
+    // занимает, а приёмник получает адрес сектора за концом записанного.
+    ProgramImage img;
+    std::string error;
+    if (!tokenize_text("10 SAVE DA F(100,N)\n20 PRINT \"ЗАНЯЛА ДО\";N\n",
+                       img, error)) {
+        std::printf("  трансляция: %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+
+    std::string screen;
+    if (!run(img, host, screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+
+    // Первый сектор записанного — заголовочный: признак `01`, дальше восемь
+    // байт имени (у DA его нет вовсе) и байт вида программы.
+    uint8_t sec[Host::SECTOR_SIZE];
+    CHECK(host.disk_read(0, 100, sec));
+    CHECK_STR(test::str(sec[0]), "1");
+    CHECK_STR(test::str(sec[9]), "33");
+    // Второй — уже текст программы, `02 80`.
+    CHECK(host.disk_read(0, 101, sec));
+    CHECK_STR(test::str(sec[0]), "2");
+    CHECK_STR(test::str(sec[1]), "128");
+    // Приёмник — адрес за последним занятым сектором. Программа коротка:
+    // заголовок, один сектор текста и концевая запись.
+    CHECK_STR(line_of(screen, 1), "ЗАНЯЛА ДО 103");
+}
+
 // Файла нет — ошибка машины с кодом 73.
 void test_load_missing()
 {
@@ -459,6 +501,7 @@ int main()
     test_load_clears_variables();
     test_load_segment_range();
     test_load_da();
+    test_save_da();
     test_load_missing();
     test_tables_round_trip();
     test_text_program();

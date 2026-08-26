@@ -1209,10 +1209,31 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
         return line_tail(enc, out);
     }
 
-    // `SAVE DA` книга описывает (разд. 18.9.2), но в корпусе его нет ни разу,
-    // и байта у него нет. Выдумывать нельзя — он уехал бы на дискету.
-    if (lex_.take_word("SAVE DA"))
-        return err("SAVE DA: байт глагола неизвестен, в корпусе не встречается");
+    // `SAVE DA <буква> [#<строка>], (<сектор> [,<приёмник>])` — разд. 18.9.2.
+    // Глагол `73` прочитан в таблице ключевых слов интерпретатора
+    // (`docs/format.md`, разд. 4); операнды те же, что у `LOAD DA`, — в
+    // корпусе его нет ни разу.
+    if (lex_.take_word("SAVE DA")) {
+        verb = 0x73;
+        Encoder enc(lex_, out);
+        lex_.skip_spaces();
+        const char c = (lex_.pos() < lex_.end()) ? lex_.text()[lex_.pos()] : ' ';
+        if (!disk_prefix(enc, out, c == 'F' || c == 'R' || c == 'T'))
+            return false;
+        if (!lex_.take_char('(')) return err("SAVE DA без адреса сектора");
+        out.push_back(0xEB);
+        if (!enc.expr()) return err(enc.error());
+        // «Значение этого адреса можно считать в числовую или символьную
+        // переменную, которая может быть указана после адреса начального
+        // сектора» (разд. 18.9.1).
+        if (take_sep(enc, Tok::COMMA)) {
+            out.push_back(0xDE);
+            if (!enc.lvalue()) return err(enc.error());
+        }
+        if (!take_sep(enc, Tok::RPAR)) return err("SAVE DA: скобка не закрыта");
+        out.push_back(0xD0);
+        return true;
+    }
 
     if (lex_.take_word("LOAD DA")) {
         // «LOAD DA <тип диска> <устройство>, (<адрес> [,<переменная>])
@@ -2216,7 +2237,11 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
     // адресом (`DASB2` 448 = `2E 06 DC DE 05 DE 95 02`), дальше один или
     // два номера строк сырыми парами BCD.
     if (lex_.take_word("LIST")) {
-        verb = 0x2E;
+        // `LIST S` — покадровая выдача, и у неё **свой глагол** `33`, а не
+        // признак у `2E`: так говорит таблица ключевых слов интерпретатора
+        // (`docs/format.md`, разд. 4). Единственное вхождение в корпусе —
+        // `L2` 2541 `33 02 60 00`, то есть `LIST S 6000`.
+        verb = lex_.take_word("S") ? 0x33 : 0x2E;
         if (lex_.take_char('/')) {
             unsigned addr = 0;
             if (!lex_.take_hex2(addr)) return err("LIST: неверный адрес устройства");

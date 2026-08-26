@@ -574,8 +574,9 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             return true;
         }
 
+        case 0x33:                                     // LIST S
         case 0x2E: {                                   // LIST
-            d.emit("LIST");
+            d.emit(verb == 0x33 ? "LIST S" : "LIST");
             uint8_t b = 0;
             if (src.peek_raw_byte(b) && b == 0xDC) {
                 src.skip(1);
@@ -1584,6 +1585,29 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             if (src.at_end()) return true;
             // За приставкой бывает имя файла: `LIST DC F"CHANAL"` (CHANAL 1).
             if (!d.expr()) { error = d.error(); return false; }
+            return true;
+        }
+
+        case 0x73: {                                   // SAVE DA
+            d.emit("SAVE DA ");
+            if (!disk_prefix(d, src, true)) { error = "приставка устройства"; return false; }
+            Tok t;
+            if (!d.parser().take(t, true) || t.t != Tok::LPAR) {
+                error = "SAVE DA без адреса сектора";
+                return false;
+            }
+            d.emit("(");
+            if (!d.expr()) { error = d.error(); return false; }
+            if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+            if (t.t == Tok::COMMA) {
+                d.parser().consume();
+                d.emit(",");
+                if (!d.lvalue()) { error = d.error(); return false; }
+                if (!d.parser().peek(t, false)) { error = d.error(); return false; }
+            }
+            if (t.t != Tok::RPAR) { error = "SAVE DA: скобка не закрыта"; return false; }
+            d.parser().consume();
+            d.emit(")");
             return true;
         }
 

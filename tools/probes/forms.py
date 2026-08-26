@@ -218,6 +218,8 @@ FORMS = [
     ('LIST',                      'LIST'),
     ('LIST 100',                  'LIST с номера'),
     ('LIST 100,200',              'LIST диапазон'),
+    ('LIST S 6000',               'LIST S — глагол 33, L2 2541'),
+    ('LIST S/05,100,200',         'LIST S с устройством и диапазоном'),
     # --- диск
     ('SCRATCH F"ИМЯ"',            'SCRATCH'),
     ('SCRATCH F/1C,"ИМЯ"',        'SCRATCH с адресом'),
@@ -230,6 +232,8 @@ FORMS = [
     ('LOAD DA F(100)',            'LOAD DA'),
     ('LOAD DA R(100,A)',          'LOAD DA с приёмником'),
     ('LOAD DA T#1,(A)1000,,53',   'LOAD DA сегментом'),
+    ('SAVE DA F(20)',             'SAVE DA — глагол 73'),
+    ('SAVE DA F(20,A)',           'SAVE DA с приёмником'),
     ('LIST DC F',                 'LIST DC'),
     ('LIST DC F"ИМЯ"',            'LIST DC с именем'),
     ('LIST DC F/1C,"ИМЯ"',        'LIST DC с адресом'),

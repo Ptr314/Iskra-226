@@ -1891,7 +1891,7 @@ bool Interp::do_run(Stream & st)
 // `LIST [<устройство>] [<строка1>[,<строка2>]]` — тот же листинг, что в
 // диалоге, но на устройство группы LIST: «LIST — устройство вывода для
 // операторов LIST» (руководство, разд. 11.5).
-bool Interp::do_list(Stream & st)
+bool Interp::do_list(Stream & st, bool paged)
 {
     // Приставка устройства у этого LIST — только адрес: строки таблицы и
     // дисковода тут ни при чём (`DASB2` 448 = `2E 06 DC DE 05 DE 95 02`).
@@ -1915,6 +1915,10 @@ bool Interp::do_list(Stream & st)
     std::string whole, err;
     detokenize(img_, names, whole, err);
 
+    // Кадр покадрового просмотра — «в 23 строки экрана» (разд. 3.4).
+    const unsigned PAGE_ROWS = 23;
+    unsigned shown = 0;
+
     for (unsigned i = 0; i < img_.line_count(); ++i) {
         const unsigned num = img_.line(i).number;
         if (from && num < from) continue;
@@ -1929,8 +1933,75 @@ bool Interp::do_list(Stream & st)
             emit_group(DG_LIST, text);
         }
         emit_group_newline(DG_LIST);
+
+        // «На экран сначала выдаются первый кадр (в 23 строки экрана) … и
+        // сообщение „:“. После этого для просмотра каждого следующего кадра
+        // следует нажимать на клавишу CR/LF» (разд. 3.4). Досматривать
+        // некому — выдача обрывается, как и в диалоге.
+        if (paged && ++shown % PAGE_ROWS == 0) {
+            emit_group(DG_LIST, ":");
+            uint8_t key = 0;
+            if (!host_.wait_key(key)) return true;
+            emit_group_newline(DG_LIST);
+        }
     }
     return true;
+}
+
+// `SAVE DA <буква> [#<строка>], (<сектор> [,<приёмник>])` — «программа,
+// находящаяся в оперативной памяти, записывается в последовательные сектора
+// диска, начиная с сектора, адрес которого указан в операторе» (разд. 18.9.2).
+// Глагол `73` прочитан в таблице ключевых слов интерпретатора
+// (`docs/format.md`, разд. 4); в корпусе оператора нет ни разу, а операнды
+// те же, что у `LOAD DA`.
+bool Interp::do_save_da(Stream & st)
+{
+    Disk d;
+    if (!disk_prefix(st, true, d)) return false;
+
+    Tok t;
+    if (!st.ev.parser().take(t, true) || t.t != Tok::LPAR)
+        return fail("SAVE DA без адреса сектора");
+    Number a;
+    if (!st.ev.number(a)) return fail(st.ev.error());
+    long v = 0;
+    if (!a.floor_to_int(v) || v < 0)
+        return fail("SAVE DA: адрес сектора не целый неотрицательный");
+    const unsigned start = static_cast<unsigned>(v);
+
+    bool has_target = false;
+    Evaluator::Target target;
+    if (!st.ev.parser().peek(t, false)) return fail(st.ev.error());
+    if (t.t == Tok::COMMA) {
+        st.ev.parser().consume();
+        if (!st.ev.target(target)) return fail(st.ev.error());
+        has_target = true;
+    } else {
+        st.ev.parser().unpeek();
+    }
+    if (!st.ev.parser().take(t, false) || t.t != Tok::RPAR)
+        return fail("SAVE DA: скобка не закрыта");
+
+    const unsigned total = host_.disk_sectors(d.drive);
+    if (!total) return fail("дисковода нет");
+
+    // Имени у файла в этом режиме нет вовсе: каталог тут не участвует.
+    std::vector<uint8_t> file;
+    img_.save_file(std::string(), file);
+    const unsigned need = static_cast<unsigned>(file.size() / Host::SECTOR_SIZE);
+    if (start + need > total)
+        return machine_error(err::UNKNOWN, "SAVE DA: программа не помещается");
+
+    for (unsigned i = 0; i < need; ++i)
+        if (!host_.disk_write(d.drive, start + i,
+                              &file[i * Host::SECTOR_SIZE]))
+            return machine_error(err::UNKNOWN,
+                                 "SAVE DA: не пишется сектор " +
+                                 num_str(start + i));
+
+    // «Машина запоминает адрес сектора, следующего за последним сектором,
+    // использованным в данной операции» (разд. 18.9.1).
+    return store_next(st, has_target, target, start + need);
 }
 
 bool Interp::do_list_dc(Stream & st)
@@ -4209,7 +4280,9 @@ bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
         case 0x30: return do_return_clear(st, len);
         case 0x2C: return do_clear(st);
         case 0x2F: return do_run(st);
-        case 0x2E: return do_list(st);
+        case 0x2E: return do_list(st, false);
+        case 0x33: return do_list(st, true);        // LIST S
+        case 0x73: return do_save_da(st);
         case 0x25: return do_keyin(st);
         case 0x2A: return do_save_buf(st);
         case 0x2D: return do_load_buf(st);
