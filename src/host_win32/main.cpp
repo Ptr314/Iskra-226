@@ -15,6 +15,7 @@
 #include "core/names.h"
 #include "core/program.h"
 #include "core/tokenize.h"
+#include "core/version.h"
 #include "host_common/disk_args.h"
 #include "host_common/fileio.h"
 #include "host_win32/win32_host.h"
@@ -45,8 +46,10 @@ void say(const std::string & utf8_text, const std::string & utf8_title,
 
 std::string usage()
 {
-    std::string s =
-    "iskra-win [ОБРАЗ] [--dN ОБРАЗ] [--rN] [--text ЛИСТИНГ] [--scale N] [-i]\n"
+    std::string s = "Искра 226 — эмулятор Бейсика BASIC 02, версия ";
+    s += iskra::version();
+    s += "\n\n"
+    "iskra [ОБРАЗ] [--dN ОБРАЗ] [--rN] [--text ЛИСТИНГ] [--scale N] [-i]\n"
     "\n"
     "ОБРАЗ — плоский образ дискеты «Искры»: сектора по 256 байт подряд.\n"
     "Названный без ключа, он идёт в дисковод 0 — тот же, что --d0.\n"
@@ -132,7 +135,9 @@ int run(int argc, wchar_t ** argv, std::string & error)
     // 0, а беда с образом не оставляет после себя пустого окна.
     if (!mounts.apply(host.disks(), error)) return 1;
 
-    std::string title = "Искра 226 — BASIC 02";
+    std::string title = "Искра 226 ";
+    title += iskra::version();
+    title += " — BASIC 02";
     const std::string & mounted = host.disks().path(0);
     if (!mounted.empty()) {
         const std::string::size_type slash = mounted.find_last_of("/\\");

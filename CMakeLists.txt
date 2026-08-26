@@ -37,6 +37,7 @@ endif()
 
 add_library(iskra_core STATIC
     src/core/host.h
+    src/core/version.h
     src/core/koi8.h             src/core/koi8.cpp
     src/core/number.h           src/core/number.cpp
     src/core/value.h
@@ -65,6 +66,9 @@ add_library(iskra_core STATIC
 )
 target_include_directories(iskra_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(iskra_core PRIVATE iskra_warnings)
+# Версия — из файла VERSION, одним числом на весь проект: заголовок окна,
+# помощь обоих хостов и имя архива выпуска берут её оттуда.
+target_compile_definitions(iskra_core PUBLIC ISKRA_VERSION="${ISKRA_VERSION}")
 
 # ---------------------------------------------------------------------------
 # Общая часть оконных хостов: знакоместа экрана — в точки. Про систему не
@@ -92,17 +96,17 @@ add_library(iskra_headless STATIC
 target_link_libraries(iskra_headless PUBLIC iskra_core)
 target_link_libraries(iskra_headless PRIVATE iskra_warnings)
 
-add_executable(iskra src/host_headless/main.cpp)
+add_executable(iskra-nohead src/host_headless/main.cpp)
 # Диалоговый режим работает с настоящими файлами образов — тем же кодом, что
 # и окно. Самому хосту без окна (и автотестам на нём) это не нужно.
-target_link_libraries(iskra PRIVATE iskra_headless iskra_host_common
-                                    iskra_warnings)
+target_link_libraries(iskra-nohead PRIVATE iskra_headless iskra_host_common
+                                           iskra_warnings)
 
 # MinGW: увести рантайм GCC внутрь exe, чтобы не таскать DLL. Отдельного
 # -static-libwinpthread в 4.9.2 нет, поэтому статичим всё разом: зависимостей,
 # кроме системных, у хоста без окна нет.
 if(MINGW)
-    target_link_options(iskra PRIVATE -static)
+    target_link_options(iskra-nohead PRIVATE -static)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -114,16 +118,16 @@ set(ISKRA_WINDOW_HOST "нет")
 
 if(ISKRA_HOST_WINDOW)
     if(WIN32)
-        add_executable(iskra-win WIN32
+        add_executable(iskra WIN32
             src/host_win32/win32_host.h  src/host_win32/win32_host.cpp
             src/host_win32/main.cpp
         )
-        target_link_libraries(iskra-win PRIVATE iskra_host_common iskra_warnings)
+        target_link_libraries(iskra PRIVATE iskra_host_common iskra_warnings)
         # user32 и gdi32 есть на любой Windows, shell32 — ради разбора
         # командной строки в широких знаках.
-        target_link_libraries(iskra-win PRIVATE user32 gdi32 shell32)
+        target_link_libraries(iskra PRIVATE user32 gdi32 shell32)
         if(MINGW)
-            target_link_options(iskra-win PRIVATE -static)
+            target_link_options(iskra PRIVATE -static)
         endif()
         set(ISKRA_WINDOW_HOST "Win32")
     else()

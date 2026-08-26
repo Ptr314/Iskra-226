@@ -21,6 +21,7 @@
 #include "core/tokenize.h"
 #include "core/interp.h"
 #include "core/koi8.h"
+#include "core/version.h"
 #include "font/font.h"
 #include "host_headless/headless_host.h"
 
@@ -50,17 +51,18 @@ std::string pad(const std::string & s, unsigned width)
 
 int usage()
 {
-    out("Искра-226 — хост без окна\n\n"
-        "  iskra --screen            проверка экрана и знакогенератора\n"
-        "  iskra --chart             таблица кодов КОИ-7 Н2 растром\n"
-        "  iskra --list ОБРАЗ        каталог образа дискеты\n"
-        "  iskra --cat ОБРАЗ ИМЯ     листинг программы с образа\n"
-        "  iskra --detok ФАЙЛ        листинг ранее извлечённого файла\n"
-        "  iskra --tok ФАЙЛ          трансляция текстового листинга\n"
-        "  iskra --roundtrip ФАЙЛ    токены → текст → токены, сверка байтов\n"
-        "  iskra --run ОБРАЗ ИМЯ [ВВОД…]  исполнить программу с образа\n"
-        "  iskra --run-text ФАЙЛ [ВВОД…]  исполнить текстовый листинг\n"
-        "  iskra --console [ОБРАЗ]   диалоговый режим в терминале\n"
+    out(std::string("Искра 226 — хост без окна, версия ")
+        + iskra::version() + "\n\n");
+    out("  iskra-nohead --screen            проверка экрана и знакогенератора\n"
+        "  iskra-nohead --chart             таблица кодов КОИ-7 Н2 растром\n"
+        "  iskra-nohead --list ОБРАЗ        каталог образа дискеты\n"
+        "  iskra-nohead --cat ОБРАЗ ИМЯ     листинг программы с образа\n"
+        "  iskra-nohead --detok ФАЙЛ        листинг ранее извлечённого файла\n"
+        "  iskra-nohead --tok ФАЙЛ          трансляция текстового листинга\n"
+        "  iskra-nohead --roundtrip ФАЙЛ    токены → текст → токены, сверка байтов\n"
+        "  iskra-nohead --run ОБРАЗ ИМЯ [ВВОД…]  исполнить программу с образа\n"
+        "  iskra-nohead --run-text ФАЙЛ [ВВОД…]  исполнить текстовый листинг\n"
+        "  iskra-nohead --console [ОБРАЗ]   диалоговый режим в терминале\n"
         "\nКлючи:\n"
         "  -i                        пропускать то, чего здесь нет: ASMB,\n"
         "                            $GIO и вывод на устройство, которого у\n"

@@ -1,0 +1,3 @@
+# Скрипты сборки должны попадать на диск с CRLF: cmd.exe других не любит
+*.bat text eol=crlf
+*.cmd text eol=crlf

@@ -1,6 +1,8 @@
 # сборка
 build/
 cmake-build-*/
+deploy/build/
+deploy/release/
 *.o
 *.a
 *.exe
@@ -10,6 +12,9 @@ cmake-build-*/
 docs/book/
 
 docs/*.jpg
+
+# корпус программ «Искры»: снят с фирменных дисков, в репозиторий не входит
+corpus/
 
 # среды разработки
 .vscode/
@@ -23,6 +28,4 @@ __pycache__/
 # служебное
 .DS_Store
 Thumbs.db
-
-# сборка
-/build/
+verify.pkl
