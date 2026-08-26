@@ -63,7 +63,9 @@ public:
     // Приёмник: переменная, элемент массива либо STR(. by_table — решать
     // «скаляр или массив» строго по таблицам, без заглядывания вперёд:
     // нужно там, где за приёмником сразу идёт значение (CLAUDE.md).
-    bool lvalue(bool by_table = false);
+    // indices_ok — есть ли вообще где стоять списку индексов; ложь там, где
+    // за именем заведомо идут сырые байты.
+    bool lvalue(bool by_table = false, bool indices_ok = true);
 
     ExprParser & parser() { return ex_; }
     ByteSource & source() { return src_; }
@@ -369,7 +371,20 @@ bool Decoder::expr(bool stop_at_gt)
     }
 }
 
-bool Decoder::lvalue(bool by_table)
+// Встречается ли байт в остатке операндов. Звать только там, где у
+// разборщика нет заглянутой лексемы, — иначе позиция уже уехала.
+bool rest_has(ByteSource & src, uint8_t what)
+{
+    const unsigned save = src.pos();
+    bool found = false;
+    uint8_t b = 0;
+    while (src.take_raw_byte(b))
+        if (b == what) { found = true; break; }
+    src.seek(save);
+    return found;
+}
+
+bool Decoder::lvalue(bool by_table, bool indices_ok)
 {
     Tok t;
     if (!ex_.take(t, true)) return fail(ex_.error());
@@ -383,7 +398,7 @@ bool Decoder::lvalue(bool by_table)
     if (t.t != Tok::VAR) return fail("приёмником ожидалась переменная");
     if (!name(t.var, nm)) return fail("нет имени для индекса переменной");
     emit(nm);
-    bool indexed = by_table ? t.table_array : t.indexed;
+    bool indexed = indices_ok && (by_table ? t.table_array : t.indexed);
     // У символьной переменной «скаляр или массив» по таблицам не
     // различается, и догадка ошибается в сторону массива (docs/format.md,
     // разд. 6). Но если сразу за приёмником стоит , списка индексов там
@@ -1684,7 +1699,14 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             d.emit(verb == 0x2A ? "SAVE " : "LOAD ");
             uint8_t b = 0;
             if (!src.take_raw_byte(b) || b != 0xDD) { error = "SAVE/LOAD без DD"; return false; }
-            if (!d.expr()) { error = d.error(); return false; }
+            // За именем буфера идут сырые пары BCD — номера строк, — и
+            // заглядывание приняло бы их за список индексов. Таблицы про
+            // символьную переменную «скаляр или массив» не говорят вовсе и
+            // ошибаются в сторону массива (docs/format.md, разд. 6), поэтому
+            // спрашиваем поток: список индексов кончается байтом `D0`, а
+            // невалидный BCD `D0` в номере строки стоять не может. Нет `D0` —
+            // нет и списка (`EDITOR` 5195 = `2A 07 DD 10 52 15 DE 52 15`).
+            if (!d.lvalue(true, rest_has(src, 0xD0))) { error = d.error(); return false; }
             for (bool first = true; !src.at_end(); first = false) {
                 if (!first) {
                     uint8_t de = 0;
