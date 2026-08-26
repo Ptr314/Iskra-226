@@ -24,6 +24,16 @@ inline uint32_t pack_rgb(uint8_t r, uint8_t g, uint8_t b)
             static_cast<uint32_t>(b);
 }
 
+// Обратное: хосту, у которого визуал складывает цвет иначе (X11 задаёт
+// порядок масками, а не соглашением), достаточно разобрать умолчания
+// растеризатора и сложить их по-своему — не заводя вторых констант.
+inline void unpack_rgb(uint32_t c, uint8_t & r, uint8_t & g, uint8_t & b)
+{
+    r = static_cast<uint8_t>((c >> 16) & 0xFF);
+    g = static_cast<uint8_t>((c >> 8)  & 0xFF);
+    b = static_cast<uint8_t>( c        & 0xFF);
+}
+
 // Превращает буфер знакомест в прямоугольник точек. Про окно, события и
 // систему не знает ничего — оконному хосту остаётся завести окно, разобрать
 // события и вывалить готовый кадр.
@@ -85,6 +95,13 @@ public:
     const Font & font() const { return *font_; }
     unsigned scale_x() const { return scale_x_; }
     unsigned scale_y() const { return scale_y_; }
+
+    // Цвета как слова кадра: хост, складывающий их по-своему, разбирает
+    // умолчания отсюда через unpack_rgb.
+    uint32_t fg() const { return fg_; }
+    uint32_t bg() const { return bg_; }
+    uint32_t ink() const { return ink_; }
+    uint32_t paper() const { return paper_; }
 
     // Текстовый блок меряется знакоместами, а не глифами: у знакогенератора
     // «Искры» поле шире и выше глифа, и межбуквенный просвет живёт именно

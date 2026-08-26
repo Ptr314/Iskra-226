@@ -1,7 +1,9 @@
 # Сборка
 
 Нужны CMake 3.16+, Ninja и компилятор C++11. **Сторонних библиотек нет
-вовсе** — только стандартная.
+вовсе** — только стандартная. Единственное, что нужно сверх неё, — заголовки
+самой системы для окна: под Windows они идут с цепочкой, под Linux это
+`libx11-dev` (Debian, Ubuntu) либо `libX11-devel` (Fedora, openSUSE).
 
 ```
 git clone https://github.com/Ptr314/Iskra-226.git
@@ -17,12 +19,13 @@ ctest --test-dir build/cmake --output-on-failure
 упаковка одним заходом:
 
 ```
-deployuild-win-i386.bat     Windows XP…11, 32 бита, MinGW 4.9.2
-deployuild-win-mingw.bat    Windows 7…11, 64 бита, MinGW 13.1
-deployuild-win-msvc.bat     Windows 10…11, 64 бита, MSVC
+deploy/build-win-i386.bat     Windows XP…11, 32 бита, MinGW 4.9.2
+deploy/build-win-mingw.bat    Windows 7…11, 64 бита, MinGW 13.1
+deploy/build-win-msvc.bat     Windows 10…11, 64 бита, MSVC
+deploy/build-linux.sh         Linux с X11
 ```
 
-Получается `deploy/release/iskra-<версия>-windows-<разрядность>[-<компилятор>].zip`.
+Получается `deploy/release/iskra-<версия>-<система>-<разрядность>[-<компилятор>].zip`.
 Версия берётся из файла `VERSION`, пути к цепочкам — из `deploy/vars-*.cmd`.
 Подробности — `deploy/README.md`.
 
@@ -31,17 +34,55 @@ deployuild-win-msvc.bat     Windows 10…11, 64 бита, MSVC
 Собирается два исполняемых файла:
 
 - `iskra-nohead` — без окна: командная строка и диалог в терминале;
-- `iskra` — окно. Пока только под Windows; на других системах CMake
-  скажет об этом и соберёт первый.
+- `iskra` — окно. Под Windows и под Linux; на прочих системах CMake скажет
+  об этом и соберёт первый.
 
 | Параметр | По умолчанию | Что делает |
 |---|---|---|
 | `ISKRA_HOST_WINDOW` | `ON` | хост с окном средствами самой системы |
 | `ISKRA_BUILD_TESTS` | `ON` | автотесты |
+| `ISKRA_CORPUS_TESTS` | по типу сборки | наборы, работающие на корпусе |
 
 Окно делается без сторонних библиотек: под Windows это `user32` и `gdi32`,
-дальше будут Xlib, AppKit и канва браузера. Почему не SDL2 —
-`docs/DECISIONS.md`, разд. 14.
+под Linux — голый Xlib, дальше будут AppKit и канва браузера. Почему не
+SDL2 — `docs/DECISIONS.md`, разд. 14.
+
+**Наборов тридцать пять, выпускная сборка прогоняет тридцать четыре.**
+Корпус в git не входит, и на машине, где его нет, проверки на нём падали бы
+на отсутствующих файлах, а не на коде. Поэтому `ISKRA_CORPUS_TESTS` при
+`CMAKE_BUILD_TYPE=Debug` включён, а при всяком другом выключен; значение не
+запоминается в кэше, так что сменить состав можно сменой типа сборки. Задать
+руками — `-DISKRA_CORPUS_TESTS=ON`:
+
+```
+cmake -S . -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
+```
+
+Ключ задаёт определение `ISKRA_CORPUS_DIR`, и прячутся под него **отдельные
+случаи, а не наборы целиком**: `test_arrays`, `test_program`,
+`test_tokenize` и `test_detokenize` собираются всегда и без корпуса просто
+проверяют меньше — двадцать случаев из двадцати шести. Целиком выпадает
+один `test_stat04`: он весь стоит на корпусе, и проходить впустую ему
+незачем. Прочие тридцать наборов корпуса не касаются вовсе.
+
+## Linux
+
+```
+sudo apt install cmake ninja-build g++ libx11-dev      # Debian, Ubuntu
+sudo dnf install cmake ninja-build gcc-c++ libX11-devel   # Fedora
+```
+
+Дальше обычным заходом, как выше. CMake скажет `хост с окном: X11`; если
+скажет `нет`, значит не найден Xlib — ставится пакет с заголовками.
+
+Окно идёт на голом Xlib: ни toolkit'а, ни XRender, ни разделяемой памяти.
+На Wayland работает через XWayland — своего хоста ему пока нет. Нужен экран
+TrueColor в 32 бита на точку; такие сейчас все, но если попадётся иной,
+эмулятор скажет об этом и не станет показывать мусор.
+
+Статически на Linux не увязывается: `libX11` статической библиотекой не
+поставляется почти нигде. У `iskra` остаются `libX11`, `libstdc++` и
+`libc`, у `iskra-nohead` — две последние.
 
 ## Windows XP
 

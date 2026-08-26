@@ -24,6 +24,22 @@ endif()
 option(ISKRA_HOST_WINDOW    "Хост с окном средствами самой системы"    ON)
 option(ISKRA_BUILD_TESTS    "Сборка автотестов"                        ON)
 
+# Пять наборов работают на корпусе, а он в git не входит (`.gitignore`). На
+# машине, где корпуса нет, они падают на отсутствующих файлах, а не на коде,
+# и выпуск вставал бы не на своей причине: `deploy/*` прогоняет `ctest`
+# перед упаковкой. Поэтому в выпускной сборке их нет, а в отладочной есть.
+#
+# Ключ разбирается заново при каждой настройке, а не запоминается в кэше:
+# сменил тип сборки — сменился и состав наборов. Задать руками:
+# `-DISKRA_CORPUS_TESTS=ON`.
+if(NOT DEFINED ISKRA_CORPUS_TESTS)
+    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+        set(ISKRA_CORPUS_TESTS ON)
+    else()
+        set(ISKRA_CORPUS_TESTS OFF)
+    endif()
+endif()
+
 add_library(iskra_warnings INTERFACE)
 if(MSVC)
     target_compile_options(iskra_warnings INTERFACE /W4 /utf-8)
@@ -137,9 +153,26 @@ if(ISKRA_HOST_WINDOW)
             target_link_options(iskra PRIVATE -static)
         endif()
         set(ISKRA_WINDOW_HOST "Win32")
+    elseif(UNIX AND NOT APPLE)
+        # Xlib и больше ничего: ни toolkit'а, ни XRender, ни SHM. На Wayland
+        # окно идёт через XWayland — своего хоста ему пока нет.
+        find_package(X11)
+        if(X11_FOUND)
+            add_executable(iskra
+                src/host_x11/x11_host.h  src/host_x11/x11_host.cpp
+                src/host_x11/main.cpp
+            )
+            target_link_libraries(iskra PRIVATE iskra_host_common iskra_warnings)
+            target_include_directories(iskra PRIVATE ${X11_INCLUDE_DIR})
+            target_link_libraries(iskra PRIVATE ${X11_X11_LIB})
+            set(ISKRA_WINDOW_HOST "X11")
+        else()
+            message(STATUS "Xlib не найден: нужен libx11-dev (Debian, Ubuntu) "
+                           "либо libX11-devel (Fedora, openSUSE)")
+        endif()
     else()
-        # X11, Cocoa и канва браузера — следующие; ядру от них нужен всё тот
-        # же host.h, поэтому сборка без окна остаётся рабочей.
+        # Cocoa и канва браузера — следующие; ядру от них нужен всё тот же
+        # host.h, поэтому сборка без окна остаётся рабочей.
         message(STATUS "Хост с окном для этой системы ещё не написан")
     endif()
 endif()
@@ -156,5 +189,6 @@ endif()
 # ---------------------------------------------------------------------------
 
 message(STATUS "Искра-226 ${ISKRA_VERSION}")
-message(STATUS "  хост с окном: ${ISKRA_WINDOW_HOST}")
-message(STATUS "  тесты:        ${ISKRA_BUILD_TESTS}")
+message(STATUS "  хост с окном:      ${ISKRA_WINDOW_HOST}")
+message(STATUS "  тесты:             ${ISKRA_BUILD_TESTS}")
+message(STATUS "  наборы на корпусе: ${ISKRA_CORPUS_TESTS}")

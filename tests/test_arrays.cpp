@@ -19,6 +19,14 @@ using namespace iskra;
 
 namespace {
 
+// --- проверки на корпусе ----------------------------------------------------
+//
+// Корпус в git не входит, и `ISKRA_CORPUS_DIR` задан только тогда, когда его
+// велено проверять (`BUILD.md`, «Параметры»). Без него отпадают ровно эти
+// случаи, а остальной набор идёт как обычно: пропадать из выпускной сборки
+// целиком ему незачем.
+#ifdef ISKRA_CORPUS_DIR
+
 bool read_bytes(const std::string & path, std::string & out)
 {
     std::FILE * f = std::fopen(path.c_str(), "rb");
@@ -61,6 +69,8 @@ bool load_hex_dump(const std::string & name, std::vector<uint8_t> & out)
     }
     return !out.empty();
 }
+
+#endif  // ISKRA_CORPUS_DIR
 
 // Прогон текстовой программы; возвращает экран.
 bool run_text(const char * utf8_source, std::string & screen, std::string & error,
@@ -110,6 +120,8 @@ std::string line_of(const std::string & screen, unsigned n)
     const std::size_t e = screen.find('\n', p);
     return screen.substr(p, e - p);
 }
+
+#ifdef ISKRA_CORPUS_DIR
 
 // --- Таблицы переменных настоящих программ --------------------------------
 
@@ -196,6 +208,8 @@ void test_var_tables()
         }
     }
 }
+
+#endif  // ISKRA_CORPUS_DIR
 
 // --- Исполнение ------------------------------------------------------------
 
@@ -364,7 +378,9 @@ void test_tab()
 
 int main()
 {
+#ifdef ISKRA_CORPUS_DIR
     test_var_tables();
+#endif
     test_one_dimensional();
     test_two_dimensional();
     test_expression_index();

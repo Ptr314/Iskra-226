@@ -14,6 +14,14 @@ using namespace iskra;
 
 namespace {
 
+// --- проверки на корпусе ----------------------------------------------------
+//
+// Корпус в git не входит, и `ISKRA_CORPUS_DIR` задан только тогда, когда его
+// велено проверять (`BUILD.md`, «Параметры»). Без него отпадают ровно эти
+// случаи, а остальной набор идёт как обычно: пропадать из выпускной сборки
+// целиком ему незачем.
+#ifdef ISKRA_CORPUS_DIR
+
 std::string corpus(const char * name)
 {
     return std::string(ISKRA_CORPUS_DIR) + "/" + name;
@@ -134,6 +142,8 @@ void test_round_trip()
     }
 }
 
+#endif  // ISKRA_CORPUS_DIR
+
 // --- правка строк ----------------------------------------------------------
 
 ProgramImage tiny()
@@ -213,6 +223,8 @@ void test_erase_range()
     CHECK_EQ(d.line_count(), 0u);
 }
 
+#ifdef ISKRA_CORPUS_DIR
+
 // Файл для записи на диск: заголовочный сектор и секторы потока.
 void test_save_file()
 {
@@ -238,14 +250,20 @@ void test_save_file()
     CHECK_EQ(again.line_count(), img.line_count());
 }
 
+#endif  // ISKRA_CORPUS_DIR
+
 } // namespace
 
 int main()
 {
+#ifdef ISKRA_CORPUS_DIR
     test_load_corpus();
     test_round_trip();
+#endif
     test_edit();
     test_erase_range();
+#ifdef ISKRA_CORPUS_DIR
     test_save_file();
+#endif
     return test::summary("образ программы");
 }

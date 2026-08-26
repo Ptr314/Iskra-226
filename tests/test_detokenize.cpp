@@ -26,6 +26,14 @@ std::string to_utf8(const std::string & s)
                                     static_cast<unsigned>(s.size()));
 }
 
+// --- проверки на корпусе ----------------------------------------------------
+//
+// Корпус в git не входит, и `ISKRA_CORPUS_DIR` задан только тогда, когда его
+// велено проверять (`BUILD.md`, «Параметры»). Без него отпадают ровно эти
+// случаи, а остальной набор идёт как обычно: пропадать из выпускной сборки
+// целиком ему незачем.
+#ifdef ISKRA_CORPUS_DIR
+
 std::string corpus(const char * name)
 {
     return std::string(ISKRA_CORPUS_DIR) + "/" + name;
@@ -87,6 +95,8 @@ std::string hexs(const std::vector<uint8_t> & b, unsigned from, unsigned n)
     return r;
 }
 
+#endif  // ISKRA_CORPUS_DIR
+
 // --- отдельные конструкции --------------------------------------------------
 
 // Строка туда и обратно: текст → токены → текст. Возвращает получившийся
@@ -127,6 +137,8 @@ void test_statements()
     CHECK_STR(round("120 A=SQR(B)"), "120 A=SQR(B)");
     CHECK_STR(round("140 ON A GOTO 10,20"), "140 ON AGOTO10,20");
 }
+
+#ifdef ISKRA_CORPUS_DIR
 
 // --- круговая проверка по корпусу -------------------------------------------
 
@@ -239,11 +251,15 @@ void test_corpus()
     CHECK(same >= 1750);
 }
 
+#endif  // ISKRA_CORPUS_DIR
+
 } // namespace
 
 int main()
 {
     test_statements();
+#ifdef ISKRA_CORPUS_DIR
     test_corpus();
+#endif
     return test::summary("обратная трансляция");
 }

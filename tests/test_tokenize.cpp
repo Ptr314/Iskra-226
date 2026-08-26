@@ -17,6 +17,14 @@ using namespace iskra;
 
 namespace {
 
+// --- проверки на корпусе ----------------------------------------------------
+//
+// Корпус в git не входит, и `ISKRA_CORPUS_DIR` задан только тогда, когда его
+// велено проверять (`BUILD.md`, «Параметры»). Без него отпадают ровно эти
+// случаи, а остальной набор идёт как обычно: пропадать из выпускной сборки
+// целиком ему незачем.
+#ifdef ISKRA_CORPUS_DIR
+
 std::string corpus(const char * name)
 {
     return std::string(ISKRA_CORPUS_DIR) + "/" + name;
@@ -65,6 +73,8 @@ bool load_hex_dump(const std::string & path, std::vector<uint8_t> & out)
     }
     return !out.empty();
 }
+
+#endif  // ISKRA_CORPUS_DIR
 
 std::string hexs(const std::vector<uint8_t> & b, unsigned from, unsigned n)
 {
@@ -301,6 +311,8 @@ void test_image_vars()
     CHECK_EQ(img.vars()[4].dim1, 4u);
 }
 
+#ifdef ISKRA_CORPUS_DIR
+
 // --- сверка с корпусом ------------------------------------------------------
 
 // Транслируем текстовый листинг и сверяем тела строк с парным
@@ -431,6 +443,8 @@ void test_corpus_pairs()
     CHECK(same >= 1800);
 }
 
+#endif  // ISKRA_CORPUS_DIR
+
 } // namespace
 
 int main()
@@ -442,6 +456,8 @@ int main()
     test_string_functions();
     test_more_statements();
     test_image_vars();
+#ifdef ISKRA_CORPUS_DIR
     test_corpus_pairs();
+#endif
     return test::summary("трансляция текст → токены");
 }

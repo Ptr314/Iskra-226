@@ -9,9 +9,14 @@ function(iskra_add_test name)
     target_link_libraries(${name} PRIVATE iskra_headless iskra_host_common
                                           iskra_warnings)
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    # Часть тестов работает на корпусе — он лежит в самом репозитории.
-    target_compile_definitions(${name} PRIVATE
-        ISKRA_CORPUS_DIR="${CMAKE_SOURCE_DIR}/corpus/hex")
+    # Каталог корпуса задаётся, только когда его велено проверять. По этому
+    # определению наборы и прячут свои случаи на корпусе под `#ifdef`:
+    # корпус в git не входит, и без него они падали бы на отсутствующих
+    # файлах, а не на коде.
+    if(ISKRA_CORPUS_TESTS)
+        target_compile_definitions(${name} PRIVATE
+            ISKRA_CORPUS_DIR="${CMAKE_SOURCE_DIR}/corpus/hex")
+    endif()
     add_test(NAME ${name} COMMAND ${name})
 endfunction()
 
@@ -20,7 +25,6 @@ iskra_add_test(test_render)
 iskra_add_test(test_diskfiles)
 iskra_add_test(test_printer)
 iskra_add_test(test_number)
-iskra_add_test(test_stat04)
 iskra_add_test(test_arrays)
 iskra_add_test(test_strings)
 iskra_add_test(test_convert)
@@ -50,3 +54,11 @@ iskra_add_test(test_forms)
 iskra_add_test(test_complex)
 iskra_add_test(test_graphics)
 iskra_add_test(test_keyboard)
+
+# Корпуса касаются пять наборов, но целиком на нём стоит один: остальные
+# четверо прячут свои случаи под `#ifdef ISKRA_CORPUS_DIR` и без корпуса
+# просто проверяют меньше. `test_stat04` без него не проверял бы вовсе
+# ничего, и проходить впустую ему незачем — поэтому он тут, а не выше.
+if(ISKRA_CORPUS_TESTS)
+    iskra_add_test(test_stat04)
+endif()
