@@ -9,6 +9,7 @@
 | `build-win-mingw.bat` | Windows 7…11, 64 бита, MinGW 13.1 | `iskra-<версия>-windows-x86_64-mingw.zip` |
 | `build-win-msvc.bat` | Windows 10…11, 64 бита, MSVC | `iskra-<версия>-windows-x86_64-msvc.zip` |
 | `build-linux.sh` | Linux с X11, разрядность своя | `iskra-<версия>-linux-<машина>.zip` |
+| `build-macos.sh` | macOS с AppKit, универсальный бинарник | `iskra-<версия>-macos-universal2.zip` |
 
 Версия берётся из файла `VERSION` в корне репозитория.
 
@@ -33,6 +34,16 @@ deploy/release/iskra-0.1.0-windows-i386.zip   выпуск
 зависимости — `libX11`, `libstdc++`, `libc`. Все они есть в любой системе,
 где вообще запущен X; `iskra-nohead` не тянет и `libX11`. Упаковкой занят
 `zip`.
+
+**У macOS свои зависимости, но они всегда на месте.** `iskra` тянет только
+системные фреймворки — `Cocoa`, `AppKit`, `Foundation`, `CoreFoundation`,
+`CoreGraphics` (видно в `otool -L`), — они есть на любой версии системы, и
+увязывать внутрь нечего. Бандла, `Info.plist` и подписи не заводится:
+голый исполняемый файл открывает окно сам (`docs/DECISIONS.md`, разд. 14).
+`iskra` и `iskra-nohead` собираются сразу **универсальным бинарником**
+(`CMAKE_OSX_ARCHITECTURES=x86_64;arm64`, `lipo`) — исходники Cocoa-хоста
+одни на оба среза, править под Apple Silicon ничего не пришлось, поэтому
+собирать на Intel-машине достаточно и для Apple Silicon.
 
 ## Пути к цепочкам
 
@@ -65,7 +76,7 @@ CMake и Ninja берутся из поставки Qt (`Tools\CMake_64`, `Tools
 
 ## Другие системы
 
-Окно написано под Windows (`src/host_win32/`) и Linux (`src/host_x11/`). Как
-появятся `src/host_cocoa/` и `src/host_wasm/`, рядом лягут `build-macos.sh`
-и `build-wasm.sh` с теми же именами выпусков:
+Окно написано под Windows (`src/host_win32/`), Linux (`src/host_x11/`) и
+macOS (`src/host_cocoa/`). Как появится `src/host_wasm/`, рядом ляжет
+`build-wasm.sh` с тем же именем выпуска:
 `iskra-<версия>-<система>-<разрядность>[-<компилятор>].zip`.

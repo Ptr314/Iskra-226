@@ -9,6 +9,12 @@ string(STRIP "${ISKRA_VERSION_RAW}" ISKRA_VERSION)
 
 project(iskra226 VERSION ${ISKRA_VERSION} LANGUAGES CXX)
 
+# Хост на AppKit — Objective-C++, свой язык у CMake. Включается только на
+# Apple: в остальных системах компилятора для него нет и не будет.
+if(APPLE)
+    enable_language(OBJCXX)
+endif()
+
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -170,9 +176,26 @@ if(ISKRA_HOST_WINDOW)
             message(STATUS "Xlib не найден: нужен libx11-dev (Debian, Ubuntu) "
                            "либо libX11-devel (Fedora, openSUSE)")
         endif()
+    elseif(APPLE)
+        # AppKit и больше ничего: ни бандла, ни Info.plist, ни подписи —
+        # голый исполняемый файл открывает окно сам (docs/DECISIONS.md,
+        # разд. 14).
+        add_executable(iskra
+            src/host_cocoa/cocoa_host.h  src/host_cocoa/cocoa_host.mm
+            src/host_cocoa/main.mm
+        )
+        set_source_files_properties(
+            src/host_cocoa/cocoa_host.mm src/host_cocoa/main.mm
+            PROPERTIES
+                LANGUAGE OBJCXX
+                COMPILE_OPTIONS "-fno-objc-arc"
+        )
+        target_link_libraries(iskra PRIVATE iskra_host_common iskra_warnings)
+        target_link_libraries(iskra PRIVATE "-framework Cocoa")
+        set(ISKRA_WINDOW_HOST "Cocoa")
     else()
-        # Cocoa и канва браузера — следующие; ядру от них нужен всё тот же
-        # host.h, поэтому сборка без окна остаётся рабочей.
+        # Канва браузера — следующая; ядру от неё нужен всё тот же host.h,
+        # поэтому сборка без окна остаётся рабочей.
         message(STATUS "Хост с окном для этой системы ещё не написан")
     endif()
 endif()
