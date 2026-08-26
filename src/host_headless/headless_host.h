@@ -21,7 +21,14 @@ public:
     HeadlessHost();
 
     Screen & screen() { return screen_; }
-    bool present() { screen_.clear_dirty(); return true; }
+    // Показывать некуда, но признаки изменения сбрасываются: исполнитель по
+    // ним решает, дёргать ли хост, и незачем звать его на каждом операторе.
+    bool present()
+    {
+        screen_.clear_dirty();
+        raster_.clear_dirty();
+        return true;
+    }
 
     bool poll_key(uint8_t & code);
     bool key_was_special() const { return special_; }

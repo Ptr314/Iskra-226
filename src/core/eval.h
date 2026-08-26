@@ -41,7 +41,8 @@ class Evaluator
 {
 public:
     Evaluator(TokenSource & src, VarStore & vars)
-        : ex_(src), src_(src), vars_(vars), fn_(0), code_(0) {}
+        : ex_(src), src_(src), vars_(vars), fn_(0), code_(0),
+          stop_gt_(false) {}
 
     // Полное выражение, включая связки условий.
     bool expr(Value & out);
@@ -83,6 +84,11 @@ public:
     // Кому передавать обращения FN<имя>(. Ноль значит «функций нет» —
     // так вычислитель работает вне программы.
     void set_functions(FnResolver * f) { fn_ = f; }
+
+    // Внутри группы `PLOT` байт `D4` — закрывающая скобка группы, а не
+    // знак «больше» (docs/format.md, разд. 5, «Подкод 06 00 — это PLOT»).
+    // Тот же приём, что у детокенизатора: `Decoder::expr(true)`.
+    void set_stop_gt(bool on) { stop_gt_ = on; }
 
     ExprParser & parser() { return ex_; }
     const ExprParser & parser() const { return ex_; }
@@ -133,6 +139,7 @@ private:
     VarStore & vars_;
     FnResolver * fn_;
     const char * code_;    // код ошибки машины, если она машинная
+    bool stop_gt_;         // `D4` — конец элемента группы `PLOT`, а не «>»
     std::string lit_;      // литерал под STR("…",…), чтобы было откуда резать
     std::string error_;
 };

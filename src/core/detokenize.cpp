@@ -1770,10 +1770,26 @@ bool decode_stmt(unsigned verb, const uint8_t * ops, unsigned len,
             return true;
         }
 
-        case 0x060F:                                   // $OPEN
+        case 0x060F: {                                 // $OPEN
+            // Буферов бывает несколько — `¤OPEN A¤(),B¤()` (SIG 7580), — а
+            // первый бывает пропущен: `¤OPEN ,B¤()` (SLIDE 220), и операнды
+            // тогда начинаются прямо с `DE`. Буфер берётся приёмником, а не
+            // выражением: тот не заглядывает вперёд, и сразу за ним можно
+            // смотреть сырой байт.
             d.emit("$OPEN ");
-            if (!d.expr()) { error = d.error(); return false; }
-            return true;
+            for (;;) {
+                uint8_t b = 0;
+                if (src.peek_raw_byte(b) && b == 0xDE) {
+                    src.skip(1);
+                    d.emit(",");
+                    continue;
+                }
+                if (!d.lvalue()) { error = d.error(); return false; }
+                if (!src.peek_raw_byte(b) || b != 0xDE) return true;
+                src.skip(1);
+                d.emit(",");
+            }
+        }
 
         case 0x0622: {                                 // $LET
             d.emit("$LET ");

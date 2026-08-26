@@ -84,7 +84,9 @@ Interp::Interp(ProgramImage & img, Host & host)
       funcs_ready_(false), fn_depth_(0),
       data_ready_(false), data_i_(0), data_off_(0), end_seen_(false),
       li_(0), off_(0), next_off_(0), jumped_(false), stopped_(false),
-      max_steps_(0), skip_machine_(false), print_dev_(0), print_fail_(false)
+      max_steps_(0), shown_(0), skip_machine_(false), print_dev_(0),
+      print_fail_(false),
+      plot_x_(0), plot_y_(0), plot_step_x_(0), plot_step_y_(0), plot_size_(1)
 {
     fnres_.owner = this;
     // Пока `WINDOW` не звали, областью вывода служит весь растр: `VICT`,
@@ -4093,6 +4095,12 @@ bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
         case 0x0619: return do_gpoint(st, GOP_NPLOT, "NPLOT");
         case 0x0615: return do_gpoint(st, GOP_DRAW, "DRAW");
         case 0x0613: return do_gpoint(st, GOP_DOT, "DOT");
+        case 0x0614: return do_gpoint(st, GOP_DRAW, "DDRAW", true);
+        case 0x061A: return do_gmove(st);
+        case 0x061B: return do_gturn(st);
+        case 0x061C: return do_gstretch(st);
+        case 0x0622: return do_glet(st);
+        case 0x0600: return do_plot(st);
         case 0x061E: return do_glabel(st);
         case 0x061F: return do_gcopy(st);
         case 0x060C: return do_tran(st);
@@ -4195,11 +4203,6 @@ bool Interp::dispatch(unsigned verb, Stream & st, const uint8_t * ops,
         return fail("оператор " + name + " машинозависим: нужна эмуляция "
                     "процессора. Ключ -i велит такие пропускать");
     }
-    // Графика — отдельный проект. Формат буфера разобран (docs/format.md,
-    // разд. 5), а второго растра и вывода на него нет вовсе. Пропускать
-    // нельзя — программа выглядела бы рисующей.
-    if (graphics_verb(verb))
-        return fail("оператор " + name + " графический: растра ещё нет");
     return fail("оператор " + name + " ещё не исполняется");
 }
 
@@ -4257,6 +4260,20 @@ bool Interp::loop(std::string & error)
             continue;
         }
         if (!jumped_) off_ = next_off_;
+
+        // **Показывать надо по ходу программы, а не в конце.** У машины экран
+        // и растр — сами устройства, и нарисованное видно сразу; у нас между
+        // ними и человеком стоит окно, которому надо сказать. Без этого
+        // программа, рисующая в цикле, показывала бы один последний кадр, а
+        // печатающая в цикле — вообще ничего до самого конца.
+        //
+        // Хост спрашивается, только когда есть что показать, плюс изредка:
+        // иначе окно не отвечало бы на события, и закрыть его во время
+        // прогона было бы нельзя.
+        if (host_.screen().dirty() || host_.raster().dirty() ||
+            (++shown_ & 0xFF) == 0) {
+            if (!host_.present()) break;        // окно закрыли
+        }
     }
 
     host_.present();

@@ -1622,10 +1622,19 @@ bool StmtEncoder::encode(unsigned & verb, std::vector<uint8_t> & out, bool & don
     }
 
     if (lex_.take_word("$OPEN")) {
-        // Один буфер: `¤OPEN B¤()` = 06 0F 02 E0 1F (VICT 6150).
+        // Один буфер: `¤OPEN B¤()` = 06 0F 02 E0 1F (VICT 6150). Их бывает
+        // и несколько — `¤OPEN A¤(),B¤()` (SIG 7580), — а первый бывает
+        // пропущен: `¤OPEN ,B¤()` (SLIDE 220), и операнды тогда начинаются
+        // прямо с разделителя.
         verb = 0x060F;
         Encoder enc(lex_, out);
-        return enc.expr() ? true : err(enc.error());
+        for (;;) {
+            if (lex_.take_char(',')) { out.push_back(0xDE); continue; }
+            if (!enc.expr()) return err(enc.error());
+            if (!take_sep(enc, Tok::COMMA)) break;
+            out.push_back(0xDE);
+        }
+        return true;
     }
 
     if (lex_.take_word("$LET")) {

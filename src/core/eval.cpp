@@ -85,7 +85,9 @@ bool Evaluator::compare(Value & out)
     if (!sum(out)) return false;
     Tok t;
     if (!ex_.peek(t, false)) return fail(ex_.error());
-    if (!is_relation(t.t)) return true;
+    // `D4` внутри группы `PLOT` — закрывающая скобка группы, а не знак
+    // «больше»: `PLOT <X%,Y%,U>` кончается там же, где начинается перо.
+    if (!is_relation(t.t) || (stop_gt_ && t.t == Tok::GT)) return true;
     ex_.consume();
 
     Value b;

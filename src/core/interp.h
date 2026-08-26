@@ -55,33 +55,6 @@ public:
         return verb == 0x0625 || verb == 0x40;
     }
 
-    // Графический ли глагол. Все они работают над буфером, который заводит
-    // `$OPEN` и отправляет устройству `$COPY`; устройство этого буфера не
-    // разобрано (docs/DECISIONS.md, разд. 1), поэтому исполнять их пока
-    // нечем. Пропускать их **нельзя**: программа выглядела бы рисующей.
-    //
-    // `$OPEN`, `$COPY` и `$LET` попали сюда не по имени, а по делу: все семь
-    // файлов корпуса, где они есть, рисуют (`VICT` 6150 = `¤OPEN B¤():NPLOT
-    // B¤(),P6,248:DRAW …`, дальше `¤COPY /14,B¤()` на графопостроитель).
-    // Исполняются: `¤OPEN`, `WINDOW`, `FRAME`, `NPLOT`, `DRAW`, `DOT`,
-    // `LABEL` и `¤COPY` — те, у кого разобраны и операнды, и запись в
-    // потоке. Здесь остались те, что **переписывают уже лежащие записи**
-    // (`STRETCH`, `TURN`, `¤MOVE`, `¤LET`) либо кладут запись, смысл которой
-    // неизвестен (`DDRAW`, `PLOT`).
-    static bool graphics_verb(unsigned verb)
-    {
-        switch (verb) {
-            case 0x0614:            // DDRAW
-            case 0x061A:            // ¤MOVE
-            case 0x061B:            // TURN
-            case 0x061C:            // STRETCH
-            case 0x0600:            // вероятно PLOT
-            case 0x0622:            // $LET — над тем же буфером
-                return true;
-            default: return false;
-        }
-    }
-
     // Исполняет программу с наименьшей строки. «При запуске программ с
     // помощью оператора RUN без указания номера строки числовым переменным
     // автоматически присваивается значение 0, а символьным — пробел»
@@ -241,9 +214,24 @@ private:
     bool do_gopen(Stream & st);
     bool do_gwindow(Stream & st);
     bool do_gframe(Stream & st);
-    bool do_gpoint(Stream & st, uint8_t op, const char * who);
+    bool gmap_delta(unsigned var, const Number & ux, const Number & uy,
+                    long & x, long & y);
+    bool do_gpoint(Stream & st, uint8_t op, const char * who,
+                   bool relative = false);
     bool do_glabel(Stream & st);
     bool do_gcopy(Stream & st);
+    // Преобразования уже лежащей картинки: буфер, запятая, ровно n чисел.
+    bool gnums(Stream & st, const char * who, Number * out, unsigned n);
+    bool gxform_head(Stream & st, const char * who, unsigned n,
+                     unsigned & var, Evaluator::Target & tgt, Number * u);
+    bool gxform(Evaluator::Target & tgt, const GAffine & m, const char * who);
+    bool do_gmove(Stream & st);
+    bool do_gstretch(Stream & st);
+    bool do_gturn(Stream & st);
+    bool do_glet(Stream & st);
+    // `PLOT` — прямой вывод на устройство, без буфера.
+    bool plot_group(Stream & st, Raster & out);
+    bool do_plot(Stream & st);
     // Место символьного значения со знаком «в обратном порядке»
     // (руководство, разд. 15.2).
     bool str_place(Stream & st, bool & reverse, Evaluator::Target & out);
@@ -413,6 +401,9 @@ private:
     bool jumped_;
     bool stopped_;
     unsigned long max_steps_;
+    // Счётчик для редких обращений к хосту: окно надо дёргать и тогда,
+    // когда показывать нечего, — иначе оно не отвечает на события.
+    unsigned long shown_;
     bool skip_machine_;
 
     // Устройство, на которое уводит вывод приставка `PRINT /<адрес>`. Ноль
@@ -421,6 +412,12 @@ private:
     // него одного.
     unsigned print_dev_;
     bool print_fail_;
+
+    // Состояние пера `PLOT`. Живёт между операторами: `SLIDE` 6160 задаёт
+    // размер знака один раз на серию, а рисует потом строкой 6200.
+    long plot_x_, plot_y_;
+    long plot_step_x_, plot_step_y_;
+    unsigned plot_size_;
 
     std::string error_;
 };

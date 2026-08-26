@@ -89,6 +89,11 @@ def tag(v):
 # Разобрано в docs/format.md, но в таблицы tools/detok.py ещё не попало.
 EXTRA = {0x1E: "IF END THEN"}
 
+# Машинозависимые: их здесь не будет вовсе (docs/DECISIONS.md, разд. 1),
+# и в порядке по отдаче им делать нечего: проба обещала бы то, чего не
+# случится. Счёт операторов выше их по-прежнему учитывает.
+NEVER = {0x0625, 0x40}
+
 
 def name(v):
     if v in EXTRA:
@@ -128,12 +133,13 @@ def main():
     # больше всего программ. Останавливается, когда одиночные добавления
     # перестают что-либо открывать.
     rest = dict((k, set(c) - done) for k, c in progs.items())
+    doomed = sum(1 for s in rest.values() if s & NEVER)
     print("порядок по отдаче (глагол -> программ исполняется целиком):")
     print("  %d из %d — сейчас" % (sum(1 for s in rest.values() if not s), len(rest)))
     for step in range(1, 40):
         cand = collections.Counter()
         for s in rest.values():
-            if len(s) == 1:
+            if len(s) == 1 and not (s & NEVER):
                 cand[next(iter(s))] += 1
         if not cand:
             break
@@ -143,6 +149,9 @@ def main():
         whole = sum(1 for s in rest.values() if not s)
         print("  %2d. %-6s %-22s %d из %d" % (step, tag(v), name(v), whole, len(rest)))
     print("  дальше каждой оставшейся программе не хватает минимум двух глаголов")
+    print("  потолок: %d из %d — остальным нужны ASMB либо $GIO,"
+          % (len(rest) - doomed, len(rest)))
+    print("  а их здесь не будет вовсе")
 
 
 if __name__ == "__main__":

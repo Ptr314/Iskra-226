@@ -441,6 +441,290 @@ void test_label_draws()
     CHECK(!host.raster().at(105, 100));     // просвет между ними
 }
 
+// --- относительное рисование -------------------------------------------------
+
+// `DDRAW` кладёт ту же запись `85`, что и `DRAW`, но точку считает
+// приращением от текущей. Что это именно приращение, видно по `SIG` 1560:
+// `DDRAW A¤(),0,4*Y2`, `4*X2,0`, `0,-4*Y2`, `-4*X2,0` — прямоугольник,
+// который сходится в начале, и отрицательные значения там не координаты.
+// То же и в токенах: `M4` даёт `06 14 09 E0 10 DE E8 00 DE E9 E8 03`, то
+// есть `DDRAW <буфер>,0,-3`.
+void test_ddraw()
+{
+    HeadlessHost host;
+    std::string screen, error;
+    if (!run(host,
+             "10 DIM B\xC2\xA4(8)16\n"
+             "20 \xC2\xA4OPEN B\xC2\xA4()\n"
+             "30 NPLOT B\xC2\xA4(),100,50\n"
+             "40 DDRAW B\xC2\xA4(),20,0\n"
+             "50 DDRAW B\xC2\xA4(),0,-30\n"
+             "60 HEXPRINT STR(B\xC2\xA4(),44,15)\n"
+             "70 HEXPRINT STR(B\xC2\xA4(),1,6)\n",
+             "DDRAW", screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_STR(line_of(screen, 1), "800064003285007800328500780014");
+    CHECK_STR(line_of(screen, 2), "3A0078001400");     // 58 байт, точка 120,20
+}
+
+// --- преобразования уже лежащей картинки ------------------------------------
+
+// `¤MOVE <буфер>,<dx>,<dy>` — сдвиг всей картинки. Подсказка `SLIDE` 5880:
+// «¤MOVE, ВВЕДИТЕ СДВИГ ПО X И ПО Y».
+void test_move()
+{
+    HeadlessHost host;
+    std::string screen, error;
+    if (!run(host,
+             "10 DIM B\xC2\xA4(8)16\n"
+             "20 \xC2\xA4OPEN B\xC2\xA4()\n"
+             "30 NPLOT B\xC2\xA4(),100,50\n"
+             "40 DRAW B\xC2\xA4(),120,80\n"
+             "50 \xC2\xA4MOVE B\xC2\xA4(),10,-20\n"
+             "60 HEXPRINT STR(B\xC2\xA4(),44,10)\n",
+             "¤MOVE", screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_STR(line_of(screen, 1), "80006E001E850082003C");   // 110,30 и 130,60
+}
+
+// `STRETCH <буфер>,<x>,<y>,<kx>,<ky>` — растяжение относительно точки.
+// Точка неподвижна: `SLIDE` 5950 растягивает картинку, поворачивает и
+// растягивает обратно теми же множителями наоборот — с «поплавком» такая
+// пара не сошлась бы.
+void test_stretch()
+{
+    HeadlessHost host;
+    std::string screen, error;
+    if (!run(host,
+             "10 DIM B\xC2\xA4(8)16\n"
+             "20 \xC2\xA4OPEN B\xC2\xA4()\n"
+             "30 NPLOT B\xC2\xA4(),100,50\n"
+             "40 DRAW B\xC2\xA4(),200,100\n"
+             "50 STRETCH B\xC2\xA4(),100,50,2,3\n"
+             "60 HEXPRINT STR(B\xC2\xA4(),44,10)\n",
+             "STRETCH", screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    // Точка (100,50) на месте, а (200,100) уехала в (300,200).
+    CHECK_STR(line_of(screen, 1), "800064003285012C00C8");
+}
+
+// `TURN <буфер>,<x>,<y>,<угол>` — поворот вокруг точки. Единица угла — из
+// таблицы устройств, как у тригонометрии (руководство, разд. 13.3); по
+// умолчанию радиан, и `SLIDE` 260 не зря ставит `SELECT D`.
+void test_turn()
+{
+    HeadlessHost host;
+    std::string screen, error;
+    if (!run(host,
+             "10 DIM B\xC2\xA4(8)16\n"
+             "20 \xC2\xA4OPEN B\xC2\xA4()\n"
+             "30 NPLOT B\xC2\xA4(),100,100\n"
+             "40 DRAW B\xC2\xA4(),150,100\n"
+             "50 TURN B\xC2\xA4(),100,100,#PI/2\n"
+             "60 HEXPRINT STR(B\xC2\xA4(),44,10)\n",
+             "TURN", screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    // Отрезок вправо стал отрезком вверх: (150,100) → (100,150).
+    CHECK_STR(line_of(screen, 1), "80006400648500640096");
+}
+
+// **Приращение надписи — со знаком**, в отличие от координаты точки: иначе
+// повёрнутая надпись была бы непредставима, а `TURN` крутит картинку
+// целиком. Так его читает и сам `SLIDE` — `ADD C (N¤,STR(A¤(),J+2,4))`
+// (1430), двоичное сложение с переносом, а оно переносит и заём.
+void test_turn_label()
+{
+    HeadlessHost host;
+    std::string screen, error;
+    if (!run(host,
+             "10 DIM B\xC2\xA4(8)16\n"
+             "20 \xC2\xA4OPEN B\xC2\xA4()\n"
+             "30 NPLOT B\xC2\xA4(),100,100\n"
+             "40 LABEL B\xC2\xA4(),,,\"AB\"\n"
+             "50 TURN B\xC2\xA4(),100,100,#PI\n"
+             "60 HEXPRINT STR(B\xC2\xA4(),44,5)\n"
+             "70 HEXPRINT STR(B\xC2\xA4(),49,11)\n",
+             "TURN надписи", screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    // Точка вращения — она же и точка надписи, поэтому запись `80` на месте.
+    CHECK_STR(line_of(screen, 1), "8000640064");
+    // А приращение развернулось: было 14 (два знака по семь), стало -14.
+    CHECK_STR(line_of(screen, 2), "860AFFF200000102004142");
+}
+
+// Картинка, уехавшая за левый край, — отказ машины, а не наше ограничение:
+// `SLIDE` 5070 ставит вокруг `¤MOVE` свой `ON ERROR` и печатает «СДВИГ
+// НЕВОЗМОЖЕН (ВЫХОД ЗА ЭКРАН)». Кода у отказа мы не знаем, и `ON ERROR`
+// получает `??` — как у отказов `COPY`.
+void test_move_off_raster()
+{
+    HeadlessHost host;
+    std::string screen, error;
+    if (!run(host,
+             "10 DIM B\xC2\xA4(8)16,E\xC2\xA4""4,N\xC2\xA4""4\n"
+             "20 \xC2\xA4OPEN B\xC2\xA4()\n"
+             "30 NPLOT B\xC2\xA4(),10,10\n"
+             "40 ON ERROR E\xC2\xA4,N\xC2\xA4GOTO70\n"
+             "50 \xC2\xA4MOVE B\xC2\xA4(),-50,0\n"
+             "60 PRINT \"\xD0\x9D\xD0\x95\xD0\xA2 \xD0\x9E\xD0\xA2\xD0\x9A\xD0\x90\xD0\x97\xD0\x90\":STOP\n"
+             "70 PRINT \"\xD0\x9E\xD0\xA2\xD0\x9A\xD0\x90\xD0\x97 \";E\xC2\xA4\n",
+             "¤MOVE за край", screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_STR(line_of(screen, 1), "ОТКАЗ ??");
+}
+
+// `¤LET` — присваивание картинки. В корпусе форм две и обе вырожденные:
+// буфер сам себе (`EDITOR` 1236, 1335; `SIG` 645, 7590) и обнуление
+// (`SIG` 7470). Присваивание самому себе ничего не меняет — на этом стоит
+// разветвление `EDITOR` 1235/1236, где вторая ветка значит «оставить как
+// есть». Заодно здесь проверяется `¤OPEN` с двумя буферами (`SIG` 7580).
+void test_let()
+{
+    HeadlessHost host;
+    std::string screen, error;
+    if (!run(host,
+             "10 DIM B\xC2\xA4(8)16,C\xC2\xA4(8)16\n"
+             "20 \xC2\xA4OPEN B\xC2\xA4(),C\xC2\xA4()\n"
+             "30 NPLOT B\xC2\xA4(),100,50\n"
+             "40 DRAW B\xC2\xA4(),120,80\n"
+             "50 \xC2\xA4LET B\xC2\xA4()=B\xC2\xA4()\n"
+             "60 HEXPRINT STR(B\xC2\xA4(),44,10)\n"
+             "70 \xC2\xA4LET C\xC2\xA4()=B\xC2\xA4()\n"
+             "80 HEXPRINT STR(C\xC2\xA4(),1,6)\n"
+             "90 HEXPRINT STR(C\xC2\xA4(),44,10)\n"
+             "100 \xC2\xA4LET B\xC2\xA4()=0\n"
+             "110 HEXPRINT STR(B\xC2\xA4(),1,6)\n",
+             "¤LET", screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    // Себе самому — без изменений.
+    CHECK_STR(line_of(screen, 1), "80006400328500780050");
+    // Копия: заголовок 53 байта, точка 120,80, и те же две записи.
+    CHECK_STR(line_of(screen, 2), "350078005000");
+    CHECK_STR(line_of(screen, 3), "80006400328500780050");
+    // Ноль справа опустошает буфер.
+    CHECK_STR(line_of(screen, 4), "2B0000000000");
+}
+
+// --- PLOT -------------------------------------------------------------------
+
+// `PLOT` — единственный графический оператор без буфера: он рисует прямо на
+// устройстве группы `PLOT`. Координаты приращениями: `SLIDE` 6170 считает
+// разность соседних точек буфера и подаёт её `PLOT <X2%,Y2%,U>`.
+void test_plot_pens()
+{
+    HeadlessHost host;
+    std::string screen, error;
+    if (!run(host,
+             "10 PLOT <,,R>\n"
+             "20 PLOT <10,20,U>,<30,0,D>\n",
+             "PLOT перьями", screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK(host.raster().at(10, 20));        // `R` поставил перо в нуль,
+    CHECK(host.raster().at(40, 20));        // `U` увёл на (10,20), `D` провёл
+    CHECK(!host.raster().at(41, 20));       // отрезок ровно до (40,20)
+    CHECK(!host.raster().at(10, 21));
+}
+
+// Третьим элементом группы бывает не перо, а надпись: `SLIDE` 5690 подаёт
+// туда вырезку из записи буфера. Шаг знака берётся из пера `S`, а пока его
+// не задали — семь дискрет, как у `LABEL`.
+void test_plot_text()
+{
+    HeadlessHost host;
+    std::string screen, error;
+    if (!run(host,
+             "10 PLOT <,,R>,<100,100,U>,<,,\"AB\">\n",
+             "PLOT надписью", screen, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK(host.raster().at(100, 100));      // левый нижний угол «A»
+    CHECK(host.raster().at(107, 100));      // и «B» через знакоместо
+    CHECK(!host.raster().at(105, 100));
+}
+
+// Устройство берётся из таблицы: `SELECT PLOT` его меняет, и на том,
+// которого у хоста нет, программа останавливается — как при блочном обмене.
+void test_plot_missing_device()
+{
+    std::string koi8, error;
+    utf8_to_koi8("10 SELECT PLOT 34\n20 PLOT <10,10,U>\n", koi8);
+    NameTable names;
+    ProgramImage img;
+    if (!tokenize(koi8, img, names, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    HeadlessHost host;
+    Interp interp(img, host);
+    CHECK(!interp.run(error));
+    CHECK(error.find("/34") != std::string::npos);
+}
+
+// --- оттранслированная форма ------------------------------------------------
+
+// Байты сверены с парой `SLIDE`/`SL2` (`docs/format.md`, разд. 5):
+// `06 1A E0 00 DE 4E DE 44`, `06 1B E0 00 DE 39 DE 45 DE 66`,
+// `06 1C E0 00 DE E8 00 DE E8 00 DE 4F DE E8 01 DC 50`.
+void test_tokenized_transforms()
+{
+    std::string koi8, error;
+    utf8_to_koi8("10 \xC2\xA4MOVE B\xC2\xA4(),I,J\n"
+                 "20 TURN B\xC2\xA4(),R,N,F\n"
+                 "30 DDRAW B\xC2\xA4(),0,-3\n", koi8);
+    NameTable names;
+    ProgramImage img;
+    if (!tokenize(koi8, img, names, error)) {
+        std::printf("  %s\n", error.c_str());
+        CHECK(false);
+        return;
+    }
+    CHECK_EQ(img.line_count(), 3u);
+
+    const std::vector<uint8_t> & a = img.line(0).body;
+    CHECK_EQ(a.size(), 9u);
+    CHECK_EQ(a[0], 0x06u); CHECK_EQ(a[1], 0x1Au); CHECK_EQ(a[2], 0x06u);
+    CHECK_EQ(a[3], 0xE0u); CHECK_EQ(a[5], 0xDEu);
+
+    const std::vector<uint8_t> & b = img.line(1).body;
+    CHECK_EQ(b[1], 0x1Bu);
+    CHECK_EQ(b[2], 0x08u);                  // буфер и три операнда через DE
+
+    // `DDRAW B¤(),0,-3` = `06 14 09 E0 xx DE E8 00 DE E9 E8 03` (M4).
+    const std::vector<uint8_t> & c = img.line(2).body;
+    CHECK_EQ(c[1], 0x14u);
+    CHECK_EQ(c[2], 0x09u);
+    CHECK_EQ(c[5], 0xDEu); CHECK_EQ(c[6], 0xE8u); CHECK_EQ(c[7], 0x00u);
+    CHECK_EQ(c[8], 0xDEu); CHECK_EQ(c[9], 0xE9u);
+    CHECK_EQ(c[10], 0xE8u); CHECK_EQ(c[11], 0x03u);
+}
+
 } // namespace
 
 int main()
@@ -458,5 +742,16 @@ int main()
     test_copy_unopened();
     test_too_small();
     test_label_draws();
+    test_ddraw();
+    test_move();
+    test_stretch();
+    test_turn();
+    test_turn_label();
+    test_move_off_raster();
+    test_let();
+    test_plot_pens();
+    test_plot_text();
+    test_plot_missing_device();
+    test_tokenized_transforms();
     return test::summary("графический буфер и растр");
 }
