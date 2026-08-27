@@ -10,6 +10,7 @@
 | `build-win-msvc.bat` | Windows 10…11, 64 бита, MSVC | `iskra-<версия>-windows-x86_64-msvc.zip` |
 | `build-linux.sh` | Linux с X11, разрядность своя | `iskra-<версия>-linux-<машина>.zip` |
 | `build-macos.sh` | macOS с AppKit, универсальный бинарник | `iskra-<версия>-macos-universal2.zip` |
+| `build-wasm.sh`, `build-wasm.cmd` | браузер, канва | `iskra-<версия>-web.zip` и каталог рядом |
 
 Версия берётся из файла `VERSION` в корне репозитория.
 
@@ -55,6 +56,7 @@ deploy/release/iskra-0.1.0-windows-i386.zip   выпуск
 | `vars-mingw-xp.cmd` | `C:\DEV\Qt\Tools\mingw492_32` — цепочка Windows XP |
 | `vars-mingw-latest.cmd` | `C:\DEV\Qt\Tools\mingw1310_64` |
 | `vars-msvc-latest.cmd` | `C:\DEV\MSVC\msvc` — переносимый MSVC |
+| `vars-emsdk.cmd` | `C:\DEV\emsdk` — Emscripten для браузера |
 
 CMake и Ninja берутся из поставки Qt (`Tools\CMake_64`, `Tools\Ninja`).
 Сам Qt при этом не нужен — эмулятор им не пользуется.
@@ -74,9 +76,48 @@ CMake и Ninja берутся из поставки Qt (`Tools\CMake_64`, `Tools
 Полный состав даёт отладочная сборка (`BUILD.md`, «Параметры»), и на машине
 с корпусом прогонять её надо перед тем, как собирать выпуск.
 
-## Другие системы
+## Браузер
 
-Окно написано под Windows (`src/host_win32/`), Linux (`src/host_x11/`) и
-macOS (`src/host_cocoa/`). Как появится `src/host_wasm/`, рядом ляжет
-`build-wasm.sh` с тем же именем выпуска:
-`iskra-<версия>-<система>-<разрядность>[-<компилятор>].zip`.
+`build-wasm.sh` (и `build-wasm.cmd` под Windows) собирает **не выпуск, а
+пакет для выкладки**: каталог со статикой, который кладётся в корень сайта
+как есть, плюс тот же каталог в zip.
+
+```
+deploy/release/iskra-0.1.0-web/
+    index.html  iskra.css  app.js  menu.js  keyboard.js   страница
+    iskra.js  iskra.wasm                                  сам эмулятор
+    bundle.json                                           названия дисков и программ
+    w004-s2.dsk  w012-s1v1.dsk                            образы дискет
+    programs/*.bas                                        программы примерами
+    README.md  nginx.conf.example                         как это выкладывать
+```
+
+Что прикладывать к странице, задаётся в **`deploy/_bundle/`**: файлы лежат
+там, а человекочитаемые названия — в `deploy/_bundle/bundle.json`. Скрипт
+кладёт и то и другое в пакет как есть, так что добавить свой диск или
+программу можно, не трогая ни страницу, ни скрипт.
+
+**Два образа отсюда входят в репозиторий** — `w004-s2.dsk` и
+`w012-s1v1.dsk`, — и это сделано нарочно, с разрешения владельца: страницу
+надо чем-то пробовать сразу после выкладки. Прочие образы дискет в git не
+входят вовсе (`.gitignore`), и класть сюда новые без такого же разрешения
+не следует.
+
+```json
+{
+  "disks":    [ { "file": "w004-s2.dsk", "name": "Статистика" } ],
+  "programs": [ { "file": "programs/raschet.bas", "name": "Расчёт: тригонометрия и ряд" } ]
+}
+```
+
+Нужен Emscripten; пути к нему — в `vars-emsdk.cmd`, а под Unix достаточно
+`source emsdk_env.sh` перед запуском. Тесты прогоняются и здесь, все
+тридцать четыре: наборы собираются в `.js`, запускает их node, и CMake
+подставляет его сам.
+
+**Раздавать это надо сервером, а не из файловой системы:** браузер
+запрещает `fetch` и загрузку модуля WebAssembly с происхождения `file://`.
+Настройка nginx с пояснениями, что и зачем, лежит прямо в пакете —
+`nginx.conf.example`. Коротко, там три вещи: тип `application/wasm` для
+`.wasm` (в nginx старше 1.21.5 его надо добавить руками), сжатие и
+осторожный срок кэша.

@@ -31,6 +31,15 @@ public:
     // Подставить образ. Файл открывается на запись, а если не выходит — на
     // чтение, и тогда дискета считается защищённой от записи.
     bool mount(unsigned drive, const char * path, std::string & error);
+
+    // Образ, пришедший не из файла. В браузере файла нет вовсе: байты даёт
+    // либо загрузка с сервера, либо выбор файла человеком, — и запись тогда
+    // идёт только в память. Достать образ обратно можно `image()`; этим и
+    // живёт «Сохранить образ».
+    bool mount_bytes(unsigned drive, const uint8_t * data, std::size_t size,
+                     const std::string & name, bool writable,
+                     std::string & error);
+
     void unmount(unsigned drive);
 
     // Заклеить прорезь: чтение остаётся, запись запрещена. Обратно не
@@ -39,9 +48,17 @@ public:
 
     bool mounted(unsigned drive) const;
     bool writable(unsigned drive) const;
+
+    // Писала ли сюда программа. Образу из файла это безразлично — запись
+    // идёт насквозь, — а образу в памяти нет: там записанное живёт только
+    // до извлечения дискеты, и терять его молча нельзя.
+    bool modified(unsigned drive) const;
     const std::string & path(unsigned drive) const;
 
     unsigned sectors(unsigned drive) const;
+
+    // Образ целиком, вместе с тем, что записала программа.
+    const std::vector<uint8_t> & image(unsigned drive) const;
     bool read(unsigned drive, unsigned sector, uint8_t * buf) const;
     bool write(unsigned drive, unsigned sector, const uint8_t * buf);
 
@@ -51,7 +68,8 @@ private:
         std::string path;
         std::FILE * file;
         bool writable;
-        Drive() : file(0), writable(false) {}
+        bool modified;
+        Drive() : file(0), writable(false), modified(false) {}
     };
 
     Drive drives_[DRIVES];

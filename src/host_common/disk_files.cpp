@@ -25,6 +25,7 @@ void DiskFiles::unmount(unsigned drive)
     if (dr.file) std::fclose(dr.file);
     dr.file = 0;
     dr.writable = false;
+    dr.modified = false;
     dr.path.clear();
     dr.data.clear();
 }
@@ -60,6 +61,29 @@ bool DiskFiles::mount(unsigned drive, const char * path, std::string & error)
     return true;
 }
 
+// Тот же дисковод, но без файла: сектора живут только в памяти. Всё
+// остальное — размер, чтение, запись, защита — общее с образом из файла.
+bool DiskFiles::mount_bytes(unsigned drive, const uint8_t * data,
+                            std::size_t size, const std::string & name,
+                            bool writable, std::string & error)
+{
+    error.clear();
+    if (drive >= DRIVES) { error = "нет такого дисковода"; return false; }
+    unmount(drive);
+
+    if (!size || size % Host::SECTOR_SIZE) {
+        error = name;
+        error += " не похож на образ: размер не кратен 256 байтам";
+        return false;
+    }
+
+    Drive & dr = drives_[drive];
+    dr.data.assign(data, data + size);
+    dr.writable = writable;
+    dr.path = name;
+    return true;
+}
+
 void DiskFiles::protect(unsigned drive)
 {
     if (drive < DRIVES) drives_[drive].writable = false;
@@ -75,10 +99,21 @@ bool DiskFiles::writable(unsigned drive) const
     return drive < DRIVES && drives_[drive].writable;
 }
 
+bool DiskFiles::modified(unsigned drive) const
+{
+    return drive < DRIVES && drives_[drive].modified;
+}
+
 const std::string & DiskFiles::path(unsigned drive) const
 {
     static const std::string none;
     return drive < DRIVES ? drives_[drive].path : none;
+}
+
+const std::vector<uint8_t> & DiskFiles::image(unsigned drive) const
+{
+    static const std::vector<uint8_t> none;
+    return drive < DRIVES ? drives_[drive].data : none;
 }
 
 unsigned DiskFiles::sectors(unsigned drive) const
@@ -102,6 +137,10 @@ bool DiskFiles::write(unsigned drive, unsigned sector, const uint8_t * buf)
     if (!dr.writable) return false;       // дискета защищена от записи
 
     std::memcpy(&dr.data[sector * Host::SECTOR_SIZE], buf, Host::SECTOR_SIZE);
+    dr.modified = true;
+
+    // Образа без файла запись насквозь не касается: он и есть память.
+    if (!dr.file) return true;
 
     // Насквозь в файл: fseek от начала, потому что образ плоский и сектор
     // лежит ровно там, где его номер.

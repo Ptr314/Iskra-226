@@ -1,0 +1,74 @@
+# Раздача эмулятора «Искра 226» через nginx.
+#
+# Сторонних служб странице не нужно вовсе: это статика. Но три вещи
+# настроить стоит, иначе выйдет либо медленно, либо неправильно.
+
+server {
+    listen 80;
+    server_name iskra.example.org;
+
+    root /srv/www/iskra;
+    index index.html;
+
+    # 1. ТИП ДЛЯ .wasm. Браузер грузит модуль потоком
+    #    (`WebAssembly.instantiateStreaming`), и без этого типа он
+    #    отказывается — грузит запасным путём, медленнее, а в консоли
+    #    ругается. В nginx 1.21.5 и новее тип уже есть в `mime.types`; в
+    #    старых сборках его надо добавить руками.
+    types {
+        application/wasm  wasm;
+    }
+
+    # 2. СЖАТИЕ. Модуль весит около 800 КБ, а сжатый — вчетверо меньше.
+    #    Сам wasm внутри не сжат, так что выигрыш тут настоящий.
+    gzip              on;
+    gzip_comp_level   6;
+    gzip_min_length   1024;
+    gzip_vary         on;
+    gzip_types        application/wasm application/javascript text/css
+                      text/html application/json text/plain;
+    # Если собран модуль brotli, он лучше на четверть:
+    #   brotli on;
+    #   brotli_types application/wasm application/javascript text/css
+    #                text/html application/json;
+
+    # 3. КЭШИРОВАНИЕ. Имена файлов не содержат версии, поэтому вечного
+    #    кэша им давать нельзя: выкатили новый выпуск — а браузер держит
+    #    старый .wasm при новом .js, и страница не заводится.
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+    location ~* \.(js|wasm|css|json)$ {
+        add_header Cache-Control "public, max-age=300, must-revalidate";
+    }
+
+    # Образы дискет: отдавать как есть, они двоичные.
+    location ~* \.dsk$ {
+        default_type application/octet-stream;
+        add_header Cache-Control "public, max-age=86400";
+    }
+
+    # Листинги программ — обычный текст в UTF-8.
+    location ~* \.bas$ {
+        default_type text/plain;
+        charset utf-8;
+    }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+
+# Чего НЕ нужно, хотя часто советуют для WASM:
+#
+#   add_header Cross-Origin-Opener-Policy   same-origin;
+#   add_header Cross-Origin-Embedder-Policy require-corp;
+#
+# Эти два заголовка нужны только тем, кто пользуется `SharedArrayBuffer` и
+# потоками. Здесь потоков нет вовсе: эмулятор однопоточный, а браузеру он
+# уступает управление через `-sASYNCIFY`. Заголовки же ломают вставку
+# страницы в чужие сайты через <iframe>, так что ставить их незачем.
+#
+# HTTPS тоже не обязателен для работы: `WebAssembly` не требует защищённого
+# происхождения, в отличие от, скажем, `SharedArrayBuffer`. Но выкладывать
+# в сеть по HTTP сегодня всё равно не стоит.

@@ -1,0 +1,369 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+   Copyright (C) 2026 Mikhail Revzin <p3.141592653589793238462643@gmail.com>
+   Part of the Iskra-226 project: https://github.com/Ptr314/Iskra-226
+   Description: оформление страницы эмулятора */
+
+:root {
+    --chrome:  #c8c8c4;      /* серый корпус машины */
+    --chrome2: #b4b4b0;
+    --edge:    #8e8e8a;
+    --ink:     #1a1a18;
+    --hi:      #a8bcf0;
+    --page:    #2a2a28;
+    --key:     #c0c0c0;      /* клавиша */
+    --key2:    #a8a8a6;
+    --keyred:  #d8a0a0;      /* красные клавиши: правка, RUN, RESET */
+    --keyred2: #bc8080;
+    --plate:   #ded9cc;      /* корпус под клавишей: тут пишут от руки */
+    --word:    #21418c;
+    --scale:   2;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    padding: 12px;
+    background: var(--page);
+    color: var(--ink);
+    font: 13px/1.4 Arial, Helvetica, sans-serif;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+#app {
+    width: calc(560px * var(--scale));
+    margin: 0 auto;
+}
+
+/* --- меню ---------------------------------------------------------------
+   Устроено так же, как у эмуляторов Алексея Морозова, на которые эта
+   страница и равнялась: вложенные <ul>, раскрытие по наведению, ничего
+   сверх CSS. */
+
+ul.menu, ul.menu ul {
+    margin: 0;
+    padding: 0;
+    background: var(--chrome);
+    color: var(--ink);
+}
+ul.menu {
+    display: block;
+    border: 1px solid var(--edge);
+    border-radius: 3px 3px 0 0;
+    border-bottom: none;
+}
+ul.menu ul {
+    display: inline-block;
+    position: absolute;
+    visibility: hidden;
+    padding: 3px;
+    border: 1px solid var(--edge);
+    box-shadow: 3px 3px 6px rgba(0, 0, 0, .4);
+    z-index: 20;
+}
+ul.menu li { list-style: none; padding: 0; display: block; }
+ul.menu > li { display: inline-block; }
+ul.menu div { padding: 6px 14px; white-space: nowrap; cursor: default; }
+ul.menu div:hover { background: var(--hi); }
+ul.menu li:hover > ul { visibility: visible; }
+ul.menu li.empty div { color: #777; font-style: italic; }
+ul.menu li.empty div:hover { background: none; }
+
+/* Подменю раскрывается вбок стрелкой — она нарисована рамкой, а не
+   картинкой: сторонних файлов у страницы нет вовсе. */
+ul.menu .sub { padding-right: 28px; position: relative; }
+ul.menu .sub::after {
+    content: "";
+    position: absolute;
+    right: 11px;
+    top: 50%;
+    width: 5px; height: 5px;
+    margin-top: -3px;
+    border: solid var(--ink);
+    border-width: 1px 1px 0 0;
+    transform: rotate(45deg);
+}
+ul.menu > li > div.sub { padding-right: 14px; }
+ul.menu > li > div.sub::after { display: none; }
+
+/* После выбора меню гасится: CSS сам этого не умеет — пока указатель стоит
+   на пункте, наведение никуда не делось (см. menu.js). */
+ul.menu.shut ul { visibility: hidden !important; }
+
+/* Что вставлено в дисковод — прямо в пункте меню. */
+.slot { color: #555; font-style: italic; margin-left: 12px; }
+
+/* --- вкладки кадра ------------------------------------------------------ */
+
+.tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 3px;
+    padding: 5px 5px 0 5px;
+    background: var(--chrome2);
+    border: 1px solid var(--edge);
+    border-bottom: none;
+}
+.tabs .grow { flex: 1; }
+
+.tab, .act, .zoom button {
+    font: 13px Arial, Helvetica, sans-serif;
+    color: var(--ink);
+    background: var(--chrome);
+    border: 1px solid var(--edge);
+    cursor: pointer;
+}
+.tab {
+    padding: 6px 14px;
+    border-bottom: none;
+    border-radius: 3px 3px 0 0;
+    opacity: .72;
+}
+.tab.on { opacity: 1; background: #e2e2de; font-weight: bold; }
+.tab .x {
+    font-style: normal;
+    margin-left: 9px;
+    padding: 0 2px;
+    opacity: .55;
+}
+.tab .x:hover { opacity: 1; color: #a00; }
+
+/* Вкладка, на которой появилось новое, пока смотрели в другую сторону. */
+.tab.fresh::after {
+    content: "";
+    display: inline-block;
+    width: 6px; height: 6px;
+    margin-left: 8px;
+    border-radius: 50%;
+    background: #c05000;
+    vertical-align: 1px;
+}
+
+.act { margin: 3px 0 5px; padding: 4px 12px; border-radius: 3px; }
+.act:hover { background: var(--hi); }
+
+/* Увеличение кадра. Своего места в меню ему не нашлось — состав меню задан
+   наперёд, — да и незачем: тут оно на виду. */
+.zoom {
+    display: flex;
+    align-items: center;
+    margin: 3px 0 5px 8px;
+}
+.zoom button {
+    width: 26px;
+    padding: 4px 0;
+    line-height: 1;
+    font-size: 15px;
+}
+.zoom button:first-child { border-radius: 3px 0 0 3px; }
+.zoom button:last-child  { border-radius: 0 3px 3px 0; }
+.zoom button:hover { background: var(--hi); }
+.zoom button[disabled] { opacity: .4; cursor: default; background: var(--chrome); }
+.zoom b {
+    min-width: 34px;
+    text-align: center;
+    padding: 4px 0;
+    background: #e2e2de;
+    border: 1px solid var(--edge);
+    border-left: none;
+    border-right: none;
+    font-weight: normal;
+}
+
+/* --- поле кадра --------------------------------------------------------- */
+
+.stage {
+    position: relative;
+    background: #000;
+    border: 1px solid var(--edge);
+    line-height: 0;
+}
+
+.stage canvas {
+    display: block;
+    width: calc(560px * var(--scale));
+    height: calc(256px * var(--scale));
+    /* Увеличение только целое и без сглаживания — точка в точку, как
+       StretchDIBits с COLORONCOLOR у окна под Windows. */
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+}
+
+/* Лента АЦПУ — текст, а не кадр: своего знакогенератора у печати нет и
+   взять его неоткуда, зато здесь она видна целиком, ищется и копируется. */
+.stage pre {
+    display: block;
+    margin: 0;
+    width: calc(560px * var(--scale));
+    height: calc(256px * var(--scale));
+    overflow: auto;
+    padding: 12px 16px;
+    background: #f2f0e8;
+    color: #141414;
+    font-family: "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace;
+    font-size: calc(7px * var(--scale));
+    line-height: 1.35;
+    white-space: pre;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+/* Своё `display` у канвы, у ленты и у заставки перебивает браузерное
+   `[hidden] { display: none }` — оно из таблицы браузера, а это из нашей.
+   Без этой строки невыбранная вкладка рисовалась бы поверх выбранной, а
+   заставка «загрузка…» так и висела бы над экраном. */
+.stage canvas[hidden], .stage pre[hidden], .boot[hidden] { display: none; }
+
+.boot {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #30d830;
+    font: 14px Arial, Helvetica, sans-serif;
+    line-height: 1.4;
+    background: #000;
+}
+
+/* --- клавиатура ---------------------------------------------------------
+   Раскладка снята с docs/keyboard.svg один в один: клавиши стоят там же,
+   где на рис. 2.2, вместе с пропусками между зонами. Координаты в тех же
+   единицах, что в самом рисунке, а в проценты их переводит keyboard.js.
+
+   Размер надписей тоже оттуда: на рисунке знак равен 3.88 при клавише в 20
+   единиц, и `IskraKeyboard.resize()` ставит эту величину в `font-size`
+   самой клавиатуры. Всё внутри меряется от неё в `em`, поэтому при любом
+   увеличении пропорции остаются рисуночными. */
+
+.keyboard {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 469.6 / 143;
+    margin-top: 10px;
+    background: var(--chrome);
+    border: 1px solid var(--edge);
+    border-radius: 4px;
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Подпись на корпусе под клавишей: номера функций и стрелки напечатаны
+   именно там, а не на самих клавишах. Фон светлый — на нём от руки
+   подписывают свою функцию. */
+.plate {
+    position: absolute;
+    display: flex;
+    align-items: center;
+    background: var(--plate);
+    border: 1px solid #b5b0a2;
+    border-radius: 2px;
+    color: #2a2a24;
+    overflow: hidden;
+}
+/* Номера прижаты вправо: слева остаётся поле под свою подпись. */
+.plate .p-num {
+    margin-left: auto;
+    padding-right: .45em;
+    font-size: .82em;
+    line-height: 1.1;
+    text-align: right;
+}
+.plate .p-arrow {
+    width: 100%;
+    text-align: center;
+    font-size: 1.3em;
+    line-height: 1;
+    letter-spacing: -.12em;   /* хвост стрелки вплотную к её острию */
+}
+.plate .p-word { font-size: .85em; letter-spacing: .02em; }
+
+.key {
+    position: absolute;
+    padding: 0;
+    background: linear-gradient(var(--key) 0%, var(--key) 62%, var(--key2) 100%);
+    border: 2px solid #fff;
+    border-radius: 4px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .35);
+    color: var(--ink);
+    font-family: inherit;
+    cursor: pointer;
+    overflow: hidden;
+}
+.key.red {
+    background: linear-gradient(var(--keyred) 0%, var(--keyred) 62%,
+                                var(--keyred2) 100%);
+}
+.key:hover  { filter: brightness(1.12); }
+.key:active { filter: brightness(.88); transform: translateY(1px); }
+
+/* Основное значение — крупно по центру. */
+.key .k-main {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.95em;
+    font-weight: normal;
+    line-height: 1;
+}
+/* У клавиш с двумя значениями (цифровой блок с функциями) основное сдвинуто
+   вверх: под ним стоит имя функции. */
+.key .k-main.k-high { align-items: flex-start; padding-top: .28em; }
+
+/* Второе значение — мельче, справа вверху. */
+.key .k-alt {
+    position: absolute;
+    top: .12em;
+    right: .32em;
+    font-size: .95em;
+    font-style: normal;
+    line-height: 1;
+    opacity: .68;
+}
+
+/* Третье — внизу по центру. */
+.key .k-word {
+    position: absolute;
+    left: 0; right: 0; bottom: .18em;
+    text-align: center;
+    font-size: .88em;
+    line-height: 1;
+    text-decoration: none;
+    color: var(--word);
+    white-space: nowrap;
+}
+.key .k-word:hover { background: var(--hi); border-radius: 2px; }
+
+/* Клавиша, у которой надпись на рис. 2.2 обрезана и слова мы не знаем. */
+.key .k-word.k-unk { color: #8a8a86; font-style: italic; cursor: default; }
+.key .k-word.k-unk:hover { background: none; }
+
+/* Клавиши-слова, правка и управление: надпись целиком, в одну-две строки. */
+.key .k-text {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-size: .95em;
+    line-height: 1.15;
+    text-align: center;
+    letter-spacing: .02em;
+}
+
+/* Верхний регистр: второе значение выходит на первый план. Сами надписи при
+   этом не переставляются — на машине они напечатаны раз и навсегда. */
+.keyboard.up .key .k-alt { opacity: 1; font-weight: bold; color: #7a1010; }
+.key.mod.on { background: linear-gradient(#cfdcff, #a8b8e8); }
+
+.foot {
+    color: #b8b8b0;
+    font-size: 12px;
+    line-height: 1.55;
+    margin: 12px 0 0;
+}
+.foot b { color: #e0e0d8; }
+.foot #version { color: #8ac98a; margin-right: 10px; }

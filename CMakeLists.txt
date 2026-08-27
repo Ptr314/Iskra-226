@@ -146,7 +146,40 @@ endif()
 set(ISKRA_WINDOW_HOST "нет")
 
 if(ISKRA_HOST_WINDOW)
-    if(WIN32)
+    if(EMSCRIPTEN)
+        # Канва браузера. Проверяется первой: Emscripten объявляет себя UNIX,
+        # и ветка X11 иначе забрала бы его себе.
+        #
+        # `-sASYNCIFY` — единственная уступка среде: главный цикл в браузере
+        # чужой, а ядро блокирует (`Console::read_line`, `Interp::loop`).
+        # Стек разматывается и складывается обратно вокруг двух вызовов
+        # `emscripten_sleep()` в хосте, и переделывать под браузер диалог с
+        # исполнителем не приходится (`docs/DECISIONS.md`, разд. 11 и 14).
+        add_executable(iskra
+            src/host_wasm/wasm_host.h  src/host_wasm/wasm_host.cpp
+            src/host_wasm/main.cpp
+        )
+        target_link_libraries(iskra PRIVATE iskra_host_common iskra_warnings)
+        target_link_options(iskra PRIVATE
+            -sASYNCIFY
+            # Разложенный стек живёт в куче отдельным куском: разбор
+            # выражения — полный рекурсивный спуск, и умолчания в 4 КБ ему
+            # мало.
+            -sASYNCIFY_STACK_SIZE=65536
+            -sSTACK_SIZE=1048576
+            -sALLOW_MEMORY_GROWTH=1
+            -sMODULARIZE=1
+            -sEXPORT_NAME=createIskra
+            # Среда нарочно НЕ сужена до `web`: тогда тот же модуль поднимается
+            # под node, и границу со страницей — кадры, вкладки, ленту, очередь
+            # нажатий — можно проверить без браузера вовсе
+            # (`tools/probes/wasm_smoke.js`). Стоит это несколько килобайт
+            # обвязки.
+            -sEXPORTED_FUNCTIONS=_main,_malloc,_free
+            -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString,stringToUTF8,lengthBytesUTF8,HEAPU8
+        )
+        set(ISKRA_WINDOW_HOST "канва браузера")
+    elseif(WIN32)
         add_executable(iskra WIN32
             src/host_win32/win32_host.h  src/host_win32/win32_host.cpp
             src/host_win32/main.cpp
@@ -194,8 +227,6 @@ if(ISKRA_HOST_WINDOW)
         target_link_libraries(iskra PRIVATE "-framework Cocoa")
         set(ISKRA_WINDOW_HOST "Cocoa")
     else()
-        # Канва браузера — следующая; ядру от неё нужен всё тот же host.h,
-        # поэтому сборка без окна остаётся рабочей.
         message(STATUS "Хост с окном для этой системы ещё не написан")
     endif()
 endif()

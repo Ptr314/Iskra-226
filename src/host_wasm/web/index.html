@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Copyright (C) 2026 Mikhail Revzin <p3.141592653589793238462643@gmail.com>
+  Part of the Iskra-226 project: https://github.com/Ptr314/Iskra-226
+  Description: страница эмулятора — меню, вкладки кадра, клавиатура
+-->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Искра 226 — эмулятор Бейсика BASIC 02</title>
+<link rel="stylesheet" href="iskra.css">
+</head>
+<body>
+
+<div id="app">
+
+  <ul class="menu" id="menu">
+    <li><div>Система</div>
+      <ul>
+        <li id="m-reset"><div>Перезагрузить</div></li>
+        <li><div class="sub">Загрузить программу</div>
+          <ul id="m-programs"><li class="empty"><div>нет списка</div></li></ul>
+        </li>
+      </ul>
+    </li>
+    <li><div>Диски</div>
+      <ul>
+        <li><div class="sub">Дисковод F<span class="slot" id="slot-0"></span></div>
+          <ul>
+            <li data-eject="0"><div>Извлечь диск</div></li>
+            <li data-file="0"><div>Загрузить из файла…</div></li>
+            <li><div class="sub">Загрузить с сервера</div>
+              <ul id="m-disk-0"><li class="empty"><div>нет списка</div></li></ul>
+            </li>
+          </ul>
+        </li>
+        <li><div class="sub">Дисковод R<span class="slot" id="slot-1"></span></div>
+          <ul>
+            <li data-eject="1"><div>Извлечь диск</div></li>
+            <li data-file="1"><div>Загрузить из файла…</div></li>
+            <li><div class="sub">Загрузить с сервера</div>
+              <ul id="m-disk-1"><li class="empty"><div>нет списка</div></li></ul>
+            </li>
+          </ul>
+        </li>
+      </ul>
+    </li>
+  </ul>
+
+  <!-- Вкладки: экран есть всегда, лист графопостроителя и лента появляются,
+       когда устройство впервые что-то выдало, — так же лениво, как второе
+       окно у хостов с настоящими окнами. -->
+  <div class="tabs" id="tabs">
+    <button class="tab on" data-pane="0">Экран</button>
+    <button class="tab" data-pane="1" hidden>Графопостроитель<i class="x" title="убрать лист">✕</i></button>
+    <button class="tab" data-pane="2" hidden>АЦПУ<i class="x" title="убрать ленту">✕</i></button>
+    <span class="grow"></span>
+    <button class="act" id="save-plot" hidden>Сохранить лист</button>
+    <button class="act" id="save-tape" hidden>Сохранить ленту</button>
+    <span class="zoom" title="увеличение кадра">
+      <button id="zoom-out" type="button">&minus;</button>
+      <b id="zoom-val">&times;2</b>
+      <button id="zoom-in" type="button">+</button>
+    </span>
+  </div>
+
+  <div class="stage" id="stage">
+    <canvas id="pane-0" width="560" height="256"></canvas>
+    <canvas id="pane-1" width="560" height="256" hidden></canvas>
+    <pre id="pane-2" hidden></pre>
+    <div class="boot" id="boot">загрузка…</div>
+  </div>
+
+  <div class="keyboard" id="keyboard"></div>
+
+  <p class="foot">
+    <span id="version"></span>
+    Клавиатура «Искры» разложена и по обычной: Esc и F1…F12 — клавиши
+    спецфункций, Alt+клавиша даёт слово Бейсика, Ctrl+E и Ctrl+R — EDIT и
+    RECALL, Ctrl+Enter — CONTINUE. На экранной клавиатуре слово вводится
+    щелчком по самому слову, а <b>SHIFT</b> и <b>SHIFT LOCK</b> переключают
+    второй знак клавиши.
+  </p>
+
+</div>
+
+<input type="file" id="picker" accept=".dsk,.img,.bin" hidden>
+
+<script src="keyboard.js"></script>
+<script src="menu.js"></script>
+<!-- Модуль объявляет createIskra() и сам ничего не запускает: заводит его
+     app.js, когда страница готова принимать кадры. -->
+<script src="iskra.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
