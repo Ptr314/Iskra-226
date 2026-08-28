@@ -174,7 +174,7 @@ iskra-nohead --printer ЛЕНТА.txt …     лента АЦПУ в файл, �
 ## Родственные проекты
 
 - [Emuverse.ru](https://www.emuverse.ru) — энциклопедия эмуляции на русском языке.
-- [DISK Commander]([https://github.com/Ptr314/DSKCommander](https://github.com/Ptr314/dsk_commander)) — просмотр и конвертация образов дисков ретрокомпьютеров; 
+- [DISK Commander](https://github.com/Ptr314/dsk_commander) — просмотр и конвертация образов дисков ретрокомпьютеров; 
 - [eCat3](https://github.com/Ptr314/ecat3) — эмулятор ретрокомпьютеров;
 - [dsk_tools](https://github.com/Ptr314/dsk_tools) — библиотека для работы с образами дисков.
 
