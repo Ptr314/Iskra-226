@@ -23,6 +23,8 @@
         <li><div class="sub">Загрузить программу</div>
           <ul id="m-programs"><li class="empty"><div>нет списка</div></li></ul>
         </li>
+        <li id="m-text-load"><div>Загрузить программу из файла…</div></li>
+        <li id="m-text-save"><div>Сохранить программу в файл…</div></li>
       </ul>
     </li>
     <li><div>Диски</div>
@@ -87,6 +89,7 @@
 </div>
 
 <input type="file" id="picker" accept=".dsk,.img,.bin" hidden>
+<input type="file" id="picker-text" accept=".txt,.bas,text/plain" hidden>
 
 <script src="keyboard.js"></script>
 <script src="menu.js"></script>

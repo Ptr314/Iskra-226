@@ -17,9 +17,14 @@ var canvas = [], ctx = [], img = [];
 var tapeEl, bootEl, audio = null;
 var bundle = { disks: [], programs: [] };
 
+// Под каким именем предлагать сохранение. Своего имени у программы в
+// памяти нет вовсе — в потоке лежат одни строки, — поэтому помнится то,
+// под которым её загрузили.
+var programName = 'program.bas';
+
 // --- то, что эмулятор говорит странице ---------------------------------------
 //
-// Ровно четыре вызова, и больше хост о странице ничего не знает
+// Шесть вызовов, и больше хост о странице ничего не знает
 // (`src/host_wasm/wasm_host.cpp`, «граница со страницей»).
 
 window.Iskra = {
@@ -65,6 +70,11 @@ window.Iskra = {
         if (atEnd) tapeEl.scrollTop = tapeEl.scrollHeight;
         markFresh(PANE_TAPE);
     },
+
+    // Беда, о которой человеку надо сказать вслух: листинг, который не
+    // перевёлся. Прочее хост шлёт в консоль браузера — туда никто не
+    // смотрит, а тут машина осталась бы пустой без всякого объяснения.
+    note: function (text) { alert(text); },
 
     // Код `07` ЗВ — звонок. Своего звука у страницы нет и брать его
     // неоткуда, поэтому он собирается из одного тона.
@@ -146,6 +156,53 @@ function saveDisk(drive) {
     var name = Module.UTF8ToString(Module._iskra_disk_name(drive)) ||
                ('drive-' + DRIVE_NAME[drive]);
     save(new Blob([bytes], { type: 'application/octet-stream' }), name);
+}
+
+// --- программа текстом -------------------------------------------------------
+//
+// Тот же путь, каким грузятся приложенные к странице примеры: листинг
+// кладётся в память перезагрузкой машины, ровно как ключ `--text` у трёх
+// прочих хостов. Обратно он берётся детокенизатором — это `LIST`, только
+// целиком и в файл.
+
+function baseName(path) {
+    var i = String(path).lastIndexOf('/');
+    return i < 0 ? String(path) : String(path).slice(i + 1);
+}
+
+function loadListing(text, name) {
+    if (name) programName = name;
+    Module.ccall('iskra_load_program', null, ['string'], [text]);
+}
+
+// Файл с машины человека. Читается байтами, а не текстом: листинги «Искры»
+// ходят и в КОИ-8 — на дискете они лежат именно так, — и тихая замена
+// кириллицы вопросительными знаками испортила бы программу незаметно.
+// Разбирает оба вида сам браузер, своей таблицы для этого не нужно.
+function readListing(file) {
+    return file.arrayBuffer().then(function (buf) {
+        try {
+            return new TextDecoder('utf-8', { fatal: true }).decode(buf);
+        } catch (e) {
+            return new TextDecoder('koi8-r').decode(buf);
+        }
+    });
+}
+
+function saveListing() {
+    if (!Module._iskra_program_lines()) {
+        alert('В памяти нет ни одной строки программы.');
+        return;
+    }
+    var text = Module.UTF8ToString(Module._iskra_program_text());
+    if (!text) {
+        // Пропустить строку, которой обратная трансляция ещё не умеет,
+        // нельзя: файл разошёлся бы с программой в памяти незаметно.
+        alert('Не удалось выдать текст программы.\n' +
+              Module.UTF8ToString(Module._iskra_program_error()));
+        return;
+    }
+    save(new Blob([text], { type: 'text/plain;charset=utf-8' }), programName);
 }
 
 // --- дисководы ---------------------------------------------------------------
@@ -322,6 +379,18 @@ function wireMenu() {
         Module._iskra_reset();
     });
 
+    document.getElementById('m-text-load').addEventListener('click', function (e) {
+        IskraMenu.shut(e.currentTarget);
+        var picker = document.getElementById('picker-text');
+        picker.value = '';
+        picker.click();
+    });
+
+    document.getElementById('m-text-save').addEventListener('click', function (e) {
+        IskraMenu.shut(e.currentTarget);
+        saveListing();
+    });
+
     IskraMenu.fill(document.getElementById('m-programs'), bundle.programs,
         function (p) { return p.name; },
         function (p) {
@@ -332,7 +401,7 @@ function wireMenu() {
                 // Программа кладётся в память перезагрузкой машины — ровно
                 // так же, как ключ `--text` у трёх прочих хостов. Подменять
                 // текст под работающим исполнителем нельзя.
-                Module.ccall('iskra_load_program', null, ['string'], [text]);
+                loadListing(text, baseName(p.file));
             }).catch(function (err) { alert(String(err)); });
         });
 
@@ -449,6 +518,15 @@ function start() {
                     f.arrayBuffer().then(function (b) {
                         mount(pickTarget, new Uint8Array(b), f.name);
                     });
+                });
+
+            document.getElementById('picker-text')
+                .addEventListener('change', function (e) {
+                    var f = e.target.files && e.target.files[0];
+                    if (!f) return;
+                    readListing(f)
+                        .then(function (text) { loadListing(text, f.name); })
+                        .catch(function (err) { alert(String(err)); });
                 });
 
             window.addEventListener('keydown', onKeyDown);

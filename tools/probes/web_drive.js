@@ -79,6 +79,27 @@ async function box(sel) {
         '  return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()');
 }
 
+async function rect(sel) {
+    return evaluate(
+        '(() => { const e = document.querySelector(' + JSON.stringify(sel) + ');' +
+        '  if (!e) return null;' +
+        '  const r = e.getBoundingClientRect();' +
+        '  return { l: Math.round(r.left), t: Math.round(r.top),' +
+        '           r: Math.round(r.right), b: Math.round(r.bottom),' +
+        '           vis: getComputedStyle(e).visibility }; })()');
+}
+
+// Навести указатель по цепочке, не выбирая ничего: меню раскрывается одним
+// CSS, по наведению, и уровни разворачиваются сверху вниз.
+async function hover(path) {
+    for (const sel of path) {
+        const b = await box(sel);
+        if (!b) throw new Error('нет такого элемента: ' + sel);
+        await move(b.x, b.y);
+    }
+    await sleep(120);
+}
+
 async function move(x, y) {
     await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
     await sleep(60);
@@ -112,6 +133,8 @@ async function pick(path) {
 const SYS   = '#menu > li:nth-child(1) > div';
 const PROGS = '#menu > li:nth-child(1) > ul > li:nth-child(2) > div';
 const RESET = '#m-reset div';
+const LOAD_TXT = '#m-text-load div';
+const SAVE_TXT = '#m-text-save div';
 const DISKS = '#menu > li:nth-child(2) > div';
 const DRV_F = '#menu > li:nth-child(2) > ul > li:nth-child(1) > div';
 const SRV_F = '#menu > li:nth-child(2) > ul > li:nth-child(1) > ul > li:nth-child(3) > div';
@@ -264,6 +287,120 @@ const TABS = "Array.from(document.querySelectorAll('.tab')).map(t =>" +
     check('список дисков пришёл из bundle.json',
           JSON.stringify(disks) === JSON.stringify(named.disks.map(d => d.name)),
           disks.join(', '));
+
+    // Подменю обязано уходить вбок, правее своего уровня, а не ложиться
+    // поверх пунктов ниже: накрытый пункт видно, а выбрать его нельзя —
+    // указатель до него не доводится. Наезд на несколько точек нарочен, без
+    // него по дороге теряется наведение, поэтому сверяем с запасом.
+    await hover([SYS, PROGS]);
+    const lvl2 = await rect('#menu > li:nth-child(1) > ul');
+    const lvl3 = await rect('#m-programs');
+    const under = await rect('#m-text-save');
+    check('подменю раскрылось правее своего уровня',
+          lvl3.vis === 'visible' && lvl3.l >= lvl2.r - 6,
+          'уровень 2 до ' + lvl2.r + ', уровень 3 с ' + lvl3.l);
+    check('пункт под ним остался открыт', lvl3.l >= under.r - 6,
+          '«Сохранить программу» до ' + under.r);
+
+    // Самая глубокая цепочка — четыре уровня. На узком окне последний уходит
+    // влево (`IskraMenu.side`), и проверять надо не сторону, а то, что он
+    // целиком в окне и никого не накрыл.
+    await move(600, 1140);
+    await hover([DISKS, DRV_F, SRV_F]);
+    const d3 = await rect('#menu > li:nth-child(2) > ul > li:nth-child(1) > ul');
+    const d4 = await rect('#m-disk-0');
+    const drvR = await rect('#menu > li:nth-child(2) > ul > li:nth-child(2)');
+    const wide = await evaluate('document.documentElement.clientWidth');
+    check('третий уровень не накрыл «Дисковод R»', d3.l >= drvR.r - 6,
+          '«Дисковод R» до ' + drvR.r + ', уровень 3 с ' + d3.l);
+    check('четвёртый уровень целиком в окне',
+          d4.vis === 'visible' && d4.l >= 0 && d4.r <= wide,
+          d4.l + '…' + d4.r + ' при ширине ' + wide);
+    await move(600, 1140);
+
+    console.log('');
+    console.log('программа текстом');
+    // Программа кладётся в память тем же путём, что и примеры пакета, —
+    // «Загрузить программу» это перезагрузка с листингом.
+    await pick([SYS, PROGS, '#m-programs li:nth-child(2) div']);
+    await sleep(800);
+
+    check('пункты появились в меню «Система»',
+          (await evaluate("document.getElementById('m-text-load').textContent")) ===
+              'Загрузить программу из файла…' &&
+          (await evaluate("document.getElementById('m-text-save').textContent")) ===
+              'Сохранить программу в файл…',
+          await evaluate("document.getElementById('m-text-save').textContent"));
+    check('выбор файла листинга на месте',
+          (await evaluate("document.getElementById('picker-text').accept")) ===
+              '.txt,.bas,text/plain',
+          await evaluate("document.getElementById('picker-text').accept"));
+
+    // Сохранение перехватывается на самой выдаче файла: до диалога отладочный
+    // протокол не достаёт, а всё, что до него, — наше. Пункт при этом
+    // выбирается настоящим щелчком через раскрытое меню: пункт, до которого
+    // не довести указатель, выглядел бы на месте, а не работал, и ловится
+    // такое только живым браузером.
+    await evaluate(
+        "window.__saved = null;" +
+        "window.__save0 = window.save;" +
+        "window.save = function (blob, name) { window.__saved = { name: name, blob: blob }; };" +
+        "true");
+    await pick([SYS, SAVE_TXT]);
+    await sleep(300);
+    const saved = await evaluate(
+        "window.__saved ? window.__saved.blob.text().then(function (t) " +
+        "{ return { name: window.__saved.name, text: t }; }) : null");
+    await evaluate("window.save = window.__save0; true");
+    check('«Сохранить» выдало файл', !!saved, saved ? saved.name : 'ничего');
+    // Имя предлагается то, под которым программу загрузили: своего имени у
+    // программы в памяти нет вовсе — в потоке лежат одни строки.
+    check('имя файла — то, под которым грузили',
+          !!saved && saved.name === 'grafik.bas', saved && saved.name);
+    check('в файле лежит листинг',
+          !!saved && /^10 /.test(saved.text) &&
+          saved.text.split('\r\n').filter(l => l.length).length > 3,
+          saved && (saved.text.split('\r\n').filter(l => l.length).length +
+                    ' строк, ' + JSON.stringify(saved.text.slice(0, 30)) + '…'));
+
+    // Листинги «Искры» ходят и в КОИ-8: на дискете они лежат именно так.
+    // Тихая замена кириллицы вопросительными знаками испортила бы программу
+    // незаметно, поэтому вид определяется по самим байтам.
+    const koi8 = await evaluate(
+        "readListing(new Blob([new Uint8Array([0x31,0x30,0x20,0x50,0x52," +
+        "0x49,0x4E,0x54,0x20,0x22,0xF0,0xF2,0xEF,0xE2,0xE1,0x22])]))");
+    check('файл в КОИ-8 прочитан кириллицей', koi8 === '10 PRINT "ПРОБА"',
+          JSON.stringify(koi8));
+    const utf8 = await evaluate(
+        "readListing(new Blob(['10 PRINT \"ПРОБА\"']))");
+    check('файл в UTF-8 прочитан кириллицей', utf8 === '10 PRINT "ПРОБА"',
+          JSON.stringify(utf8));
+
+    // Настоящий выбор файла — тот самый путь, каким это делает человек.
+    // Файл берётся в КОИ-8: так листинги лежат на дискете, и так их выдаёт
+    // всякий инструмент, знающий машину.
+    const picked = SHOTS + '/проба.bas';
+    fs.writeFileSync(picked, Buffer.from([
+        0x31, 0x30, 0x20, 0x50, 0x52, 0x49, 0x4E, 0x54, 0x20, 0x22,
+        0xF0, 0xF2, 0xEF, 0xE2, 0xE1, 0x22, 0x0D, 0x0A,
+        0x32, 0x30, 0x20, 0x45, 0x4E, 0x44, 0x0D, 0x0A]));
+    await send('DOM.enable');
+    const doc = await send('DOM.getDocument', {});
+    const inp = await send('DOM.querySelector',
+        { nodeId: doc.root.nodeId, selector: '#picker-text' });
+    await send('DOM.setFileInputFiles', { files: [picked], nodeId: inp.nodeId });
+    await sleep(1200);
+    check('выбранный файл лёг в память',
+          await evaluate('Module._iskra_program_lines()') === 2,
+          await evaluate('Module._iskra_program_lines()') + ' строк');
+    check('имя файла запомнилось кириллицей',
+          await evaluate('programName') === 'проба.bas',
+          await evaluate('programName'));
+    check('кириллица из КОИ-8 дошла до программы',
+          /ПРОБА/.test(await evaluate(
+              'Module.UTF8ToString(Module._iskra_program_text())')),
+          JSON.stringify(await evaluate(
+              'Module.UTF8ToString(Module._iskra_program_text())')));
 
     console.log('');
     console.log('лист графопостроителя');

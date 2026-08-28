@@ -141,6 +141,37 @@ async function settle(ms) { await sleep(ms); }
     check('Alt+S даёт SELECT', kw('S') === 'SELECT', kw('S'));
     check('у клавиши Д слова нет', kw('Д') === '', '«' + kw('Д') + '»');
 
+    console.log('\nпрограмма текстом');
+    // Круг «текст → память → текст»: то же, что делает «Сохранить программу
+    // в файл» вслед за «Загрузить». Имена переменных придумывает обратная
+    // трансляция, и берёт она таблицу сеанса — ту же, по которой говорит
+    // LIST, — поэтому листинг обязан вернуться слово в слово.
+    const listing = '10 REM ПРОБА\n' +
+                    '20 A=1:B¤="СТРОКА"\n' +
+                    '30 FOR I=1 TO 3:PRINT I,B¤:NEXT I\n';
+    M.ccall('iskra_load_program', null, ['string'], [listing]);
+    await settle(400);
+    check('строки легли в память', M._iskra_program_lines() === 3,
+          M._iskra_program_lines() + ' против 3');
+    const back = M.UTF8ToString(M._iskra_program_text());
+    check('причины неудачи нет',
+          M.UTF8ToString(M._iskra_program_error()) === '',
+          M.UTF8ToString(M._iskra_program_error()));
+    check('вернулись все три строки, номерами по порядку',
+          /^10 REM ПРОБА\r\n20 /.test(back) && /\r\n30 FOR I=1/.test(back) &&
+          back.split('\r\n').filter(l => l.length).length === 3,
+          JSON.stringify(back));
+    // Пробелы у TO и STEP детокенизатор не ставит — расстановка его, а не
+    // наша. Требовать тут листинг знак в знак нельзя; что действительно
+    // должно держаться — это неподвижность круга «сохранил → загрузил»:
+    // второй раз обязано выйти то же самое, иначе файл расходился бы с
+    // программой при каждом сохранении.
+    M.ccall('iskra_load_program', null, ['string'], [back]);
+    await settle(400);
+    const again = M.UTF8ToString(M._iskra_program_text());
+    check('круг «сохранил → загрузил» неподвижен', again === back,
+          JSON.stringify(again));
+
     console.log('\nлист графопостроителя');
     M.ccall('iskra_load_program', null, ['string'], [
         '10 DIM B¤(40)253\n' +

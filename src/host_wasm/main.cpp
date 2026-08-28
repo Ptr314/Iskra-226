@@ -5,11 +5,13 @@
 
 #include <emscripten/emscripten.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <vector>
 
 #include "core/console.h"
+#include "core/detokenize.h"
 #include "core/keys.h"
 #include "core/koi8.h"
 #include "core/program.h"
@@ -32,6 +34,12 @@ iskra::WasmHost * g_host = 0;
 // значит перекладывать на него нашу заботу.
 std::string g_pending_listing;
 
+// Текст программы для «Сохранить программу»: листинг в UTF-8 и причина, по
+// которой его не вышло собрать. Держатся до следующего запроса — страница
+// читает их сразу же, пока стек ядра разложен.
+std::string g_program_text;
+std::string g_program_error;
+
 // Ключ `-i`: пропускать то, чего здесь нет и не будет (`ASMB`, `$GIO`,
 // вывод на устройство, которого у хоста нет). Командной строки у страницы
 // нет, поэтому ключ приходит из адреса — `?i=1`.
@@ -52,6 +60,13 @@ EM_JS(void, js_fail, (const char * utf8), {
     if (typeof console !== 'undefined') console.error(UTF8ToString(utf8));
 });
 
+// То же, но человеку: беда, которую он сам себе устроил, выбрав не тот файл.
+// В консоль браузера он не смотрит, а машина после неудачной трансляции
+// просто окажется пустой — и почему, узнать будет неоткуда.
+EM_JS(void, js_note, (const char * utf8), {
+    if (typeof Iskra !== 'undefined' && Iskra.note) Iskra.note(UTF8ToString(utf8));
+});
+
 EM_JS(void, js_ready, (const char * version), {
     if (typeof Iskra === 'undefined') return;
     Iskra.ready(UTF8ToString(version));
@@ -68,6 +83,7 @@ void load_listing(Session & s, const std::string & utf8)
     if (!iskra::tokenize(koi8, s.img, s.console.names(), error)) {
         const std::string msg = "трансляция: " + error;
         js_fail(msg.c_str());
+        js_note(msg.c_str());
     }
 }
 
@@ -122,6 +138,64 @@ void iskra_load_program(const char * utf8)
     if (!g_host || !utf8) return;
     g_pending_listing = utf8;
     g_host->request_reset();
+}
+
+// Текст программы, лежащей в памяти, — то же, что показал бы `LIST`, только
+// целиком и в UTF-8. Имён переменных в потоке нет вовсе, их придумывает
+// обратная трансляция, и берётся тут **таблица имён сеанса** — та самая, по
+// которой говорит `LIST` на экране: иначе сохранённый листинг называл бы
+// переменные не так, как их только что видел человек.
+//
+// Пустая строка значит неудачу, и причина её лежит в iskra_program_error().
+// Строку, которой обратная трансляция ещё не умеет, пропустить нельзя: файл
+// разошёлся бы с программой в памяти незаметно, а загрузить его обратно уже
+// не вышло бы вовсе.
+EMSCRIPTEN_KEEPALIVE
+const char * iskra_program_text(void)
+{
+    g_program_text.clear();
+    g_program_error.clear();
+
+    if (!g_session) {
+        g_program_error = "машина ещё не запущена";
+        return "";
+    }
+
+    const iskra::ProgramImage & img = g_session->img;
+    std::string koi8;
+    for (unsigned i = 0; i < img.line_count(); ++i) {
+        std::string text, err;
+        if (!iskra::detokenize_line(img.line(i), g_session->console.names(),
+                                    text, err)) {
+            char num[16];
+            std::sprintf(num, "%u", img.line(i).number);
+            g_program_error = "строка " + std::string(num) + ": " + err;
+            g_program_text.clear();
+            return "";
+        }
+        koi8 += text;
+        // Конец строки — CRLF: листинг уходит в файл, и открывать его будут
+        // чем попало, в том числе блокнотом Windows.
+        koi8 += "\r\n";
+    }
+
+    iskra::koi8_to_utf8(reinterpret_cast<const uint8_t *>(koi8.data()),
+                        static_cast<unsigned>(koi8.size()), g_program_text);
+    return g_program_text.c_str();
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char * iskra_program_error(void)
+{
+    return g_program_error.c_str();
+}
+
+// Сколько строк в программе. «Сохранить» на пустой машине выдало бы пустой
+// файл, и человек узнал бы об этом, только открыв его.
+EMSCRIPTEN_KEEPALIVE
+int iskra_program_lines(void)
+{
+    return g_session ? static_cast<int>(g_session->img.line_count()) : 0;
 }
 
 EMSCRIPTEN_KEEPALIVE
