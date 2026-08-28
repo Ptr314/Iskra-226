@@ -56,6 +56,7 @@ done
 
 # Как это выкладывать.
 cp web/README.md            "$_RELEASE_DIR/"
+cp ../LICENSE               "$_RELEASE_DIR/"
 cp web/nginx.conf.example   "$_RELEASE_DIR/"
 
 rm -f "./release/${_RELEASE_NAME}.zip"

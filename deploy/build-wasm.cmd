@@ -33,6 +33,7 @@ COPY ".\_bundle\*.dsk" "%_RELEASE_DIR%" >NUL
 COPY ".\_bundle\programs\*.bas" "%_RELEASE_DIR%\programs" >NUL
 
 COPY ".\web\README.md"          "%_RELEASE_DIR%" >NUL || EXIT /B 1
+COPY "..\LICENSE"               "%_RELEASE_DIR%" >NUL || EXIT /B 1
 COPY ".\web\nginx.conf.example" "%_RELEASE_DIR%" >NUL || EXIT /B 1
 
 IF EXIST ".\release\%_RELEASE_NAME%.zip" DEL ".\release\%_RELEASE_NAME%.zip"

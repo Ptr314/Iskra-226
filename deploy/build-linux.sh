@@ -26,6 +26,7 @@ mkdir -p "$_RELEASE_DIR"
 cp "$_BUILD_DIR/iskra" "$_RELEASE_DIR/"
 cp "$_BUILD_DIR/iskra-nohead" "$_RELEASE_DIR/"
 cp ../README.md "$_RELEASE_DIR/"
+cp ../LICENSE "$_RELEASE_DIR/"
 
 rm -f "./release/${_RELEASE_NAME}.zip"
 if command -v zip >/dev/null 2>&1; then

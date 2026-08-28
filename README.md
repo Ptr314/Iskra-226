@@ -185,4 +185,4 @@ iskra-nohead --printer ЛЕНТА.txt …     лента АЦПУ в файл, �
 
 ## Лицензия
 
-GPL-3.0-or-later
+GPL-3.0-or-later, текст — в [`LICENSE`](LICENSE).

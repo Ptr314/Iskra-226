@@ -15,6 +15,7 @@ MKDIR "%_RELEASE_DIR%"
 COPY "%_BUILD_DIR%\iskra.exe" "%_RELEASE_DIR%" >NUL || EXIT /B 1
 COPY "%_BUILD_DIR%\iskra-nohead.exe" "%_RELEASE_DIR%" >NUL || EXIT /B 1
 COPY "..\README.md" "%_RELEASE_DIR%" >NUL || EXIT /B 1
+COPY "..\LICENSE" "%_RELEASE_DIR%" >NUL || EXIT /B 1
 
 IF EXIST ".\release\%_RELEASE_NAME%.zip" DEL ".\release\%_RELEASE_NAME%.zip"
 
