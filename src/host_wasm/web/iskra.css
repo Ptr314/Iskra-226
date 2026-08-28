@@ -282,17 +282,28 @@ ul.menu.shut ul { visibility: hidden !important; }
     position: absolute;
     padding: 0;
     background: linear-gradient(var(--key) 0%, var(--key) 62%, var(--key2) 100%);
-    border: 2px solid #fff;
+    border: 1px solid #f0f0f0;
     border-radius: 4px;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, .35);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .3);
     color: var(--ink);
-    font-family: inherit;
     cursor: pointer;
     overflow: hidden;
+
+    /* **Размер шрифта наследуется явно.** У `<button>` он свой, от таблицы
+       браузера, и наследоваться не будет: без этой строки при изменении
+       увеличения менялись только подписи на корпусе — они `<div>`, — а
+       надписи на самих клавишах стояли намертво. */
+    font: inherit;
 }
 .key.red {
     background: linear-gradient(var(--keyred) 0%, var(--keyred) 62%,
                                 var(--keyred2) 100%);
+}
+/* Клавиши специальных функций на машине чёрные, и надписей на них нет
+   вовсе: номера напечатаны на корпусе под ними. */
+.key.sf {
+    background: linear-gradient(#3c3c3a 0%, #2a2a28 62%, #1c1c1a 100%);
+    border-color: #55554f;
 }
 .key:hover  { filter: brightness(1.12); }
 .key:active { filter: brightness(.88); transform: translateY(1px); }
@@ -304,7 +315,7 @@ ul.menu.shut ul { visibility: hidden !important; }
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 1.95em;
+    font-size: 1.75em;
     font-weight: normal;
     line-height: 1;
 }
@@ -315,12 +326,12 @@ ul.menu.shut ul { visibility: hidden !important; }
 /* Второе значение — мельче, справа вверху. */
 .key .k-alt {
     position: absolute;
-    top: .12em;
-    right: .32em;
-    font-size: .95em;
+    top: .18em;
+    right: .38em;
+    font-size: 1.2em;
     font-style: normal;
     line-height: 1;
-    opacity: .68;
+    opacity: .78;
 }
 
 /* Третье — внизу по центру. */
@@ -328,7 +339,7 @@ ul.menu.shut ul { visibility: hidden !important; }
     position: absolute;
     left: 0; right: 0; bottom: .18em;
     text-align: center;
-    font-size: .88em;
+    font-size: .86em;
     line-height: 1;
     text-decoration: none;
     color: var(--word);
@@ -348,7 +359,7 @@ ul.menu.shut ul { visibility: hidden !important; }
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    font-size: .95em;
+    font-size: .9em;
     line-height: 1.15;
     text-align: center;
     letter-spacing: .02em;
